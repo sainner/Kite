@@ -5,18 +5,21 @@
  */
 import { afterEach, expect, jest, spyOn, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AccountMachine, DirectoryEntry } from '../../src/account-data/directory.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Input, Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
 import { type Delegation, type InboxItem, type InboxRecord, monitorState } from '../../src/line/monitor.ts';
-import type { WorkspaceModel } from '../../src/model.ts';
-import type { DisplayState } from '../../src/transcript/protocol.ts';
-import { after, chatgptLogin, connect, folderWorkspace, type Kited, mark, startKited, synced, waitIdle, workspaceOpened } from '../harness.ts';
+import type { ThreadContext, WorkspaceModel } from '../../src/model.ts';
+import type { DisplayState, History } from '../../src/transcript/protocol.ts';
+import { attachmentStore } from '../../src/workspace/attachments.ts';
+import {
+  after, chatgptLogin, connect, folderWorkspace, getAttachment, type Kited, mark, putAttachment, startKited, synced, waitIdle, workspaceOpened,
+} from '../harness.ts';
 import { deferred, diskRecords, item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
-import { newDir, until } from '../util.ts';
+import { newDir, png, until } from '../util.ts';
 
 const kiteds: Kited[] = [];
 /** 停住的账号目录读取；测试失败时也先放行，否则停 kited 时会一直等 monitor 这一轮。 */
@@ -80,8 +83,8 @@ async function lineSetup() {
   return { a, b, modelOf, holdDirectory, directory, machineA: a.daemon.kite.store.machine.id, machineB, lineWorkspace, lineId, workId };
 }
 
-async function send(k: Kited, threadId: string, id: string, text: string) {
-  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id, text });
+async function send(k: Kited, threadId: string, id: string, text: string, attachments?: string[]) {
+  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id, text, ...(attachments ? { attachments } : {}) });
   expect(sent.status).toBe(200);
 }
 
@@ -466,8 +469,9 @@ test('事件流连着且声明关注才算在关注：在关注时提问进收�
  * B 撤下提问，空闲的线程开始新回合、收到 Line 代答的输入；没有提问时（只剩一项密钥请求也一样，Line 不能回应密钥请求）
  * 经 POST /threads/:id/messages {relay: true} 成为来源为人、带 via 的输入，密钥请求留着。转达记在 monitor 状态里，
  * 同一来源消息与目标的重试只去重：已答过提问的那句不会在 B 不再有提问后变成一条消息，发过的消息也不会再发一遍。
+ * 用户的话带附件时，A 先经跨机的 PUT 把附件传到 B 的工作区，再发带附件的消息；重试时附件 ID 不变，B 上不多出一份。
  */
-test('line_relay 照原文转达用户的话：B 有没回答的提问时作为「其他」回答、B 收到 Line 代答的输入，没有提问时（只有密钥请求也一样）成为来源为人、经 Line 的输入；同一句重试只去重', async () => {
+test('line_relay 照原文转达用户的话：B 有没回答的提问时作为「其他」回答、B 收到 Line 代答的输入，没有提问时（只有密钥请求也一样）成为来源为人、经 Line 的输入，带着附件、B 上取得到原件；同一句重试只去重', async () => {
   const s = await lineSetup();
   const work = s.modelOf(s.workId);
   const line = s.modelOf(s.lineId);
@@ -499,9 +503,12 @@ test('line_relay 照原文转达用户的话：B 有没回答的提问时作为�
   await waitIdle(s.b, s.workId, since);
   expect((await asksOf(s.b, s.workId)).map((entry) => entry.kind)).toEqual(['secret']);
 
-  // B 没有提问：第二句发成一条消息；这一句按 ID 重试、第一句重试，都只去重。
+  // B 没有提问：第二句带一张图，发成一条消息；这一句按 ID 重试、第一句重试，都只去重。
   const second = '再补一个空输入的用例';
-  await send(s.a, s.lineId, 'user-2', second);
+  const picture = await png(6, 4);
+  const attached = await putAttachment(s.a, s.lineWorkspace.workspace.id, crypto.randomUUID(), '用例.png', picture);
+  expect(attached.status).toBe(200);
+  await send(s.a, s.lineId, 'user-2', second, [attached.body.id]);
   const l3 = await line.call(3);
   await l3.response.emit({ type: 'item', item: calledItem('relay-2', 'line_relay', relay) });
   await l3.response.emit({ type: 'item', item: calledItem('relay-2-again', 'line_relay', { ...relay, from: 'user-2' }) });
@@ -510,9 +517,18 @@ test('line_relay 照原文转达用户的话：B 有没回答的提问时作为�
   const l4 = await line.call(4);
   expect(['relay-2', 'relay-2-again', 'relay-1-again'].map((id) => resultOf(l4.request, id)?.status)).toEqual(['success', 'success', 'success']);
   const relayed = received(s.b, s.workId).filter((input) => input.text === first || input.text === second);
-  expect(relayed).toEqual([{ id: expect.any(String), text: second, source: 'human', via: { kind: 'line', machine: s.machineA, instance: s.lineId } }]);
+  expect(relayed).toEqual([{ id: expect.any(String), text: second, source: 'human', via: { kind: 'line', machine: s.machineA, instance: s.lineId },
+    attachments: [{ ...attached.body, id: expect.any(String) }] }]);
+  const copy = relayed[0]!.source === 'human' ? relayed[0]!.attachments![0]! : undefined;
+  const target = ((await s.b.call('GET', `/threads/${s.workId}`)).body as ThreadContext).workspace.id;
+  expect(await getAttachment(s.b, target, copy!.id)).toEqual({ status: 200, bytes: picture });
+  expect(readdirSync(attachmentStore(s.b.home, target))).toEqual([copy!.id]);
+  const human = ((await s.b.call('GET', `/threads/${s.workId}/history`)).body as History).records
+    .flatMap(({ block }) => block.type === 'human' && block.id === relayed[0]!.id ? [block] : []);
+  expect(human).toEqual([expect.objectContaining({ text: second, attachments: [copy] })]);
   const next = await work.call(5);
   expect(inputs(next.request).at(-1)?.text).toBe(second);
+  expect(next.request.history.findLast((entry) => entry.type === 'input')).toMatchObject({ images: [expect.objectContaining({ mediaType: 'image/png' })] });
   expect((await asksOf(s.b, s.workId)).map((entry) => entry.kind)).toEqual(['secret']);
 }, 1000);
 

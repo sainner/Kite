@@ -135,7 +135,9 @@ struct RemoteInput: Codable {
     var midTurn: Bool? = nil
     /// 代理来信的发信方（kited 的 InputSender）：代理带标题；Line 自己的话以它的经由为发信方，没有标题。
     var from: From? = nil
-    var message: Message { Message(id: id, text: text, midTurn: midTurn ?? false) }
+    /// 人发的消息带的附件。
+    var attachments: [Attachment]? = nil
+    var message: Message { Message(id: id, text: text, attachments: attachments ?? [], midTurn: midTurn ?? false) }
 
     struct From: Codable {
         let kind: String
@@ -173,6 +175,8 @@ struct RemoteRecord: Decodable, Identifiable {
         var id: String?
         var text: String?
         var midTurn: Bool?
+        /// human 块带的附件。
+        var attachments: [Attachment]?
         var name: String?
         var input: JSON?
         var batch: String?
@@ -217,7 +221,7 @@ struct RemoteRecord: Decodable, Identifiable {
         switch block.type {
         case "human":
             guard let messageID = block.id, let text = block.text else { return nil }
-            content = .human(Message(id: messageID, text: text, midTurn: block.midTurn ?? false))
+            content = .human(Message(id: messageID, text: text, attachments: block.attachments ?? [], midTurn: block.midTurn ?? false))
         case "agent":
             guard let messageID = block.id, let text = block.text, let sender = block.sender else { return nil }
             content = .agent(Message(id: messageID, text: text), sender: Sender(name: sender.name, instance: sender.instance))
@@ -477,8 +481,25 @@ struct KitedClient: Equatable {
         return (file, http)
     }
 
+    /// 把本机文件原样传上去（附件），返回解码后的响应；progress 报已发出的比例，在 URLSession 的队列上调。
+    func upload<T: Decodable>(_ path: String, file: URL, as type: T.Type, progress: (@Sendable (Double) -> Void)? = nil) async throws -> T {
+        guard let machineID else { throw KitedError(message: "请先连接工作机") }
+        var request = URLRequest(url: try url(path))
+        request.httpMethod = "PUT"
+        request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let trace = TimingTrace.span("PUT \(path)")
+        let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.upload(for: request, fromFile: file, delegate: progress.map(UploadProgress.init)) }
+        catch { trace("失败：\(error.localizedDescription)"); throw error }
+        trace("\((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        try validate(response, data: data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
     /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
-    private func streamRequest(_ path: String, thread: String?, device: String? = nil, webSocket: Bool = false,
+    func streamRequest(_ path: String, thread: String?, device: String? = nil, webSocket: Bool = false,
                                extra: [URLQueryItem] = []) async throws -> (URLSession, URLRequest) {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
         var components = URLComponents(url: try url(path), resolvingAgainstBaseURL: true)!
@@ -502,6 +523,17 @@ struct KitedClient: Equatable {
             throw KitedError(message: body?.error ?? "服务返回 \(http.statusCode)", status: http.statusCode, gitLogin: body?.gitLogin,
                              machineID: body?.gitLoginMachine ?? machineID, children: body?.children)
         }
+    }
+}
+
+/// 上传时报已发出的比例。
+private final class UploadProgress: NSObject, URLSessionTaskDelegate, Sendable {
+    let report: @Sendable (Double) -> Void
+    init(_ report: @escaping @Sendable (Double) -> Void) { self.report = report }
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
+                                totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        report(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
     }
 }
 

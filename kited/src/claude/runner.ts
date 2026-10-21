@@ -13,6 +13,8 @@ import {
   type StopHookInput, type UserPromptSubmitHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 import { claudeOptions } from './options.ts';
+import { claudeUserContent } from './tools.ts';
+import type { ToolImage } from '../harness/types.ts';
 
 /*
  * Claude 的工具、上下文和外围功能由 Kite 逐项开放，不自动带入本机或项目的 Claude Code 配置。
@@ -23,7 +25,8 @@ import { claudeOptions } from './options.ts';
  * 一条要投递的消息。human 为 true 表示人发的，记录里带 origin: human；Kite 自己发的（如合并冲突的说明）不带，
  * 翻译时靠这一点区分。
  */
-export interface Outgoing { text: string; human: boolean; id?: string }
+/** images 是附件里的图片交给模型的样子，跟在正文后面。 */
+export interface Outgoing { text: string; human: boolean; id?: string; images?: ToolImage[] }
 
 export type InputState = 'queued' | 'started' | 'completed' | 'cancelled';
 // 锁定的 SDK 0.3.280 已实现这些控制方法，但公开的 Query 声明漏掉了它们。
@@ -46,8 +49,8 @@ class Inbox implements AsyncIterable<SDKUserMessage> {
   async *[Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
     while (true) {
       while (this.buf.length) {
-        const { text, human, id } = this.buf.shift()!;
-        yield { type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null,
+        const { text, human, id, images } = this.buf.shift()!;
+        yield { type: 'user', message: { role: 'user', content: claudeUserContent(text, images) }, parent_tool_use_id: null,
           ...(id ? { uuid: id as `${string}-${string}-${string}-${string}-${string}` } : {}), client_composed: true,
           ...(human ? { origin: { kind: 'human' } } : {}) };
       }

@@ -291,6 +291,20 @@ export async function sendThreadMessage(k: Kited, id: string, text: string): Pro
   if (r.status !== 200) throw new Error(`发消息失败：${r.status} ${JSON.stringify(r.body)}`);
 }
 
+/** 上传一个附件（PUT /workspaces/:id/attachments/:attachment?name=），请求体是文件本身；返回状态码与回应。 */
+export async function putAttachment(k: Kited, workspaceId: string, id: string, name: string, bytes: Uint8Array<ArrayBuffer>): Promise<{ status: number; body: any }> {
+  const r = await fetch(`${k.url}/workspaces/${workspaceId}/attachments/${id}?name=${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: { 'X-Kite-Machine': k.daemon.kite.store.machine.id }, body: bytes,
+  });
+  return { status: r.status, body: await r.json() };
+}
+
+/** 取附件的原件（GET /workspaces/:id/attachments/:attachment）。 */
+export async function getAttachment(k: Kited, workspaceId: string, id: string): Promise<{ status: number; bytes: Buffer<ArrayBuffer> }> {
+  const r = await fetch(`${k.url}/workspaces/${workspaceId}/attachments/${id}`, { headers: { 'X-Kite-Machine': k.daemon.kite.store.machine.id } });
+  return { status: r.status, bytes: Buffer.from(await r.arrayBuffer()) };
+}
+
 export async function listSnapshots(k: Kited, workspaceId: string): Promise<Snapshot[]> {
   const r = await k.call('GET', `/workspaces/${workspaceId}/snapshots`);
   if (r.status !== 200) throw new Error(`取快照失败：${r.status} ${JSON.stringify(r.body)}`);

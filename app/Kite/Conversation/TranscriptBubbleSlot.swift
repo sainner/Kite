@@ -109,11 +109,13 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(environment))
         coordinator.show(content.text)
         container.style(queued: queued, agent: letter, animated: !first && wasQueued != queued, environment: environment)
-        container.setAttachments(message.attachments)
+        container.setAttachments(message.attachments, source: environment.attachmentSource)
         container.setSender(sender, environment: environment)
         container.setNotice(notice, expanded: opened, environment: environment)
-        if first { container.bubble.isHidden = notice != nil && !opened }
+        if notice == nil { container.bubble.isHidden = attachmentsOnly } else if first { container.bubble.isHidden = !opened }
     }
+
+    private var attachmentsOnly: Bool { message?.attachmentsOnly == true }
 
     /// 靠左、浅底的来信：代理来信、Kite 的通知。
     private var letter: Bool { sender != nil || notice != nil }
@@ -129,6 +131,12 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             let height = container.header?.height ?? 0
             measured = (width, height)
             return height
+        }
+        if attachmentsOnly {
+            provisional = false
+            topHeight = container.topHeight(width: width)
+            measured = (width, topHeight - 6)
+            return topHeight - 6
         }
         if resizing, let unwrapped, let measured, unwrapped <= width - Metrics.bubblePadding.width * 2 {
             self.measured = (width, measured.height)
@@ -291,7 +299,7 @@ final class BubbleRowView: NSView {
         fold.style(color: color, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont)
     }
 
-    func setAttachments(_ list: [Attachment]) {
+    func setAttachments(_ list: [Attachment], source: AttachmentSource?) {
         if list.isEmpty {
             attachments?.removeFromSuperview()
             attachments = nil
@@ -303,7 +311,7 @@ final class BubbleRowView: NSView {
             attachments = row
             return row
         }()
-        row.show(list)
+        row.show(list, source: source)
     }
 
     /// 代理来信上面的头像和名字，人发的为 nil 时拿掉。

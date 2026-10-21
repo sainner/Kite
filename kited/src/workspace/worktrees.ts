@@ -11,6 +11,7 @@ import { runScript } from '../script.ts';
 import { commandEnvironment, prepareSandbox } from '../execution/sandbox.ts';
 import { harnessPolicy } from '../execution/policy.ts';
 import { forgetWorktree } from './snapshots.ts';
+import { ATTACHMENT_DIR } from './attachments.ts';
 
 const SETUP_TIMEOUT_MS = 15 * 60_000;
 
@@ -43,6 +44,17 @@ export function excludeSecretFiles(checkout: string, paths: string[]): string[] 
     writeFileSync(file, next);
   }
   return before.filter((path) => !paths.includes(path));
+}
+
+const ATTACHMENTS_EXCLUDED = `# Kite：消息附件放进工作区的那份，不进 Git\n/${ATTACHMENT_DIR}/\n`;
+
+/** 检出忽略工作区里的附件目录（见 attachments.ts），本机这个项目的工作树都不把它带进快照、集成与同步的提交。已经记着就不动。 */
+export function excludeAttachments(checkout: string): void {
+  const file = join(checkout, 'info', 'exclude');
+  const current = existsSync(file) ? readFileSync(file, 'utf8') : '';
+  if (current.includes(ATTACHMENTS_EXCLUDED)) return;
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, (current && !current.endsWith('\n') ? `${current}\n` : current) + ATTACHMENTS_EXCLUDED);
 }
 
 /**

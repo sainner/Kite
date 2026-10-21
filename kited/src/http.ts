@@ -228,6 +228,25 @@ export function serve(kite: Kite, listen: Listen) {
     if (!workspace) throw new KiteError(`没有这个工作区：${req.params.id}`, 404);
     return fileContent(req, new WorkspaceFiles(workspace.cwd), str(new URL(req.url).searchParams.get('path'), 'path'));
   };
+  /** 附件的原件，或 size 给出长边的图片缩略图；同一个附件 ID 的内容不会变。 */
+  const attachmentContent = async (req: Request & { params: { id: string; attachment: string } }) => {
+    kite.workspace(req.params.id);
+    const size = new URL(req.url).searchParams.get('size');
+    const { ref, path, sha256 } = kite.attachments.content(req.params.id, req.params.attachment);
+    const etag = `"${sha256}${size ? `-${size}` : ''}"`;
+    const headers = new Headers({ ETag: etag, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' });
+    if (req.headers.get('If-None-Match')?.split(',').some((tag) => tag.trim() === etag)) return new Response(null, { status: 304, headers });
+    if (size !== null) {
+      const edge = Number(size);
+      if (!Number.isInteger(edge) || edge < 16 || edge > 4096) throw new KiteError('size 须为 16 到 4096 的整数');
+      const thumbnail = await kite.attachments.thumbnail(req.params.id, req.params.attachment, edge);
+      headers.set('Content-Type', thumbnail.type);
+      return new Response(thumbnail.bytes, { headers });
+    }
+    headers.set('Content-Type', ref.mediaType);
+    headers.set('Content-Length', String(ref.size));
+    return new Response(Bun.file(path), { headers });
+  };
   // 本机网络设置不对远程设备开放。
   const localOnly = <R extends Request>(fn: (req: R) => Promise<Response>) =>
     listen.remote ? handle<R>(() => { throw new KiteError('没有这个接口', 404); }) : fn;
@@ -473,6 +492,17 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/operations': { GET: bound(() => operationCatalog()) },
       '/workspaces/:id/files/content': { GET: bound(workspaceFile), HEAD: bound(workspaceFile) },
+      '/workspaces/:id/attachments/:attachment': {
+        // 请求体就是文件本身；大文件经组网传得慢，不按空闲超时断开。
+        PUT: long(bound((req) => {
+          const name = new URL(req.url).searchParams.get('name');
+          if (!name) throw new KiteError('缺少 name');
+          if (!req.body) throw new KiteError('附件是空的');
+          return kite.saveAttachment(req.params.id, req.params.attachment, name, req.body);
+        })),
+        GET: bound(attachmentContent),
+        DELETE: bound((req) => { kite.removeAttachment(req.params.id, req.params.attachment); return { ok: true }; }),
+      },
       '/workspaces/:id/operations/:operation': { POST: bound(async (req) =>
         kite.operations.invoke({ kind: 'ui' }, req.params.id, req.params.operation, await body(req), req.signal)) },
       '/workspaces/:id': { GET: bound((req) => kite.workspace(req.params.id)) },
@@ -534,11 +564,11 @@ export function serve(kite: Kite, listen: Listen) {
           const b = await body(req);
           const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
             approval: z.enum(approvalModes).optional(),
-            windowId: z.uuid().optional(), messageId: z.uuid().optional() })
-            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, windowId: b.windowId, messageId: b.messageId });
+            windowId: z.uuid().optional(), messageId: z.uuid().optional(), attachments: z.array(z.string().min(1)).min(1).optional() })
+            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, windowId: b.windowId, messageId: b.messageId, attachments: b.attachments });
           if (!parsed.success) throw new KiteError('代理创建参数无效');
-          const { windowId, messageId, ...choice } = parsed.data;
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId, messageId);
+          const { windowId, messageId, attachments, ...choice } = parsed.data;
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId, messageId, attachments);
         }),
       },
       '/workspaces/:id/windows': { POST: bound(async (req) => {
@@ -575,6 +605,7 @@ export function serve(kite: Kite, listen: Listen) {
           const skip = b.skipWaiting === undefined ? undefined : str(b.skipWaiting, 'skipWaiting');
           const sent = await kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}), ...(b.relay ? { relayed: true } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.send', {
             instanceId: req.params.id, text: str(b.text, 'text'), operationId: b.id === undefined ? crypto.randomUUID() : str(b.id, 'id'),
+            ...(b.attachments === undefined ? {} : { attachments: b.attachments }),
           }, req.signal);
           if (skip) kite.waits.skip(req.params.id, skip);
           return sent;

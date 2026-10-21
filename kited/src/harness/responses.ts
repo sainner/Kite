@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import { modelText } from './input.ts';
 import { TOOL_SEARCH } from './tool-search.ts';
-import type { ContextItem, JsonObject, ModelEvent, ModelItem, ModelRequest } from './types.ts';
+import type { ContextItem, JsonObject, ModelEvent, ModelItem, ModelRequest, ToolImage } from './types.ts';
 
 const object = z.record(z.string(), z.json());
 
@@ -120,6 +120,8 @@ export function portableItem(item: ModelItem): JsonObject | [] {
   throw new Error(`不能把条目 ${String(raw.type)} 交给当前模型`);
 }
 
+const inputImage = (image: ToolImage): JsonObject => ({ type: 'input_image', image_url: `data:${image.mediaType};base64,${image.data}`, detail: 'high' });
+
 /**
  * 历史转成 input。format 是这个适配器自己产出的条目格式，这些条目原样交回，别家的经 portableItem 转换。
  */
@@ -131,7 +133,7 @@ export function responsesInput(history: ContextItem[], { format, functions = {} 
   const searches = new Set<string>();
   return history.flatMap<JsonObject>((entry): JsonObject | [] => {
     switch (entry.type) {
-      case 'input': return { role: 'user', content: [{ type: 'input_text', text: modelText(entry.input) }] };
+      case 'input': return { role: 'user', content: [{ type: 'input_text', text: modelText(entry.input) }, ...(entry.images ?? []).map(inputImage)] };
       case 'output':
         if (entry.item.call?.name === TOOL_SEARCH) searches.add(entry.item.call.id);
         return entry.item.format === format ? entry.item.raw : portableItem(entry.item);
@@ -142,9 +144,7 @@ export function responsesInput(history: ContextItem[], { format, functions = {} 
         const { status, output, images: attached } = entry.result;
         const text = status === 'success' ? output : `[${status}] ${output}`;
         return { type: 'function_call_output', call_id: entry.callId, output: attached?.length
-          ? [{ type: 'input_text', text }, ...attached.map((image) => ({
-            type: 'input_image', image_url: `data:${image.mediaType};base64,${image.data}`, detail: 'high' }))]
-          : text };
+          ? [{ type: 'input_text', text }, ...attached.map(inputImage)] : text };
       }
       case 'feedback': return { role: 'developer', content: [{ type: 'input_text', text: entry.text }] };
       case 'notification': return {

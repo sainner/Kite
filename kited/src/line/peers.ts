@@ -45,8 +45,9 @@ export class Peers {
    * 非 2xx 抛 PeerError，带对端的状态码与正文。timeoutMs 默认 30 秒。
    * signal 是调用方回合的停止：停下只是不再等，请求可能已经送到，对端照样做完。
    */
+  /** file 是要原样上传的文件（附件），与 body 二选一。 */
   async call<T = any>(target: string | AccountMachine, method: string, path: string,
-    options: { body?: unknown; via?: InputVia; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
+    options: { body?: unknown; file?: Blob; via?: InputVia; timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
     const machineId = typeof target === 'string' ? target : target.id;
     const self = this.options.self();
     let base: string | undefined;
@@ -60,8 +61,8 @@ export class Peers {
     const init: RequestInit = {
       method,
       headers: { 'X-Kite-Machine': machineId, ...(options.via ? { 'X-Kite-Source': JSON.stringify(options.via) } : {}),
-        ...(options.body === undefined ? {} : { 'content-type': 'application/json' }) },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        ...(options.file ? { 'content-type': 'application/octet-stream' } : options.body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: options.file ?? (options.body === undefined ? undefined : JSON.stringify(options.body)),
       signal: AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 30_000), ...(options.signal ? [options.signal] : [])]),
     };
     let response: Response;

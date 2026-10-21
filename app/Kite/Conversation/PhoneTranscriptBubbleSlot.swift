@@ -144,8 +144,10 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             MessageAttachmentRow(attachments: message.attachments).environment(\.self, environment)))
         container.setSender(sender, environment: environment)
         container.setNotice(notice, expanded: opened, environment: environment)
-        if first { container.setBubbleShown(notice == nil || opened) }
+        if notice == nil { container.setBubbleShown(!attachmentsOnly) } else if first { container.setBubbleShown(opened) }
     }
+
+    private var attachmentsOnly: Bool { message?.attachmentsOnly == true }
 
     /// 靠左、浅底的来信：代理来信、Kite 的通知。
     private var letter: Bool { sender != nil || notice != nil }
@@ -207,6 +209,12 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             let height = container.header?.height ?? 0
             measured = (width, height)
             return height
+        }
+        if attachmentsOnly {
+            provisional = false
+            topHeight = rowView.topHeight(width: width)
+            measured = (width, topHeight - 6)
+            return topHeight - 6
         }
         if resizing, let unwrapped, let measured, unwrapped <= width - Metrics.bubblePadding.width * 2 {
             provisional = true

@@ -7,13 +7,13 @@
  *
  * App 里的那一半是 app/Kite/Verification/PerfProbe.swift；分析在 perf-analysis.ts。
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { command } from './command.ts';
 import { compare, mainThreadSamples, measureIntervals, profile, render, summarize, type Report, type Row, type Run } from './perf-analysis.ts';
 
 const MAC_SCENES = ['drag-bottom', 'drag-work', 'drag-long', 'drag-fold', 'drag-running', 'drag-actions', 'sidebar', 'toggle', 'motion',
-  'reopen', 'enter', 'idle-normal', 'idle-empty', 'idle-ring', 'idle-pulse', 'idle-sweep', 'type', 'send'];
+  'reopen', 'enter', 'idle-normal', 'idle-empty', 'idle-ring', 'idle-pulse', 'idle-sweep', 'type', 'send', 'scroll', 'scroll-wheel', 'scroll-fold'];
 const IPAD_SCENES = ['drag-bottom', 'sidebar', 'toggle', 'motion', 'reopen', 'enter'];
 const IPHONE_SCENES = ['drawer', 'pull', 'swipe', 'keyboard'];
 /**
@@ -21,6 +21,9 @@ const IPHONE_SCENES = ['drawer', 'pull', 'swipe', 'keyboard'];
  * 所以里层的放前面，显示周期、CA 提交这些包着一切的放最后。
  */
 const KEYWORDS = {
+  /** 只跑滚动场景时：滚动通知里摆行、补量、排列，文本视图的视口，嵌着的卡片，原文那一列。 */
+  scroll: ['PerfProbe', 'measureBatch', 'TranscriptArrangement.arrange', 'TranscriptStack', 'TranscriptListView.realize', 'EmbeddedContainerView',
+    'NSTextViewportLayoutController', 'ProseTextView', 'NSDisplayCycleFlush', 'CA::Transaction::commit'],
   mac: ['PerfProbe', 'TranscriptListView.layout', 'ProseTextView', 'ThreadIsland.layout', 'ControlsBarView', 'ThreadWindowView.layout',
     'CardView', 'StageView.layout', 'NSHostingView', 'ViewGraphRootValueUpdater', '_layoutViewTree', 'NSDisplayCycleFlush', 'CA::Transaction::commit'],
   ipad: ['PerfProbe', 'PhoneTranscriptView', 'PhoneProseTextView', 'UIHostingView', 'ViewGraphRootValueUpdater', 'layoutSubviews',
@@ -29,6 +32,10 @@ const KEYWORDS = {
     'CA::Transaction::commit'],
 };
 const BUNDLE = 'com.sainner.kite';
+/** 存下的会话数据（--record 存、--fixture 回放），不进 Git：是用户的真实对话。 */
+const FIXTURES = resolve(import.meta.dir, 'fixtures');
+/** --record、--fixture 给的会话数据目录：带斜杠的是路径，否则是 fixtures 下的名字。 */
+const fixtureDir = (name: string) => name.includes('/') ? resolve(name) : join(FIXTURES, name);
 const runID = (run: Run) => `${stamp}/${run.scene}/${run.variant}-${run.repeat}`;
 
 const USAGE = `用法：
@@ -48,6 +55,8 @@ iPhone 场景：${IPHONE_SCENES.join(' ')}
   --workspace <ID>      临时切到这个工作区再测（不存盘）
   --enter <ID>          enter 场景切过去的工作区，默认同一台工作机上台面摆着窗口的另一个
   --threads a,b         台面上只摆这几个会话（会话 id，按次序从停靠栏恢复），测完写回
+  --record <名字>       不测，把台面上原来摆着的各会话的完整历史存成会话数据（Mac）
+  --fixture <名字>      测之前把台面上从左到右的会话窗口换成存下的会话数据（Mac），名字或目录
   --window 宽x高        Mac 测量窗口的大小，默认 1200x924
   --rounds N            每次启动测几轮（拖缝、侧栏默认 Mac 2、iPad 3）
   --pairs N             缩小恢复、打开关闭、切工作区、iPhone 各场景每次启动做几次（默认 4）
@@ -66,7 +75,8 @@ if (platform !== 'mac' && platform !== 'ipad' && platform !== 'iphone') {
 const options = { repeat: 1, variants: [] as Array<{ name: string; args: string[] }>, base: undefined as string | undefined, trace: false,
   keywords: KEYWORDS[platform], lock: undefined as string | undefined, workspace: undefined as string | undefined, enter: undefined as string | undefined, threads: undefined as string | undefined, window: '1200x924',
   rounds: undefined as string | undefined, pairs: undefined as string | undefined, build: true, compare: undefined as string | undefined, out: undefined as string | undefined,
-  device: undefined as string | undefined };
+  device: undefined as string | undefined, record: undefined as string | undefined, fixture: undefined as string | undefined };
+let keywordsGiven = false;
 const scenes: string[] = [];
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i]!;
@@ -84,7 +94,7 @@ for (let i = 0; i < argv.length; i++) {
     }
     case '--base': options.base = resolve(value()); break;
     case '--trace': options.trace = true; break;
-    case '--keywords': options.keywords = value().split(',').filter(Boolean); break;
+    case '--keywords': options.keywords = value().split(',').filter(Boolean); keywordsGiven = true; break;
     case '--lock': options.lock = resolve(value()); break;
     case '--workspace': options.workspace = value(); break;
     case '--enter': options.enter = value(); break;
@@ -96,14 +106,35 @@ for (let i = 0; i < argv.length; i++) {
     case '--compare': options.compare = resolve(value()); break;
     case '--out': options.out = resolve(value()); break;
     case '--device': options.device = value(); break;
+    case '--record': options.record = value(); break;
+    case '--fixture': options.fixture = value(); break;
     default:
       if (arg.startsWith('-')) throw new Error(`不认识的选项 ${arg}\n${USAGE}`);
       scenes.push(arg);
   }
 }
 const known = platform === 'mac' ? MAC_SCENES : platform === 'ipad' ? IPAD_SCENES : IPHONE_SCENES;
-if (!scenes.length) scenes.push(...known);
-for (const scene of scenes) if (!known.includes(scene)) throw new Error(`${platform} 没有场景 ${scene}\n${USAGE}`);
+if ((options.record || options.fixture) && platform !== 'mac') throw new Error('存、回放会话数据只在 Mac 上');
+if (options.record && options.fixture) throw new Error('--record 和 --fixture 不能一起用');
+if (options.record) {
+  if (scenes.length) throw new Error('--record 不跑场景');
+  // 存的时候旧的那份整个换掉：已有的目录得是存过的会话数据，免得名字写成 . 或 .. 删错地方
+  const dir = fixtureDir(options.record);
+  if (existsSync(dir) && !existsSync(join(dir, 'manifest.json'))) throw new Error(`${dir} 不是存过的会话数据，不覆盖`);
+  // 只存不测：测量版做 record 这一步就交报告
+  scenes.push('record');
+} else {
+  if (!scenes.length) scenes.push(...known);
+  for (const scene of scenes) if (!known.includes(scene)) throw new Error(`${platform} 没有场景 ${scene}\n${USAGE}`);
+}
+if (!keywordsGiven && scenes.every((s) => s.startsWith('scroll'))) options.keywords = KEYWORDS.scroll;
+/** 回放的会话数据：各份的原文（事件流首帧），按台面上从左到右的次序。 */
+const fixture = options.fixture === undefined ? undefined : (() => {
+  const dir = fixtureDir(options.fixture);
+  const files = existsSync(dir) ? readdirSync(dir).filter((n) => /^\d+\.json$/.test(n)).sort((a, b) => parseInt(a) - parseInt(b)) : [];
+  if (!files.length) throw new Error(`${dir} 里没有会话数据（0.json、1.json…），先用 --record 存`);
+  return files.map((n) => readFileSync(join(dir, n)));
+})();
 if (platform !== 'mac' && !options.device) throw new Error(`${platform === 'ipad' ? 'iPad' : 'iPhone'} 要给 --device\n${USAGE}`);
 
 const ROOT = resolve(import.meta.dir, '..', '..', '..');
@@ -186,6 +217,7 @@ function appArgs(run: Run, variant: Build): string[] {
     ...(options.rounds ? ['-perfRounds', options.rounds] : []),
     ...(options.pairs ? ['-perfPairs', options.pairs] : []),
     ...(platform === 'mac' ? ['-perfWindowSize', options.window] : []),
+    ...(fixture ? ['-perfFixture', String(fixture.length)] : []),
     ...variant.args];
 }
 
@@ -201,9 +233,9 @@ async function exportProfile(trace: string, steps: number): Promise<Run['profile
   return profile(samples, intervals, options.keywords, steps);
 }
 
-/** 拖缝、侧栏的步数（Time Profiler 按每步摊）；别的场景为 0，按每段算。 */
+/** 拖缝、侧栏的步数，滚动的帧数（Time Profiler 按每步摊）；别的场景为 0，按每段算。 */
 const stepsOf = (report: Report | undefined) => (report?.segments ?? [])
-  .filter((s) => s.name === 'drag' || s.name === 'sidebar').reduce((n, s) => n + Math.max(s.ticks.length - 1, 0), 0);
+  .filter((s) => s.name === 'drag' || s.name === 'sidebar' || s.name.startsWith('scroll-')).reduce((n, s) => n + Math.max(s.ticks.length - 1, 0), 0);
 
 // MARK: - Mac
 
@@ -219,7 +251,14 @@ const server = platform === 'mac' ? Bun.serve({
   port: 0,
   async fetch(request) {
     const name = new URL(request.url).pathname.slice(1).replace(/[^\w.-]/g, '_');
-    if (request.method === 'GET') return new Response(null, { status: name === 'go' && receiver.go ? 200 : 204 });
+    if (request.method === 'GET') {
+      const part = /^fixture_(\d+)$/.exec(name);
+      if (part) {
+        const body = fixture?.[Number(part[1])];
+        return body ? new Response(body, { headers: { 'content-type': 'application/json' } }) : new Response(null, { status: 404 });
+      }
+      return new Response(null, { status: name === 'go' && receiver.go ? 200 : 204 });
+    }
     const body = new Uint8Array(await request.arrayBuffer());
     if (receiver.dir) writeFileSync(join(receiver.dir, name), body);
     if (name === 'ready.json') receiver.pid = (JSON.parse(new TextDecoder().decode(body)) as { pid: number }).pid;
@@ -453,9 +492,28 @@ if (platform === 'mac') {
 
 // MARK: - 出表
 
+if (options.record) {
+  // 存下来：各份原文和清单挪进会话数据的目录，旧的那份整个换掉
+  const run = runs[0]!;
+  const dir = fixtureDir(options.record);
+  const parts = existsSync(run.dir) ? readdirSync(run.dir).filter((n) => /^fixture-\d+\.json$/.test(n)) : [];
+  if (run.error || !parts.length || !existsSync(join(run.dir, 'fixture-manifest.json'))) {
+    console.error(`没存成：${run.error ?? '测量版没交会话数据'}（${run.dir}）`);
+    process.exit(1);
+  }
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  for (const part of parts) copyFileSync(join(run.dir, part), join(dir, part.replace(/^fixture-/, '')));
+  const manifest = JSON.parse(readFileSync(join(run.dir, 'fixture-manifest.json'), 'utf8')) as unknown[];
+  writeFileSync(join(dir, 'manifest.json'), `${JSON.stringify({ recorded: new Date().toISOString(), conversations: manifest }, null, 2)}\n`);
+  console.log(`存好了：${dir}\n${JSON.stringify(manifest, null, 2)}`);
+  process.exit(0);
+}
+
 const rows = summarize(runs);
 const failures = runs.filter((r) => r.error).map((r) => `- ${r.scene} · ${r.variant} · 第 ${r.repeat} 次：${r.error}`);
 const restored = [...new Set(runs.flatMap((r) => r.report?.restored ?? []))];
+const replayed = [...new Set(runs.flatMap((r) => r.report?.fixture ?? []))];
 let markdown = `# 性能测量 ${platform} ${stamp}\n\n${runs.find((r) => r.report)?.report?.platform ?? ''}，刷新率 ${runs.find((r) => r.report)?.report?.refreshRate ?? '?'} Hz\n\n${render(rows)}\n`;
 if (options.compare) {
   const before = JSON.parse(readFileSync(join(options.compare, 'summary.json'), 'utf8')) as { rows: Row[] };
@@ -463,6 +521,7 @@ if (options.compare) {
 }
 if (failures.length) markdown += `\n### 没测成的\n\n${failures.join('\n')}\n`;
 if (restored.length) markdown += `\n测完写回的设置：${restored.join('、')}\n`;
+if (fixture) markdown += `\n回放的会话数据：${options.fixture}（${replayed.join('；') || '报告里没有'}）\n`;
 writeFileSync(join(OUT, 'summary.md'), markdown);
 writeFileSync(join(OUT, 'summary.json'), `${JSON.stringify({ platform, stamp, scenes, variants: builds.map((b) => b.variant), rows }, null, 2)}\n`);
 console.log(`\n${markdown}\n结果：${OUT}`);

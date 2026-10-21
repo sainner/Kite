@@ -1,6 +1,8 @@
 #if os(iOS)
+import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// iPhone、iPad 会话窗口的输入区：玻璃和里面的内容，和玻璃一样大，圆角以外不接点按。原生会话窗口（PhoneThreadWindowView）
 /// 和紧凑布局的外壳直接挂它，拖缝改宽时只按宽度重摆。版式同 Mac 的输入区：输入框左右留 controlInset + 8、上下 6，
@@ -26,6 +28,10 @@ final class ControlsBarView: UIView {
     private let response = UIHostingController(rootView: AnyView(EmptyView()))
     /// 裁卡片的那一层和玻璃一样大：自己不接点按，卡片收起时下面的输入框照常点得中。
     private let responseClip = PassThroughView()
+    /// 待发的附件那一行，在输入框上面。
+    private let strip = DraftStripHost()
+    /// 照片、文件的选择器交回来的，见 AttachmentPickers。
+    private lazy var pickers = AttachmentPickers { [weak self] files in self?.controls?.attach(files: files) }
     /// 卡片正在显示的等待；没有时只有输入区。
     private var shownWaiting: String?
     private var responseKey: WaitingResponseKey?
@@ -86,10 +92,18 @@ final class ControlsBarView: UIView {
         responseClip.isHidden = true
         responseClip.addSubview(response.view)
         content.addSubview(responseClip)
+        strip.resized = { [weak self] in self?.contentChanged() }
+        content.insertSubview(strip.view, belowSubview: responseClip)
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
         attach.isEnabled = false
+        attach.showsMenuAsPrimaryAction = true
+        attach.menu = UIMenu(children: [
+            UIAction(title: "照片", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in self?.choose(photos: true) },
+            UIAction(title: "文件", image: UIImage(systemName: "folder")) { [weak self] _ in self?.choose(photos: false) },
+        ])
+        field.pasteImage = { [weak self] data in self?.controls?.attach(data: data, name: "图片.png") }
         previousButton.label = .symbol("arrow.left")
         previousButton.title = "上一题"
         previousButton.action = { [weak self] in self?.controls?.answering?.back() }
@@ -176,6 +190,9 @@ final class ControlsBarView: UIView {
         voice.foreground = listening ? .accentColor : .secondary
         voice.title = listening ? "结束语音输入" : "语音输入"
         voice.isEnabled = enabled
+        attach.isEnabled = enabled && controls.canAttach
+        field.acceptsImages = enabled && controls.canAttach
+        strip.show(controls.thread, environment: environment)
         primary.label = .symbol(controls.primaryAction.symbol)
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
@@ -195,6 +212,13 @@ final class ControlsBarView: UIView {
         // 失败提示
         if let error = controls.state.effortError { present("修改思考强度失败", error) { controls.state.effortError = nil } }
         if let error = controls.state.voiceError { present("无法开始语音输入", error) { controls.state.voiceError = nil } }
+    }
+
+    /// 回形针菜单里选了照片或文件：从最上面那一层弹出选择器。
+    private func choose(photos: Bool) {
+        guard controls?.canAttach == true, var host = window?.rootViewController else { return }
+        while let top = host.presentedViewController { host = top }
+        host.present(photos ? pickers.photos() : pickers.files(), animated: true)
     }
 
     /// 审批、密钥请求展开时按钮行左边的决定：换了一项（决定不同）才重建；回应途中都按不了，要存密钥的没填好值时按不了。
@@ -361,7 +385,7 @@ final class ControlsBarView: UIView {
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
+        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize, strip: strip.height(width: width))
     }
 
     /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批、密钥请求时是它们的决定。
@@ -403,8 +427,11 @@ final class ControlsBarView: UIView {
         // 有卡片时输入区贴着底边
         let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
+        if plan.strip > 0 {
+            place(strip.view, CGRect(x: Metrics.controlInset, y: Metrics.controlInset + dy, width: ComposerLayout.stripWidth(width), height: plan.strip))
+        }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
-        let top = ComposerLayout.fieldTop + dy
+        let top = plan.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: field.height(width: fieldWidth, text: field.text)))
         place(fadingView, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: plan.field))
 
@@ -474,4 +501,73 @@ final class ControlsBarView: UIView {
 
 /// 思考强度的托管视图，按里面报的理想大小摆。
 private typealias EffortHost = UIHostingController<AnyView>
+
+/// 回形针菜单里的两个选择器：照片（只要图片，可以多选）和文件（拷一份过来，可以多选）。选好的先拷进临时目录再交出去：
+/// 照片给的文件在回调结束后就没了。交出去以后由输入框那边再拷进它自己的暂存目录，这里的随即删掉。
+private final class AttachmentPickers: NSObject, PHPickerViewControllerDelegate, UIDocumentPickerDelegate {
+    private let picked: @MainActor ([URL]) -> Void
+
+    init(picked: @escaping @MainActor ([URL]) -> Void) { self.picked = picked }
+
+    func photos() -> UIViewController {
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        configuration.selectionLimit = WorkThread.maxAttachments
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = self
+        return picker
+    }
+
+    func files() -> UIViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.delegate = self
+        return picker
+    }
+
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+        guard !results.isEmpty else { return }
+        let directory = FileManager.default.temporaryDirectory.appending(path: "KitePicked/\(UUID().uuidString)")
+        let group = DispatchGroup()
+        let collected = Collected()
+        for (index, result) in results.enumerated() {
+            let provider = result.itemProvider
+            guard let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) else { continue }
+            // 名字用照片的名字，没有时按序号起
+            let name = provider.suggestedName ?? "照片 \(index + 1)"
+            group.enter()
+            // 在后台回调，回调返回以后这个文件就被删了，当场拷走
+            provider.loadFileRepresentation(forTypeIdentifier: type) { @Sendable url, _ in
+                defer { group.leave() }
+                if let url, let kept = Self.keep(url, name: name, in: directory.appending(path: "\(index)")) { collected.add(index, kept) }
+            }
+        }
+        group.notify(queue: .main) { [picked] in
+            MainActor.assumeIsolated { picked(collected.files) }
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    nonisolated private static func keep(_ url: URL, name: String, in directory: URL) -> URL? {
+        let target = directory.appending(path: name + (url.pathExtension.isEmpty ? "" : ".\(url.pathExtension)"))
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: target)
+            return target
+        } catch { return nil }
+    }
+
+    /// 几张照片各自在后台拷完，按选的先后排。
+    private nonisolated final class Collected: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [(Int, URL)] = []
+        func add(_ index: Int, _ url: URL) { lock.withLock { entries.append((index, url)) } }
+        var files: [URL] { lock.withLock { entries.sorted { $0.0 < $1.0 }.map(\.1) } }
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        MainActor.assumeIsolated { picked(urls) }
+    }
+}
 #endif

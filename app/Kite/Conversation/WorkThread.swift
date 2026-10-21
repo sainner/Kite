@@ -15,6 +15,10 @@ final class WorkThread: Identifiable {
     private(set) var hasTranscript = false
     private(set) var transcriptRoot = ""
     var draft = ""
+    /// 输入框里待发的附件，按选的先后；发送时连同草稿一起带走。
+    private(set) var draftAttachments: [DraftAttachment] = []
+    /// 所属工作区；附件按它上传、读取。
+    let workspaceID: String
     /// 草稿里选好的角色；已有代理的角色记在实例配置里。
     var role: AgentRole?
     var draftChoice: DraftAgentChoice?
@@ -118,13 +122,15 @@ final class WorkThread: Identifiable {
         title = instance.title
         self.project = project
         self.client = client
+        workspaceID = workspace.id
         transcript = Transcript(root: workspace.cwd)
         summarizeTranscript()
     }
 
     /// 尚未创建的会话沿用同一套工作区，只保存草稿，不制造后端记录。
-    init(workspace: String = "", project: String = "Kite") {
+    init(workspace: String = "", workspaceID: String = "", project: String = "Kite") {
         id = "draft-" + workspace
+        self.workspaceID = workspaceID
         tint = Palette.breeze
         title = "新代理"
         self.project = project
@@ -138,6 +144,41 @@ final class WorkThread: Identifiable {
         if hasTranscript != has { hasTranscript = has }
         if transcriptRoot != transcript.root { transcriptRoot = transcript.root }
     }
+
+    /// 对话里的附件到哪去取：连着工作机时是这个工作区。
+    var attachmentSource: AttachmentSource? { client.map { AttachmentSource(client: $0, workspace: workspaceID) } }
+
+    // MARK: - 待发的附件
+
+    /// 选好的文件放进输入框，当场开始传到 source。
+    func attach(_ items: [DraftAttachment], to source: AttachmentSource) {
+        for item in items {
+            draftAttachments.append(item)
+            item.upload(to: source)
+        }
+    }
+
+    /// 还能放几个：一条消息最多带 maxAttachments 个。
+    var attachmentRoom: Int { max(Self.maxAttachments - draftAttachments.count, 0) }
+
+    func removeAttachment(_ item: DraftAttachment) {
+        draftAttachments.removeAll { $0 === item }
+        item.discard()
+    }
+
+    /// 都传好了、没超过上限：可以发了。退回输入框的几条加起来可能超过上限，拿掉几个才能发。
+    var attachmentsReady: Bool { draftAttachments.count <= Self.maxAttachments && draftAttachments.allSatisfy { $0.uploaded != nil } }
+
+    /// 发送时带走输入框里的附件。
+    func takeAttachments() -> [Attachment] {
+        let taken = draftAttachments.compactMap(\.uploaded)
+        for item in draftAttachments { item.sent() }
+        draftAttachments = []
+        return taken
+    }
+
+    /// 同 kited 的 MAX_MESSAGE_ATTACHMENTS。
+    static let maxAttachments = 10
 
     func use(_ client: KitedClient) {
         guard self.client != client else { return }
@@ -300,7 +341,7 @@ final class WorkThread: Identifiable {
         if isDraft {
             outbox.removeAll { $0.id == message.id }
             render()
-            restoreDraft([message.typed])
+            restoreDraft([message])
             self.error = error
         } else if outbox.contains(where: { $0.id == message.id }) {
             markUnconfirmed(message, error)
@@ -322,8 +363,9 @@ final class WorkThread: Identifiable {
         Task {
             defer { sending.remove(message.id) }
             do {
-                try await client.post("/threads/\(id)/messages", body: SendBody(id: message.id, text: message.typed, confirmRecovery: confirmsRecovery,
-                                                                                 skipWaiting: skips[message.id]))
+                try await client.post("/threads/\(id)/messages", body: SendBody(id: message.id, text: message.typed,
+                                                                                 attachments: message.attachments.isEmpty ? nil : message.attachments.map(\.id),
+                                                                                 confirmRecovery: confirmsRecovery, skipWaiting: skips[message.id]))
                 skips[message.id] = nil
             } catch {
                 guard !returned.contains(message.id) else { return }
@@ -341,15 +383,20 @@ final class WorkThread: Identifiable {
                 outbox.removeAll { $0.id == message.id }
                 pending.removeAll { $0.id == message.id }
                 failed.remove(message.id)
-                if editing { restoreDraft([message.typed]) }
                 error = nil
+                if editing { restoreDraft([message]) }
                 render()
             } catch { self.error = error.localizedDescription }
         }
     }
 
-    private func restoreDraft(_ texts: [String]) {
+    /// 退回输入框：字接在草稿前面，附件排在已有的前面。
+    private func restoreDraft(_ messages: [Message]) {
+        let texts = messages.map(\.typed).filter { !$0.isEmpty }
         draft = (texts + (draft.isEmpty ? [] : [draft])).joined(separator: "\n\n")
+        let restored = messages.flatMap(\.attachments).filter { attachment in !draftAttachments.contains { $0.id == attachment.id } }
+        draftAttachments = restored.map { DraftAttachment(restoring: $0, source: attachmentSource) } + draftAttachments
+        if draftAttachments.count > Self.maxAttachments { error = "一条消息最多带 \(Self.maxAttachments) 个附件，拿掉几个再发" }
     }
 
     func stop() {
@@ -365,7 +412,7 @@ final class WorkThread: Identifiable {
     private func startStop() throws -> Task<Void, Error> {
         guard let client, !stopping else { throw KitedError(message: "代理尚不可停止，请刷新状态后重试") }
         var request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
-            RemoteInput(id: $0.id, text: $0.typed, source: "human")
+            RemoteInput(id: $0.id, text: $0.typed, source: "human", attachments: $0.attachments.isEmpty ? nil : $0.attachments)
         })
         request.confirmRecovery = confirmsRecovery
         // 同步冻结收据，点击停止后立即阻止继续发送或重复停止。
@@ -380,9 +427,9 @@ final class WorkThread: Identifiable {
                 outbox.removeAll { returned.contains($0.id) }
                 pending.removeAll { returned.contains($0.id) }
                 failed.subtract(returned)
-                restoreDraft(fresh.map(\.text))
                 stopRequest = nil
                 error = nil
+                restoreDraft(fresh.map(\.message))
                 render()
             } catch {
                 self.error = "停止尚未确认，请再次点停止重试：\(error.localizedDescription)"
@@ -482,7 +529,7 @@ final class WorkThread: Identifiable {
 
     /// 恢复阻塞时，用户发送、继续或停止就算确认旧执行已核查，由工作机先解除阻塞再处理。
     private var confirmsRecovery: Bool? { state?.recovery != nil ? true : nil }
-    private struct SendBody: Encodable { let id: String; let text: String; let confirmRecovery: Bool?; let skipWaiting: String? }
+    private struct SendBody: Encodable { let id: String; let text: String; let attachments: [String]?; let confirmRecovery: Bool?; let skipWaiting: String? }
     private struct ResumeBody: Encodable { let confirmRecovery: Bool? }
 }
 

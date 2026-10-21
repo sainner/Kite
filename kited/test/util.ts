@@ -106,6 +106,34 @@ export function commitMainline(checkout: string, files: Record<string, string>, 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+/** 一张 width×height 的 PNG：先手写 24 位 BMP（像素随坐标变化），再用 Bun.Image 编码。尺寸各不相同的几张能按尺寸认出是哪一张。 */
+export async function png(width: number, height: number): Promise<Buffer<ArrayBuffer>> {
+  const row = (width * 3 + 3) & ~3;
+  const bmp = Buffer.alloc(54 + row * height);
+  bmp.write('BM', 0);
+  bmp.writeUInt32LE(bmp.length, 2);
+  bmp.writeUInt32LE(54, 10);
+  bmp.writeUInt32LE(40, 14);
+  bmp.writeInt32LE(width, 18);
+  bmp.writeInt32LE(height, 22);
+  bmp.writeUInt16LE(1, 26);
+  bmp.writeUInt16LE(24, 28);
+  bmp.writeUInt32LE(row * height, 34);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const o = 54 + y * row + x * 3;
+      bmp[o] = (x * 40) & 255; bmp[o + 1] = (y * 40) & 255; bmp[o + 2] = ((x + y) * 20) & 255;
+    }
+  }
+  return Buffer.from(await new Bun.Image(bmp).png().bytes());
+}
+
+/** 解码图片（base64 正文或 data URL）得到的尺寸。 */
+export async function imageSize(data: string): Promise<{ width: number; height: number }> {
+  const { width, height } = await new Bun.Image(Buffer.from(data.replace(/^data:[^,]*,/, ''), 'base64')).metadata();
+  return { width, height };
+}
+
 /** 列出目录下所有文件（跳过顶层 .git），值为内容；符号链接记为 `-> 目标`。 */
 export function listTree(dir: string): Record<string, string> {
   const out: Record<string, string> = {};

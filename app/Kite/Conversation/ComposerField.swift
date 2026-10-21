@@ -13,6 +13,8 @@ final class ComposerField: NSTextField {
     var submit: (() -> Void)?
     /// 字变了（含组字中的字），交给草稿。
     var textChanged: ((String) -> Void)?
+    /// 粘贴、拖进来的东西先给它：收下了文件或图片当附件就返回真，否则照常当字处理。
+    var attachments: ((NSPasteboard) -> Bool)?
 
     /// 字段编辑器两边各留的行内边距，控件比布局宽两倍于它、往左挪它。
     static let fieldInset: CGFloat = 2
@@ -211,6 +213,18 @@ private final class ComposerEditor: NSTextView {
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
         field?.textChanged?(self.string)
+    }
+
+    /// 粘贴的是文件、截图这类：当附件，不把文件名或图片塞进字里。
+    override func paste(_ sender: Any?) {
+        if field?.attachments?(.general) == true { return }
+        super.paste(sender)
+    }
+
+    /// 拖进输入框的文件同样当附件，不插入路径。
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if field?.attachments?(sender.draggingPasteboard) == true { return true }
+        return super.performDragOperation(sender)
     }
 }
 #endif

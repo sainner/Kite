@@ -6,9 +6,9 @@ import { readClaudeControl } from '../../src/claude/control.ts';
 import { Runner } from '../../src/claude/runner.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { api, call, claudeModel, folderWorkspace, type Kited, mark, openAgent, startKited, waitRunner } from '../harness.ts';
+import { api, call, claudeModel, folderWorkspace, type Kited, mark, openAgent, putAttachment, startKited, waitRunner } from '../harness.ts';
 import { deferred } from '../harness-loop.ts';
-import { newRepo, transcript, until, writeFiles } from '../util.ts';
+import { imageSize, newRepo, png, transcript, until, writeFiles } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let k: Kited | undefined;
@@ -25,12 +25,22 @@ afterEach(async () => {
 
 const tag = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 
+/** 请求里各条消息带的图片块（含工具结果里的）的尺寸，按出现的先后。 */
+async function requestImages(messages: any[]): Promise<Array<{ width: number; height: number }>> {
+  const blocks = messages.flatMap((message) => Array.isArray(message.content) ? message.content : [])
+    .flatMap((block: any) => block.type === 'tool_result' && Array.isArray(block.content) ? block.content : [block])
+    .filter((block: any) => block.type === 'image');
+  return Promise.all(blocks.map((block: any) => imageSize(block.source.data)));
+}
+
 /*
  * 首请求挂起时发送的插话必须经 stdin 折入同一 CLI 的工具后请求，不能等 result 后再起回合。
  * 非 UUID 客户端输入要经过宿主映射到原生 SDK；取消以 SDK 收据为准，增量与最终事件仍归并成同一记录。
  * 工具配置、真实 MCP 的 callId/turnId、工具后通知与输入停止收据跨进程交接，类型或单独小测试不能确认。
+ * 依赖上游：CLI 2.1.280 把 SDK user 消息里的内容块数组（正文加 base64 图片）原样交给模型；回合中途经 stdin 来的带图消息
+ * 转成 queued_command（prompt 是内容块数组），折进工具后请求时图片仍是图片块。
  */
-test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消停止收据和流式历史跨重开保持，停止后的迟到窗口查询不能覆盖重开状态或启动排队与压缩', async () => {
+test('Claude 回合开头和插话带的图片附件都作为图片块交给模型，插话经 stdin 纳入同轮工具后请求，稳定输入、取消停止收据和流式历史跨重开保持，停止后的迟到窗口查询不能覆盖重开状态或启动排队与压缩', async () => {
   k = startKited();
   const kk = k;
   const querying = deferred();
@@ -51,7 +61,7 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
     && message.command_uuid === uuid && message.state === state;
   const waitLifecycle = (uuid: string, state: string) => kk.waitEvent((event) => event.type === 'sdk'
     && event.threadId === id && isLifecycle(event.message, uuid, state));
-  const submitQueued = async (input: { id: string; text: string }) => {
+  const submitQueued = async (input: { id: string; text: string; attachments?: string[] }) => {
     const since = mark(kk);
     expect((await kk.call('POST', `/threads/${id}/messages`, input)).status).toBe(200);
     const received = await kk.waitEvent((event) => kk.events.indexOf(event) >= since && event.type === 'sdk'
@@ -59,14 +69,22 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
     if (received.type !== 'sdk') throw new Error('缺少 SDK 排队确认');
     return (received.message as any).command_uuid as string;
   };
+  const uploaded = async (name: string, width: number, height: number) => {
+    const r = await putAttachment(kk, p.workspace.id, randomUUID(), name, await png(width, height));
+    expect(r.status).toBe(200);
+    return r.body.id as string;
+  };
+  const opening = await uploaded('开头.png', 6, 4);
+  const interjected = await uploaded('插话.png', 5, 7);
   const firstHold = tag('首个工具请求');
-  const first = { id: 'client-input-without-uuid', text: `HOLD ${firstHold}\nREAD {"path":"a.txt"}\nSTREAM_RESULT ${streamingTag}` };
+  const first = { id: 'client-input-without-uuid', text: `HOLD ${firstHold}\nREAD {"path":"a.txt"}\nSTREAM_RESULT ${streamingTag}`, attachments: [opening] };
   const firstReply = await kk.call('POST', `/threads/${id}/messages`, first);
   expect(firstReply.status).toBe(200);
   expect(await kk.call('POST', `/threads/${id}/messages`, first)).toEqual(firstReply);
   const firstRequest = await api.held(firstHold);
   expect(firstRequest.toolUseIds).toHaveLength(1);
   expect(JSON.stringify(firstRequest.body)).toContain(oldRule);
+  expect(await requestImages(firstRequest.body.messages)).toEqual([{ width: 6, height: 4 }]);
   writeFiles(p.workspace.cwd, { 'AGENTS.md': updatedRule });
   const cancelled = { id: 'cancel-in-sdk-queue', text: tag('取消消息') };
   const cancelledUuid = await submitQueued(cancelled);
@@ -80,6 +98,8 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   ];
   const nativeIds: string[] = [];
   for (const input of interjections) nativeIds.push(await submitQueued(input));
+  const pictured = { id: 'mid-turn-image', text: tag('带图插话'), attachments: [interjected] };
+  await submitQueued(pictured);
   expect((await kk.call('POST', `/threads/${id}/messages`, interjections[0])).status).toBe(200);
   api.release(firstHold);
   const folded = await api.held(streamingTag);
@@ -87,7 +107,8 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   expect(folded.body.system).toEqual(firstRequest.body.system);
   expect(modelMessages).toContain(updatedRule);
   expect(JSON.stringify(firstRequest.body)).not.toContain(updatedRule);
-  for (const input of interjections) expect(modelMessages.split(input.text)).toHaveLength(2);
+  for (const input of [...interjections, pictured]) expect(modelMessages.split(input.text)).toHaveLength(2);
+  expect(await requestImages(folded.body.messages)).toEqual([{ width: 6, height: 4 }, { width: 5, height: 7 }]);
   expect(modelMessages).not.toContain(cancelled.text);
   expect(sdkMessages().filter((message) => message.type === 'result')).toHaveLength(0);
   expect(sdkMessages().filter((message) => message.type === 'system' && message.subtype === 'init')).toHaveLength(1);
@@ -110,7 +131,13 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   expect(texts[0]!.generation).toBe('complete');
   expect(complete.records.filter((record) => record.block.type === 'human' && record.block.id === first.id)).toHaveLength(1);
   expect(complete.records.flatMap((record) => record.block.type === 'human' ? [record.block.id] : []).sort())
-    .toEqual([first.id, ...interjections.map((input) => input.id)].sort());
+    .toEqual([first.id, ...interjections.map((input) => input.id), pictured.id].sort());
+  // 记录里的人消息是原文，附件另列，不带交给模型的附件说明。
+  for (const input of [first, pictured]) {
+    const block = complete.records.find((record) => record.block.type === 'human' && record.block.id === input.id)!.block;
+    expect(block.type === 'human' && { text: block.text, attachments: block.attachments?.map((ref) => ref.id) })
+      .toEqual({ text: input.text, attachments: input.attachments });
+  }
   for (const [index, input] of interjections.entries()) {
     expect(complete.records.filter((record) => record.block.type === 'human' && record.block.id === input.id)).toHaveLength(1);
     const replay = sdkMessages().filter((message) => message.type === 'user' && message.isReplay && message.uuid === nativeIds[index]);
@@ -193,19 +220,20 @@ test('Claude 插话经 stdin 纳入同轮工具后请求，稳定输入、取消
   expect(api.log.some((entry) => entry.main && entry.lastUserText.includes(queuedAtQuery.text))).toBe(false);
   expect(restored.body.pending).toEqual([]);
   expect(restored.body.state.phase).toBe('idle');
-  const humanIds = [first.id, ...interjections.map((input) => input.id), operation.id];
+  const humanIds = [first.id, ...interjections.map((input) => input.id), pictured.id, operation.id];
   expect(restored.body.records.flatMap((record: any) => record.block.type === 'human' && !humanIds.includes(record.block.id)
     ? [record.block] : [])).toEqual([]);
   const thread = (await call(reopened.url, 'GET', `/threads/${id}`)).body;
   const native = transcript(thread.nativeId);
-  for (const input of [first, ...interjections, operation]) {
+  for (const input of [first, ...interjections, pictured, operation]) {
     expect(restored.body.records.filter((record: any) => record.block.type === 'human' && record.block.id === input.id)).toHaveLength(1);
   }
   // 原生中途插话保存为 attachment；有独立 user/assistant 行的消息必须用各自原生时间。
   for (const input of [first, operation]) {
     const record = restored.body.records.find((record: any) => record.block.type === 'human' && record.block.id === input.id);
+    // 带附件的正文后面接着附件说明。
     const original = native.find((entry) => entry.type === 'user' && (typeof entry.message.content === 'string'
-      ? entry.message.content : entry.message.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')) === input.text);
+      ? entry.message.content : entry.message.content.filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n')).startsWith(input.text));
     expect(original).toBeDefined();
     expect(record.at).toBe(Date.parse(original.timestamp));
   }

@@ -35,6 +35,7 @@ struct ThreadPane: View {
         // 指针移到标题栏、输入区上时图案照样跟着
         .modifier(ThreadPatternPointer(slot: pane.patternSlot))
         .environment(\.workingDirectory, thread.transcriptRoot)
+        .environment(\.attachmentSource, thread.attachmentSource)
         .modifier(ThreadPaneSupport(pane: pane))
     }
 

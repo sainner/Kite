@@ -230,7 +230,7 @@ Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、�
 
 Claude Code 进程随实例常驻：首次需要时启动，回合结束后不退出，在实例归档、切换后端、手动停止或 kited 退出时结束；回合之间意外退出的，下一条消息到来时恢复原生会话。运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回、停止与异常恢复遵守 [会话状态机](会话状态机.md#手动停止与消息交接)；已有原生记录不能重复投递，未知执行效果不能自动重放。
 
-App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示协议.md#当前边界)。搜索网页、定时任务、原生 Claude 子 agent 和附件尚未开放。Kite 工具受沙箱限制不表示整个 Claude SDK 进程已被隔离。
+App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示协议.md#当前边界)。搜索网页、定时任务和原生 Claude 子 agent 尚未开放。Kite 工具受沙箱限制不表示整个 Claude SDK 进程已被隔离。
 
 ### 附加功能清单
 
@@ -360,12 +360,13 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 与 grants 整体更新，代理的协作范围是其中几项授权共用的目标 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例的视图（实例已有窗口时换到这个视图）；请求使用稳定 id |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, windowId?, messageId?}`；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, windowId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
 | GET | `/threads/:id/raw` | 调试查看原生记录，只读：harness 的 journal 与 Claude 的会话文件逐条原样给出，两份各按文件顺序、按时间交错。`?journal=&claude=` 是上次读到的条数，省略为 0；返回 `{journal, claude, reset, entries}`，每条 `{source, index, at, label, text}`，`text` 是缩进好的原文，图片的 base64 换成占位；起点超出现有条数（记录被整份换掉）时 `reset` 为 true、从头给。格式随后端与 CLI 版本变，不是稳定契约 |
-| POST | `/threads/:id/messages` | 发消息 `{text, id?, relay?, confirmRecovery?}`，返回 `{id}`；`confirmRecovery: true` 先确认恢复再发送，只用于 App 里用户的发送，带 `X-Kite-Source` 时拒绝；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
+| PUT / GET / DELETE | `/workspaces/:id/attachments/:attachment` | 上传、读取（`?size=` 取缩略图）、删除还没发出的消息附件，语义见 [会话显示协议](会话显示协议.md#附件) |
+| POST | `/threads/:id/messages` | 发消息 `{text, id?, attachments?, relay?, confirmRecovery?}`，返回 `{id}`；`attachments` 是这个工作区里存好的附件 ID，只有人发的消息能带；`confirmRecovery: true` 先确认恢复再发送，只用于 App 里用户的发送，带 `X-Kite-Source` 时拒绝；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
 | POST | `/threads/:id/messages/:message/cancel` | 按后端能力撤回尚未交接的输入 |
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?, confirmRecovery?}`，响应 `{returned}`；`confirmRecovery: true` 先确认恢复再停止 |
 | POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试，`confirmRecovery: true` 先确认恢复再继续 |

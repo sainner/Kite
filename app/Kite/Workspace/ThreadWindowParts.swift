@@ -29,6 +29,7 @@ extension ThreadPaneModel {
         let selection = Binding<RowID?>(get: { self.selected }, set: { self.selected = $0 })
         environment.selectedRow = selection
         environment.workingDirectory = thread.transcriptRoot
+        environment.attachmentSource = thread.attachmentSource
         return TranscriptRowContext(environment: environment, actionable: true, toggleActions: { selection.toggle($0) })
     }
 }
@@ -65,6 +66,7 @@ struct ThreadIslandEnvironment: ViewModifier {
         content
             .environment(\.selectedRow, $model.selected)
             .environment(\.workingDirectory, thread.transcriptRoot)
+            .environment(\.attachmentSource, thread.attachmentSource)
             .modifier(PaneHeaderEnvironment(header: header, group: group, pane: pane))
             .environment(\.paneInstance, area.windows.first(where: { $0.id == pane.id }).flatMap { window in
                 area.instances.first { $0.id == window.target.instanceId }

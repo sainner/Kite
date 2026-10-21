@@ -601,7 +601,8 @@ final class AppModel {
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
                                       tools: choice?.tools, approval: choice?.approval, windowId: window,
-                                      messageId: message.id), as: RemoteThread.self)
+                                      messageId: message.id, attachments: message.attachments.isEmpty ? nil : message.attachments.map(\.id)),
+            as: RemoteThread.self)
         // 读回的窗口指向新实例，草稿对象由 WorkArea.update 认领，接着当这个代理
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }

@@ -5,7 +5,9 @@
 
 export interface Mark { wall: number; cpu: number; process: number }
 export interface Tick { time: number; wall: number; cpu: number; widths: number[] }
-export interface Segment { name: string; index: number; start: Mark; ticks: Tick[]; end?: Mark; settleCpuMs?: number; began?: number }
+export interface Segment {
+  name: string; index: number; start: Mark; ticks: Tick[]; end?: Mark; settleCpuMs?: number; began?: number; unmeasured?: number;
+}
 export interface Report {
   scene: string;
   run?: string;
@@ -20,6 +22,7 @@ export interface Report {
   failure?: string;
   segments: Segment[];
   restored: string[];
+  fixture?: string[];
 }
 
 /** Time Profiler 在测量区间里的主线程：合计、按关键词分的各项（见 profile），毫秒；steps 是区间里拖了多少步。 */
@@ -104,6 +107,29 @@ function switching(segment: Segment) {
   };
 }
 
+/**
+ * 滚动的一段：每帧主线程的平均和 p90、帧间隔、丢帧（按屏幕刷新间隔算）、最长一帧，实际滚了多快（可见区顶边，点每秒），
+ * 开滚时没量准的行，停下后 1.2 秒的主线程。widths 里是 [可见区顶边, 文档高]。
+ */
+function scrolling(segment: Segment, frame: number) {
+  const ticks = segment.ticks;
+  const intervals = diffs(ticks.map((t) => t.time * 1000));
+  const cpu = diffs(ticks.map((t) => t.cpu));
+  const first = ticks[0], last = ticks.at(-1);
+  const seconds = first && last ? last.time - first.time : 0;
+  return {
+    '每帧主线程': cpu.length ? sum(cpu) / cpu.length : NaN,
+    '每帧主线程 p90': percentile(cpu, 0.9),
+    '帧间隔中位': median(intervals),
+    '帧间隔 p90': percentile(intervals, 0.9),
+    '丢帧': sum(intervals.map((x) => Math.max(0, Math.round(x / frame) - 1))),
+    '最长帧': intervals.length ? Math.max(...intervals) : NaN,
+    '速度': seconds > 0 ? Math.abs(last!.widths[0]! - first!.widths[0]!) / seconds : NaN,
+    '没量准的行': segment.unmeasured ?? NaN,
+    '停下后主线程': segment.settleCpuMs ?? NaN,
+  };
+}
+
 function idle(segment: Segment) {
   const end = segment.end!;
   const seconds = end.wall - segment.start.wall;
@@ -169,6 +195,9 @@ export function summarize(runs: Run[]): Row[] {
     }
     for (const name of ['enter', 'back']) {
       if (named(name).length) rows.push(combine('切工作区', `${scene} ${name}`, variant, named(name).map(switching), ['整段主线程']));
+    }
+    for (const [name, label] of [['scroll-up', '往上'], ['scroll-down', '往下']] as const) {
+      if (named(name).length) rows.push(combine('滚动', `${scene} ${label}`, variant, named(name).map((s) => scrolling(s, frame)), ['每帧主线程', '丢帧']));
     }
     if (named('idle').length) rows.push(combine('静息占用', scene, variant, named('idle').map(idle), ['主线程 %']));
     if (named('key').length) {

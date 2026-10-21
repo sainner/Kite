@@ -4,11 +4,12 @@
  */
 import { afterEach, expect, setDefaultTimeout, test } from 'bun:test';
 import type { AgentDefinition } from '../../src/agents/definition.ts';
+import { responsesInput } from '../../src/harness/responses.ts';
 import type { ContextItem, ModelItem } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
-import { after, api, folderWorkspace, type Kited, mark, openAgent, startKited } from '../harness.ts';
+import { after, api, folderWorkspace, type Kited, mark, openAgent, putAttachment, startKited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
-import { newDir, transcript } from '../util.ts';
+import { imageSize, newDir, png, transcript } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let kited: Kited | undefined;
@@ -21,14 +22,26 @@ const said = (id: string, text: string): ModelItem => ({
 });
 const count = (haystack: string, needle: string) => haystack.split(needle).length - 1;
 const inputIds = (history: ContextItem[]) => history.flatMap((entry) => entry.type === 'input' ? [entry.input.id] : []);
+/** Claude 请求里各条消息带的图片块的尺寸，按出现的先后。 */
+const claudeImages = (messages: Array<{ content: any }>) => Promise.all(messages
+  .flatMap((message) => Array.isArray(message.content) ? message.content : []).filter((block) => block.type === 'image')
+  .map((block) => imageSize(block.source.data)));
+/** harness 请求按 Responses 格式交给模型时，正文含 marker 的那条用户消息带的图片的尺寸。 */
+const harnessImages = (history: ContextItem[], marker: string) => {
+  const user = responsesInput(history).find((message) => message.role === 'user'
+    && JSON.stringify(message.content).includes(marker));
+  const parts = (user?.content ?? []) as Array<{ type: string; image_url?: string }>;
+  return Promise.all(parts.filter((part) => part.type === 'input_image').map((part) => imageSize(part.image_url!)));
+};
 
 // 依赖上游：Claude Code（SDK 0.3.280 自带的 CLI 2.1.280）resume 时读取 Kite 追加到会话 jsonl 的合成条目，并按原样发给模型；
 // 会话末尾追加的合成压缩分界（system/compact_boundary）使它丢弃分界之前的条目，并按最后一条 last-prompt 选择接续的叶子；
-// 能力目录查询只做 SDK 初始化，不发模型请求。
+// 能力目录查询只做 SDK 初始化，不发模型请求；Kite 合成的 user 条目 content 是内容块数组（正文加 base64 图片）时，CLI 读入并把图片交给模型；
+// CLI 收下带图片的 user 消息后，紧跟着另写一条 isMeta、turnCompanion 的 user 条目「[Image: source: <CLI 存图的路径>]」，导入 harness 时它不是一条输入。
 // 配合：HTTP 配置、两份原生记录的增量交接、harness journal 重放与压缩、压缩后整体重组 Claude 会话、
 // 显示投影拼接（去掉重组条目、按导入标记排序）与输入 id 去重，单看各部分都确认不了。
 // 回归：CLI 因前缀失配写出的 thinking_stripped 曾使导入报错；收据后的重组不能复活已删除的签名块。
-test('来回切换后端时双方都按顺序看到对方各段一次，harness 压缩后切到 Claude 只接续压缩后的上下文，配置边界跟随后端而模型目录不变，显示不重复且旧输入 id 不再投递', async () => {
+test('来回切换后端时双方都按顺序看到对方各段一次，人消息带的图片随段交给对方，harness 压缩后切到 Claude 只接续压缩后的上下文，配置边界跟随后端而模型目录不变，显示不重复且旧输入 id 不再投递', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const k = kited;
@@ -45,6 +58,15 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   const claudeAgent: AgentDefinition = { ...harnessAgent, runtime: 'claude', model: { model: 'sonnet', reasoning: 'high' } };
   const harnessCapabilities = await k.call('GET', capabilitiesPath);
   expect(harnessCapabilities.status).toBe(200);
+  const uploaded = async (name: string, width: number, height: number) => {
+    const r = await putAttachment(k, workspace.workspace.id, crypto.randomUUID(), name, await png(width, height));
+    expect(r.status).toBe(200);
+    return r.body.id as string;
+  };
+  // 两张图按尺寸认：第一段 harness 的 6×4，第二段 Claude 的 3×5。
+  const harnessPicture = await uploaded('第一段.png', 6, 4);
+  const claudePicture = await uploaded('第二段.png', 3, 5);
+  const pictures = [{ width: 6, height: 4 }, { width: 3, height: 5 }];
   const idle = (since: number) => k.waitEvent((e) => e.type === 'idle' && e.threadId === id && after(k, since)(e));
   const history = async () => {
     const result = await k.call('GET', `/threads/${id}/history`);
@@ -60,7 +82,7 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
 
   // 第一段：harness 读一次文件再回复。
   let since = mark(k);
-  expect((await k.call('POST', `/threads/${id}/messages`, { id: 'harness-1', text: '第一段由自研后端读取基线' })).status).toBe(200);
+  expect((await k.call('POST', `/threads/${id}/messages`, { id: 'harness-1', text: '第一段由自研后端读取基线', attachments: [harnessPicture] })).status).toBe(200);
   const first = await model.call(1);
   await first.response.emit({ type: 'item', item: { ...item('harness-read', 'read'), call: { id: 'harness-read', name: 'read', arguments: { path: 'base.txt' } } } });
   first.response.complete();
@@ -80,7 +102,8 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect(api.log).toHaveLength(beforeClaude);
   since = mark(k);
   api.thinkingNext([firstThinking], (entry) => entry.lastUserText.includes('第二段交给 Claude'));
-  expect((await k.call('POST', `/threads/${id}/messages`, { id: 'claude-1', text: '第二段交给 Claude\nREAD {"path":"base.txt"}' })).status).toBe(200);
+  const claudeInput = { id: 'claude-1', text: '第二段交给 Claude\nREAD {"path":"base.txt"}', attachments: [claudePicture] };
+  expect((await k.call('POST', `/threads/${id}/messages`, claudeInput)).status).toBe(200);
   const claudeFirst = await api.waitRequest((l) => l.main && l.lastUserText.includes('第二段交给 Claude'));
   const sent = JSON.stringify(claudeFirst.body.messages);
   expect(count(sent, '第一段由自研后端读取基线')).toBe(1);
@@ -90,6 +113,8 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect(blocks).toContainEqual(expect.objectContaining({ type: 'tool_use', id: 'harness-read', name: 'read', input: { path: 'base.txt' } }));
   const harnessResult = blocks.find((block) => block.type === 'tool_result' && block.tool_use_id === 'harness-read');
   expect(JSON.stringify(harnessResult)).toContain('基线文件正文');
+  // 第一段的图片在合成的条目里，第二段的在 Claude 自己的消息里。
+  expect(await claudeImages(messages)).toEqual(pictures);
   await idle(since);
   const claudeRead = api.log.slice(beforeClaude).flatMap((l) => l.toolUseIds)[0]!;
   expect(claudeRead).toStartWith('toolu_');
@@ -98,10 +123,13 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   await switchTo(harnessAgent);
   expect((await k.call('GET', capabilitiesPath)).body).toEqual(harnessCapabilities.body);
   since = mark(k);
-  await k.call('POST', `/threads/${id}/messages`, { id: 'claude-1', text: '第二段交给 Claude\nREAD {"path":"base.txt"}' });
+  await k.call('POST', `/threads/${id}/messages`, claudeInput);
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'harness-2', text: '第三段回到自研后端' })).status).toBe(200);
   const third = await model.call(3);
   const seen = third.request.history;
+  // Claude 原生消息里的图片块还原成这条输入的图片。
+  expect(await harnessImages(seen, '第一段由自研后端读取基线')).toEqual([pictures[0]!]);
+  expect(await harnessImages(seen, '第二段交给 Claude')).toEqual([pictures[1]!]);
   expect(inputIds(seen)).toEqual(['harness-1', 'claude-1', 'harness-2']);
   expect(seen.filter((entry) => entry.type === 'output' && entry.item.call?.id === 'harness-read')).toHaveLength(1);
   expect(seen.filter((entry) => entry.type === 'output' && entry.item.id === 'harness-said')).toHaveLength(1);
@@ -145,6 +173,7 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   }
   expect(resent.indexOf('第二段交给 Claude')).toBeLessThan(resent.indexOf('第三段回到自研后端'));
   expect(resent.indexOf('自研后端第三段的回复')).toBeLessThan(resent.indexOf('第四段再交给 Claude'));
+  expect(await claudeImages(claudeAgain.body.messages)).toEqual(pictures);
   await idle(since);
   const retry = api.log.filter((entry) => entry.main && entry.lastUserText.includes('第四段再交给 Claude'));
   expect(retry).toHaveLength(2);
@@ -195,6 +224,8 @@ test('来回切换后端时双方都按顺序看到对方各段一次，harness 
   expect(at('第三段的压缩摘要正文')).toBeLessThan(at('第四段再交给 Claude'));
   expect(at('第四段再交给 Claude')).toBeLessThan(at('第五段回到自研后端'));
   expect(at('自研后端第五段的回复')).toBeLessThan(at('第六段在压缩后交给 Claude'));
+  // 整体重组后两张图仍各一张：第二段的图经 harness 导入后再合成回 Claude。
+  expect(await claudeImages(rebased.body.messages)).toEqual(pictures);
   await idle(since);
 
   // 显示不受重组影响：两份原生记录的各段都在、按顺序、不重复，重组合成的条目和 Claude 的分界不出现。

@@ -133,14 +133,34 @@ struct Message: Identifiable {
         guard let command else { return text }
         return text.isEmpty ? command : command + " " + text
     }
+
+    /// 只带附件、没写字：气泡上只有附件那一行，不画空气泡。
+    var attachmentsOnly: Bool { text.isEmpty && command == nil && !attachments.isEmpty }
 }
 
-/// 消息带的附件。
-enum Attachment {
-    /// 图片。记录里是图片数据，假数据只有名字和尺寸。
-    case image(name: String, width: Int, height: Int)
-    /// 其他文件，比如 PDF、表格。
-    case file(name: String)
+/// 消息带的附件：工作机上存好的那一份的描述（kited 的 AttachmentRef）。内容按 ID 从工作区的附件接口取，同一个 ID 的内容不会变。
+struct Attachment: Codable, Hashable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let mediaType: String
+    let size: Int
+    /// 原图的尺寸，只有工作机解得开的图片才有。
+    var width: Int? = nil
+    var height: Int? = nil
+
+    var isImage: Bool { width != nil && height != nil }
+
+    var icon: String { Self.icon(forName: name) }
+
+    /// 文件卡片上的图标，按扩展名。
+    static func icon(forName name: String) -> String {
+        switch (name as NSString).pathExtension.lowercased() {
+        case "pdf": "doc.richtext"
+        case "csv", "xlsx", "xls", "numbers": "tablecells"
+        case "zip": "doc.zipper"
+        default: "doc"
+        }
+    }
 }
 
 struct ToolUse {

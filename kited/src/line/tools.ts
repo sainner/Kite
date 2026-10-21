@@ -3,9 +3,10 @@
  * 动作须在 Line 实例的 line 授权白名单里；停止、归档、创建、流转是必问动作，执行前在 Line 的线程上挂起等用户批准，
  * 与审批模式无关（docs/工具审批与提问.md）。代处理只能处理交给 Line 的收件箱事项，不能处理 Line 自己发起的请求。
  */
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
-import type { InputVia, JsonObject, Tool, ToolResult } from '../harness/types.ts';
+import type { AttachmentRef, InputVia, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import type { MachineSummary } from '../kite.ts';
 import { operationGrantsSchema, type LineAction } from '../operations/contract.ts';
 import type { Store } from '../store.ts';
@@ -29,6 +30,12 @@ const workspaceArgs = z.object({ action: z.enum(['create', 'transfer']), machine
 
 type ToolContext = Parameters<Tool['execute']>[1];
 
+/** 由 seed 定下的附件 ID，写成 UUID 的样子。 */
+function derivedId(seed: string): string {
+  const hex = createHash('sha256').update(seed).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 export interface LineToolOptions {
   store: Store;
   peers: Peers;
@@ -36,7 +43,9 @@ export interface LineToolOptions {
   instanceId: string;
   monitor: LineMonitor;
   /** Line 线程里用户的一条消息；省略 ID 时是最近的一条。 */
-  message(inputId?: string): Promise<{ id: string; text: string } | undefined>;
+  message(inputId?: string): Promise<{ id: string; text: string; attachments?: AttachmentRef[] } | undefined>;
+  /** Line 所在工作区里一个附件原件的位置。 */
+  attachment(id: string): string;
   /** 在 Line 的线程上挂起，等用户批准这一次或拒绝；会话停止时为 undefined。 */
   approve(request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision | undefined>;
 }
@@ -48,6 +57,18 @@ export function lineTools(options: LineToolOptions): Tool[] {
   const allowed = (action: LineAction) => {
     const grants = operationGrantsSchema.parse(store.instance(instanceId)?.config.grants ?? []);
     if (!grants.some((grant) => grant.operation === 'line' && grant.actions.includes(action))) throw new KiteError(`Line 未获准执行 ${action}，请用户在 Line 的协作授权里打开`);
+  };
+  /**
+   * 把用户消息带的附件传到目标线程所在的工作区；附件 ID 由转达的键决定，重试时对端认得出是同一份。
+   */
+  const relayAttachments = async (target: string, threadId: string, key: string, attachments: AttachmentRef[], signal: AbortSignal) => {
+    const { workspaceId } = await peers.call<{ workspaceId: string }>(target, 'GET', `/threads/${threadId}`, { signal });
+    return Promise.all(attachments.map(async (ref) => {
+      const id = derivedId(`${key}:${ref.id}`);
+      await peers.call(target, 'PUT', `/workspaces/${workspaceId}/attachments/${id}?name=${encodeURIComponent(ref.name)}`,
+        { file: Bun.file(options.attachment(ref.id)), via, signal, timeoutMs: 600_000 });
+      return id;
+    }));
   };
   /** 必问动作：用户批准这一次才往下执行，拒绝或会话停止都不执行。 */
   const mustAsk = async (tool: string, target: string, context: ToolContext) => {
@@ -145,14 +166,18 @@ export function lineTools(options: LineToolOptions): Tool[] {
       if (done) return { relayed: done, duplicate: true };
       const state = await peers.call<DisplayState>(args.machine, 'GET', `/threads/${args.threadId}/state`, { signal: context.signal });
       if (state.waiting?.kind === 'approval') throw new KiteError('这个线程在等审批，用户的话不能当作批准；请用户在收件箱里回应，或把这一项交给你代处理');
+      const attachments = message.attachments ?? [];
       const question = state.asks?.find((ask) => ask.kind === 'question');
-      if (question?.kind === 'question') {
+      // 提问的回答只收文字，带附件的照常作为一条消息转达。
+      if (question?.kind === 'question' && !attachments.length) {
         await peers.call(args.machine, 'POST', `/threads/${args.threadId}/waiting/${question.id}`, {
           body: { answers: question.questions.map(() => ({ other: message.text })) }, via, signal: context.signal });
         monitor.markRelayed(key, 'answered');
         return { relayed: 'answered' };
       }
-      await peers.call(args.machine, 'POST', `/threads/${args.threadId}/messages`, { body: { text: message.text, id: `relay:${key}`, relay: true }, via, signal: context.signal, timeoutMs: 120_000 });
+      const ids = attachments.length ? await relayAttachments(args.machine, args.threadId, key, attachments, context.signal) : [];
+      await peers.call(args.machine, 'POST', `/threads/${args.threadId}/messages`, { body: { text: message.text, id: `relay:${key}`, relay: true,
+        ...(ids.length ? { attachments: ids } : {}) }, via, signal: context.signal, timeoutMs: 120_000 });
       monitor.markRelayed(key, 'sent');
       return { relayed: 'sent' };
     }),

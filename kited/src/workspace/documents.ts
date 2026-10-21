@@ -10,8 +10,11 @@ import type { ToolImage } from '../harness/types.ts';
 
 export type FileKind = 'text' | 'image' | 'pdf';
 
-/** 长边上限与 OpenAI high 细节的缩放一致；字节上限保证 base64 后低于 Claude 单图 5 MB。 */
-const MAX_EDGE = 2048;
+/**
+ * 长边上限取 Claude 一次请求超过 20 张图时的单图上限（OpenAI high 细节按 2048 缩放，差别可以忽略）；
+ * 字节上限保证 base64 后低于 Claude 单图 5 MB。
+ */
+const MAX_EDGE = 2000;
 const MAX_IMAGE_BYTES = 3_750_000;
 const MAX_IMAGE_FILE = 32 * 1024 * 1024;
 const MAX_PDF_FILE = 100 * 1024 * 1024;
@@ -49,7 +52,7 @@ function readLimited(path: string, max: number, label: string): Buffer {
 export interface ModelImage { image: ToolImage; width: number; height: number; source: { width: number; height: number; format: string } }
 
 /** 尺寸与格式已合适时原样附上，否则缩放并重新编码；有损格式只在 PNG 等仍超限时才用。 */
-export async function modelImage(bytes: Uint8Array): Promise<ModelImage> {
+export async function modelImage(bytes: Uint8Array, maxBytes = MAX_IMAGE_BYTES): Promise<ModelImage> {
   const source = await new Bun.Image(bytes).metadata();
   const scale = Math.min(1, MAX_EDGE / Math.max(source.width, source.height));
   const width = Math.max(1, Math.round(source.width * scale));
@@ -57,21 +60,22 @@ export async function modelImage(bytes: Uint8Array): Promise<ModelImage> {
   const result = (data: Uint8Array, format: 'png' | 'jpeg' | 'webp'): ModelImage =>
     ({ image: { mediaType: `image/${format}`, data: Buffer.from(data).toString('base64') }, width, height, source });
   const native = source.format === 'png' || source.format === 'jpeg' || source.format === 'webp' ? source.format : undefined;
-  if (native && scale === 1 && bytes.length <= MAX_IMAGE_BYTES) return result(bytes, native);
+  if (native && scale === 1 && bytes.length <= maxBytes) return result(bytes, native);
   const resized = () => new Bun.Image(bytes).resize(width, height, { fit: 'inside' });
   const format = native ?? (['heic', 'avif'].includes(source.format) ? 'jpeg' : 'png');
   if (format !== 'jpeg') {
     const encoded = await (format === 'png' ? resized().png() : resized().webp({ quality: 90 })).bytes();
-    if (encoded.length <= MAX_IMAGE_BYTES) return result(encoded, format);
+    if (encoded.length <= maxBytes) return result(encoded, format);
   }
   const encoded = await resized().jpeg({ quality: 85 }).bytes();
-  if (encoded.length > MAX_IMAGE_BYTES) throw new KiteError('图片压缩后仍然过大，无法附给模型');
+  if (encoded.length > maxBytes) throw new KiteError('图片压缩后仍然过大，无法附给模型');
   return result(encoded, 'jpeg');
 }
 
-export async function readImage(path: string): Promise<ModelImage> {
+/** maxBytes 是交给模型的那份最多多少字节。 */
+export async function readImage(path: string, maxBytes = MAX_IMAGE_BYTES): Promise<ModelImage> {
   const bytes = readLimited(path, MAX_IMAGE_FILE, '图片');
-  try { return await modelImage(bytes); }
+  try { return await modelImage(bytes, maxBytes); }
   catch (error) {
     if (error instanceof KiteError) throw error;
     throw new KiteError(`图片无法解码：${error instanceof Error ? error.message : String(error)}`);

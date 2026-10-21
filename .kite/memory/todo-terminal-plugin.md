@@ -1,11 +1,11 @@
 ---
 name: todo-terminal-plugin
-description: 终端插件已实现后仍未决的事：真机验收、旁观设备的尺寸、终端能否跨 kited 重启存活、后台命令的输入
+description: 终端插件已实现后仍未决的事：真机验收、跨端口网页待验、旁观设备的尺寸、终端能否跨 kited 重启存活、后台命令的输入
 metadata:
   node_type: memory
   type: todo
   originSessionId: 01c5998f-1ec7-4d15-a68b-285b002cc5c1
-  modified: 2026-10-18T07:43:48.111Z
+  modified: 2026-10-21T10:41:55.656Z
 ---
 
 **状态：** 2026-10-16 已实现（契约见 [实例操作 · 终端](../../docs/实例操作.md#终端)），待用户在 Mac、iPhone、iPad 上手测。
@@ -17,5 +17,6 @@ metadata:
 - 终端归 kited：kited 重启或升级时终端随之结束。要不要单独起一个 PTY 宿主让它活过 kited 重启，没定。
 - agent 转到后台的命令只有输出没有输入，Codex 那种往后台进程写 stdin 的能力没做。
 - 网页视图（2026-10-16 接上）：沙箱里不许监听也不许连本机端口（上游 `allowLocalBinding` 会连带放开连本机全部端口，包括 kited 的接口，没用）；agent 的开发服务器走沙箱外命令（事先允许或申请后批准）运行才有网页可看。消息链接里的路径还没带进网页视图。
+- 跨端口网页（2026-10-21 改，待验）：其他设备上网页视图打开期间，为本工作区全部运行中终端的端口开同号转发（127.0.0.1 与 ::1）；工作机 kite-net 转交时保留页面所用的本机主机名，原来一律改成 localhost。起因：在 WorkStation 上看 Mac mini 上的 crevo 灵感库详情页（4011 页面嵌 `http://[::1]:4012` 的回放 iframe，票据接口按 Host 核对来源）时报 400、退回截图，agent 在 Mac mini 本机 Chrome 里复现不出来。验收：Mac mini 换上新版 kite-net、这台 Mac 换上新 App 后，在 Kite 里打开详情页，iframe 应显示真网页。
 
 **完成条件：** 用户手测通过，以上各项有了决定（做或明确不做）后删掉本条。

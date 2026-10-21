@@ -6,15 +6,15 @@ import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { Runner } from './runner.ts';
 import { readClaudeMessages } from './history.ts';
 import { claudeToolServer } from './tools.ts';
-import { claudeState, readClaudeControl, sameInput, saveClaudeControl } from './control.ts';
+import { claudeState, readClaudeControl, saveClaudeControl } from './control.ts';
 import { claudeInputTokens } from './usage.ts';
 import type { SecretProvider } from '../secrets.ts';
 import { KiteError } from '../errors.ts';
 import { localTools, type ShellBackground, type ShellOutside } from '../execution/local-tools.ts';
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
-import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool } from '../harness/types.ts';
-import { modelText, returnedOnStop } from '../harness/input.ts';
+import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool, ToolImage } from '../harness/types.ts';
+import { modelText, returnedOnStop, sameInput } from '../harness/input.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import { HarnessRunner } from '../harness/runner.ts';
 import { withThreadJournal } from '../harness/thread-host.ts';
@@ -54,6 +54,8 @@ export function openClaudeHost(options: {
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>;
     notificationText: string; through: number };
   events: RuntimeEvents;
+  /** 人发的消息带的附件里的图片交给模型的样子，交给进程时现取；见 workspace/attachments.ts。 */
+  images?(input: Input): ToolImage[];
   /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
   compaction?: {
     templates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
@@ -361,7 +363,7 @@ export function openClaudeHost(options: {
   const submitQueued = (running: Runner) => {
     for (const entry of data.inputs.filter((item) => item.status === 'queued')) {
       entry.status = 'submitted'; save();
-      running.send({ id: entry.sdkId, text: modelText(entry.input), human: entry.input.source === 'human' });
+      running.send({ id: entry.sdkId, text: modelText(entry.input), human: entry.input.source === 'human', images: options.images?.(entry.input) });
     }
   };
   publish();

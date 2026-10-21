@@ -1,5 +1,5 @@
 /** 工作区负责文件、快照和采纳；线程负责模型执行及独立的对话记录。 */
-import type { CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
+import type { AttachmentRef, CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
 import { AgentReports, agentReportContextDefinition, agentWorkspaceContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
@@ -41,7 +41,8 @@ import { defaultRoleId, instanceRole, lineRoleId, Roles, type RoleSelection, typ
 import { environmentVariables, previewVariable, storedThreadVariables, writeVariableFile, type VariableScope } from './context-variables.ts';
 import { LibrarySync, type LibraryChanges } from './library-sync.ts';
 import { agentDefinitionId, agentToolCatalog, agentTools } from './plugins/definitions.ts';
-import { addWorktree, excludeSecretFiles, removeSecretFile, removeWorktree, runSetup, writeSecretFiles } from './workspace/worktrees.ts';
+import { addWorktree, excludeAttachments, excludeSecretFiles, removeSecretFile, removeWorktree, runSetup, writeSecretFiles } from './workspace/worktrees.ts';
+import { Attachments, attachmentStore } from './workspace/attachments.ts';
 import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
@@ -103,6 +104,8 @@ export interface MachineSummary {
 }
 const firstLine = (text: string) => text.trim().split('\n')[0]!.trim() || '（空消息）';
 const titleOf = (prompt: string) => firstLine(prompt).slice(0, 80);
+/** 起标题用的字：只带附件的消息用附件的名字。 */
+const promptText = (input: Input) => input.text.trim() || (input.source === 'human' ? (input.attachments ?? []).map((ref) => ref.name).join('、') : '');
 /** 手动起的标题与名称：去掉首尾空白后须为 1～80 字符的单行文本。 */
 function singleLine(text: string, what: string): string {
   const value = text.trim();
@@ -164,6 +167,7 @@ async function recoverRuntime(r: Runtime): Promise<void> {
 
 export class Kite {
   readonly events = new TranscriptFeed();
+  readonly attachments: Attachments;
   readonly subscriptionLogins: SubscriptionLogins;
   readonly modelAccounts: ModelAccounts;
   readonly operations: InstanceOperations;
@@ -242,6 +246,8 @@ export class Kite {
   private leavingIds = new Set<string>();
 
   constructor(readonly store: Store, readonly home: string, readonly bus: Bus, private options: RuntimeOptions = {}) {
+    this.attachments = new Attachments(home);
+    this.attachments.clearStaging();
     this.accountData = new AccountData(join(home, 'account.db'), store.machine.id,
       options.keychain ? keychainKey(store.machine.id) : fileKey(join(home, 'credentials.key')));
     this.registry = new ProjectRegistry(this.accountData);
@@ -566,7 +572,8 @@ export class Kite {
             if (existsSync(w.cwd)) await removeWorktree(checkout.path, w.cwd, w.branch);
             this.store.deleteWorkspaceRows(w.id);
           } finally { release(); }
-          for (const path of [...threads.map((t) => join(this.home, 'sessions', t.id)), join(this.home, 'diffs', w.id), join(this.home, 'workspaces', w.id)]) {
+          for (const path of [...threads.map((t) => join(this.home, 'sessions', t.id)), join(this.home, 'diffs', w.id), attachmentStore(this.home, w.id),
+            join(this.home, 'workspaces', w.id)]) {
             rmSync(path, { recursive: true, force: true });
           }
           this.transcripts.forget(threads.map((t) => t.id));
@@ -1041,6 +1048,9 @@ export class Kite {
       this.excludeSecrets(c.projectId);
       await writeSecretFiles(cwd, await this.credentials.pathSecrets(c.projectId));
     });
+    // 流转来还原时，附件的原件随记录到了，给代理用的那份写进新的工作树。
+    excludeAttachments(c.path);
+    this.attachments.placeAll(workspaceId, cwd);
     return runSetup(c.path, cwd, setupLogPath(this.home, workspaceId), this.home, signal);
   }
 
@@ -1208,18 +1218,20 @@ export class Kite {
 
   /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例、会话和窗口。
    * windowId 与 messageId 由 App 生成：窗口经事件先到时 App 认得出是草稿变成的那个，第一条消息也和草稿里显示的是同一条。 */
-  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, windowId?: string, messageId?: string): Promise<ThreadView> {
+  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, windowId?: string, messageId?: string,
+    attachments: string[] = []): Promise<ThreadView> {
     return this.control(workspaceId, async () => {
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      if (!prompt.trim()) throw new KiteError('第一条消息不能为空');
+      if (!prompt.trim() && !attachments.length) throw new KiteError('第一条消息不能为空');
       if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
       this.assertNotResolving(workspaceId);
+      const input = this.withAttachments({ id: messageId ?? randomUUID(), text: prompt, source: 'human' }, workspaceId, attachments);
       await this.snapshot(workspace, [], '线程开始');
-      const t = this.newThread(workspaceId, prompt, choice);
+      const t = this.newThread(workspaceId, promptText(input), choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
       this.threadChanged(t);
-      await this.sendInput(this.context(t.id), { id: messageId ?? randomUUID(), text: prompt, source: 'human' });
+      await this.sendInput(this.context(t.id), input);
       return this.thread(t.id);
     });
   }
@@ -1430,11 +1442,13 @@ export class Kite {
       ...(text ? { reply: { text: text.length > 20_000 ? `…${text.slice(-20_000)}` : text, at } } : {}) };
   }
   /** Line 线程里用户的一条消息：给了输入 ID 就取那条，否则取最近的一条；不是用户的消息时没有。 */
-  private async userMessage(lineId: string, inputId?: string): Promise<{ id: string; text: string } | undefined> {
+  private async userMessage(lineId: string, inputId?: string): Promise<{ id: string; text: string; attachments?: AttachmentRef[] } | undefined> {
     const records = (await this.history(lineId)).records;
     const record = inputId === undefined ? records.findLast((entry) => entry.block.type === 'human')
       : records.find((entry) => entry.id === `input:${inputId}`);
-    return record?.block.type === 'human' ? { id: record.block.id, text: record.block.text } : undefined;
+    if (record?.block.type !== 'human') return undefined;
+    const { id, text, attachments } = record.block;
+    return { id, text, ...(attachments ? { attachments } : {}) };
   }
   /**
    * 调用方持有工作区控制锁，发送与切换不能同时通过状态检查。先把上下文追加到目标后端的原生记录再保存后端；
@@ -1508,6 +1522,7 @@ export class Kite {
       operations: { tools: [...this.operations.tools(id), this.asks.question(id),
         ...(instanceRole(t)?.id === lineRoleId ? lineTools({ store: this.store, peers: this.peers, machine: this.store.machine.id, instanceId: id,
           monitor: this.monitor, message: (inputId) => this.userMessage(id, inputId),
+          attachment: (attachmentId) => this.attachments.content(workspaceId, attachmentId).path,
           approve: (request, signal) => this.waits.approve(id, request, signal) }) : [])],
       prepare: (instance) => this.operations.prepareTools(instance) },
       contextUpdateTemplate: () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition,
@@ -1593,22 +1608,54 @@ export class Kite {
     }
     return false;
   }
-  /** origin 是来源与发信方，由调用方按调用身份给出，见 InputOrigin。 */
+  /** origin 是来源与发信方，由调用方按调用身份给出，见 InputOrigin；attachments 是这个工作区里已经存好的附件，只有人发的消息能带。 */
   send(id: string, text: string, inputId: string = randomUUID(), origin: InputOrigin = { source: 'human' },
-    check: () => void = () => {}): Promise<{ id: string }> {
-    if (!text.trim()) throw new KiteError('消息不能为空');
+    check: () => void = () => {}, attachments: string[] = []): Promise<{ id: string }> {
+    if (!text.trim() && !attachments.length) throw new KiteError('消息不能为空');
     if (!inputId) throw new KiteError('消息 id 不能为空');
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
-      await this.sendInput(t, { id: inputId, text, ...origin }, check);
+      await this.sendInput(t, this.withAttachments({ id: inputId, text, ...origin }, t.workspaceId, attachments), check);
       return { id: inputId };
     });
+  }
+  /**
+   * 存下 App 或另一台工作机上的 Line 传来的附件，同时把给代理用的那份写进工作区；工作区打开着（或正在准备）才收，
+   * 交接中的工作区不再收新的。
+   */
+  async saveAttachment(workspaceId: string, id: string, name: string, body: AsyncIterable<Uint8Array>): Promise<AttachmentRef> {
+    const accepting = () => {
+      const found = this.workspace(workspaceId);
+      if (found.workspace.status !== 'open' && found.workspace.status !== 'preparing') throw new KiteError('工作区不能再收附件', 409);
+      return found;
+    };
+    accepting();
+    const upload = await this.attachments.receive(workspaceId, id, name, body);
+    try {
+      // 收完在工作区锁里再看一次：交接在锁里改状态，传到一半开始交接的不会存进已经交出去的副本。
+      return await this.control(workspaceId, async () => {
+        const { workspace, checkout } = accepting();
+        excludeAttachments(checkout.path);
+        return this.attachments.commit(upload, workspace.cwd);
+      });
+    } finally { this.attachments.discard(upload); }
+  }
+  removeAttachment(workspaceId: string, id: string): void {
+    this.attachments.remove(workspaceId, this.workspace(workspaceId).workspace.cwd, id);
+  }
+  /** 给人发的消息挂上附件，按存好的那份固定名字、类型与尺寸。 */
+  private withAttachments(input: Input, workspaceId: string, ids: string[]): Input {
+    if (!ids.length) return input;
+    if (input.source !== 'human') throw new KiteError('只有人发的消息能带附件');
+    return { ...input, attachments: this.attachments.refs(workspaceId, ids) };
   }
   private async sendInput(thread: ThreadContext, input: Input, check: () => void = () => {}): Promise<void> {
     this.assertNotResolving(thread.workspaceId, thread.id);
     const runner = await this.runner(thread);
     check();
+    // 记录里要引用的附件不再能删；发送失败也不撤回这个标记，只是这几个附件留到项目删除。
+    if (input.source === 'human' && input.attachments) this.attachments.markSent(thread.workspaceId, input.attachments);
     // 先登记交代方再交给线程：回合可能在 send 返回之前就收尾。
     const undo = this.reports.received(thread.id, input);
     let accepted: boolean;
@@ -1622,7 +1669,7 @@ export class Kite {
     else if (input.source === 'human') this.lineWork.delete(thread.id);
     // 还没有标题记录（没起过名、没手动改过）时，用第一条消息作标题
     if (this.store.threadTitle(thread.id)?.revision === 'initial') {
-      this.store.renameInstance(thread.id, titleOf(input.text));
+      this.store.renameInstance(thread.id, titleOf(promptText(input)));
       this.threadChanged(thread);
       this.workspaceNames.follow(thread.id, true);
     }

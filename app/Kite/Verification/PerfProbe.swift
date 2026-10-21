@@ -66,8 +66,10 @@ import UIKit
         var end: Mark?
         /// 排布动画开始的时刻（有窗口报上来在走动画，CACurrentMediaTime 秒）。
         var began: Double?
-        /// 拖缝、侧栏松手后 1.2 秒的主线程（毫秒）。
+        /// 拖缝、侧栏松手后 1.2 秒的主线程（毫秒）；滚动是停下后 1.2 秒。
         var settleCpuMs: Double?
+        /// 滚动开始时还没按眼下的宽量准的行（屏外的空闲时补量，见 TranscriptArrangement.measureLater）。
+        var unmeasured: Int?
     }
 
     struct Report: Encodable {
@@ -88,6 +90,8 @@ import UIKit
         var segments: [Segment] = []
         /// 测完写回的 UserDefaults 键。
         var restored: [String] = []
+        /// 回放了存下的会话数据（-perfFixture）：换进了哪个会话、多少条记录。
+        var fixture: [String] = []
     }
 
     /// 一次测量：场景改过的状态登记在这里，测完倒着撤回。
@@ -157,10 +161,12 @@ import UIKit
             #if os(iOS)
             if compact { try await arrangeCompact(area) } else { try await arrange(area) }
             #else
-            try await arrange(area)
+            // 存会话数据存的是台面上原来摆着的那几个，不从停靠栏恢复
+            if scene != "record" { try await arrange(area) }
             #endif
             try await historyLoaded(area)
             #if os(macOS)
+            try await replay(current)
             try await waitForRows(current)
             #endif
             try await Task.sleep(for: .seconds(2))
@@ -610,7 +616,7 @@ import UIKit
         throw Failure("5 分钟内脚本没有放行")
     }
 
-    private static var port: Int? { number("perfPort").map(Int.init) }
+    static var port: Int? { number("perfPort").map(Int.init) }
 
     /// 交出结果：有 -perfPort 时 POST 到本机端口，没有时写到 Library/Caches/perf/。
     static func deliver(_ name: String, _ data: Data) async {
@@ -690,10 +696,18 @@ import UIKit
         private var callback: ((CADisplayLink) throws -> Bool)?
         private var continuation: CheckedContinuation<Void, Error>?
 
-        func run(_ callback: @escaping (CADisplayLink) throws -> Bool) async throws {
+        /// timeout 秒还没走完就报错停下：测量窗口被挡住时显示链接不再回调，不设的话一直等下去。
+        func run(timeout: Double? = nil, _ callback: @escaping (CADisplayLink) throws -> Bool) async throws {
             try await withCheckedThrowingContinuation { continuation in
                 self.callback = callback
                 self.continuation = continuation
+                if let timeout {
+                    Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(timeout))
+                        guard let self, self.continuation != nil else { return }
+                        finish(Failure("\(Int(timeout)) 秒没走完：测量窗口可能被挡住，显示链接停了"))
+                    }
+                }
                 #if os(macOS)
                 guard let window = PerfProbe.window else { return finish(Failure("没有测量的窗口")) }
                 let link = window.displayLink(target: self, selector: #selector(tick(_:)))

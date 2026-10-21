@@ -212,6 +212,8 @@ struct CreateThreadRequest: Encodable {
     var approval: ApprovalMode? = nil
     var windowId: String? = nil
     var messageId: String? = nil
+    /// 第一条消息带的附件（已传到这个工作区）。
+    var attachments: [String]? = nil
 }
 
 /// 新建空工作区：工作机没有项目的检出时先 clone；id 由本机定，见 AppModel.createWorkspace。

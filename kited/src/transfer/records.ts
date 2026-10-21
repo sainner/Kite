@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { claudeRecordTarget } from '../handoff/claude-records.ts';
 import type { WorkspaceRows } from '../store.ts';
+import { attachmentStore } from '../workspace/attachments.ts';
 
 export const manifestSchema = z.object({
   version: z.literal(1),
@@ -45,15 +46,15 @@ export function readManifest(dir: string): RecordsManifest {
   return parsed.data;
 }
 
-/** installRecords 可能写到的本机路径：各线程的会话目录与 Claude 原生记录、工作区的历史差异。cwd 须已存在。 */
+/** installRecords 可能写到的本机路径：各线程的会话目录与 Claude 原生记录、工作区的历史差异与附件。cwd 须已存在。 */
 export function recordPaths(manifest: RecordsManifest, home: string, cwd: string): string[] {
   const real = realpathSync(cwd);
   return [...manifest.threads.flatMap((thread) => [join(home, 'sessions', thread.instanceId), claudeRecordTarget(real, thread.nativeId)]),
-    join(home, 'diffs', manifest.workspaceId)];
+    join(home, 'diffs', manifest.workspaceId), attachmentStore(home, manifest.workspaceId)];
 }
 
 /**
- * 把记录装到本机：会话目录（metadata 的 cwd 改成新目录）、历史差异，以及 Claude 原生记录（cwd 字段改成新目录，
+ * 把记录装到本机：会话目录（metadata 的 cwd 改成新目录）、历史差异与附件原件，以及 Claude 原生记录（cwd 字段改成新目录，
  * 放到 CLI 按新目录查找的位置）。调用方先按 recordPaths 备份并登记失败时的回滚。
  */
 export function installRecords(dir: string, manifest: RecordsManifest, home: string, cwd: string): void {
@@ -74,8 +75,8 @@ export function installRecords(dir: string, manifest: RecordsManifest, home: str
       writeFileSync(path, mapLines(readFileSync(claude, 'utf8'), (entry) => entry.cwd === manifest.cwd ? { ...entry, cwd: real } : entry), { mode: 0o600 });
     }
   }
-  const diffs = join(dir, 'diffs');
-  if (existsSync(diffs) && statSync(diffs).isDirectory() && readdirSync(diffs).length) {
-    cpSync(diffs, join(home, 'diffs', manifest.workspaceId), { recursive: true });
+  for (const [name, target] of [['diffs', join(home, 'diffs', manifest.workspaceId)], ['attachments', attachmentStore(home, manifest.workspaceId)]] as const) {
+    const source = join(dir, name);
+    if (existsSync(source) && statSync(source).isDirectory() && readdirSync(source).length) cpSync(source, target, { recursive: true });
   }
 }

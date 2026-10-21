@@ -7,6 +7,7 @@
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，SwiftUI 菜单小程序验证，simctl 不再用，现场采集别挂调试器，真机点按记录与崩溃报告
 - [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打高度或片段坐标、沿视图链打裁剪；log 写全路径；外层蒙版会裁；逐帧错位在提交后核对；iPhone 动画真机逐帧截图；探针按块删
 - [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断、UIKit 透明度坑，Mac 结论不外推到 iPhone
+- [性能测量用的会话数据](perf-fixture-main-agents.md) — 两个主代理的完整历史存在 fixtures、不进 Git，各压缩两次；工作机清数据后回放用
 - [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [Line 与工作区流转](line-direction.md) — 已合回 main、界面待验收；收件箱是 Line 的 monitor；待改进与部署注意
@@ -39,10 +40,11 @@
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
-- [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；旁观设备的尺寸、跨 kited 重启、后台命令的输入
+- [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；跨端口网页待验、旁观设备的尺寸、跨 kited 重启、后台命令的输入
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
 - [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退
 - [上架前的版本做法](todo-store-release.md) — kited 兼容在用的旧版 App、先 App 后 kited、公共下载点、Mac App 签名后自更新
 - [工作区模型改造](todo-workspace-model.md) — 已实现、协议号 2；部署前清各工作机旧 kite.db（先征得同意）、真机验收、Line 不提交现场待确认
 - [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）
+- [消息附件收尾](todo-attachments.md) — 输入框那一行待验收、Mac 点开方式待定、真机待测；中途带图交给 Claude 没测

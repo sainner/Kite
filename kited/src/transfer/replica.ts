@@ -16,6 +16,7 @@ import type { AgentInstance, Workspace, WorkspaceStatus } from '../model.ts';
 import { peerJSON, type Peer, type PeerFetch } from '../peer-fetch.ts';
 import type { WorkspaceRows } from '../store.ts';
 import { revParse } from '../workspace/git.ts';
+import { attachmentStore } from '../workspace/attachments.ts';
 import type { RecordsManifest } from './records.ts';
 
 /** 跟进方手上一个文件的情况：执行设备上的大小与修改时刻（复制时的），以及本地这份末尾一段的摘要，用来确认能接着追加。 */
@@ -77,6 +78,7 @@ export function replicaSources(home: string, workspace: Workspace, threads: Agen
     if (claude) sources.set(`claude/${thread.nativeId}.jsonl`, claude);
   }
   walk(join(home, 'diffs', workspace.id), 'diffs');
+  walk(attachmentStore(home, workspace.id), 'attachments');
   return sources;
 }
 

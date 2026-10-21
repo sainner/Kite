@@ -7,16 +7,20 @@
  * 这个文件单个上限 5 秒（scripts/check.ts 的 FILE_LIMITS）。睡眠前自动换机在 takeover.test.ts，守 1 秒。
  */
 import { afterEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ModelRequest } from '../../src/harness/types.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
 import { checkoutPath } from '../../src/paths.ts';
 import type { ReplicaEntry, ReplicaPage } from '../../src/transfer/replica.ts';
 import type { History } from '../../src/transcript/protocol.ts';
+import { attachmentPath, attachmentStore } from '../../src/workspace/attachments.ts';
 import { leaseRef } from '../../src/workspace/lease.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
-import { addProject, after, chatgptLogin, connect, createWorkspace, type Kited, mark, openWorkspace, startKited, synced, workspaceOpened } from '../harness.ts';
+import {
+  addProject, after, chatgptLogin, connect, createWorkspace, getAttachment, type Kited, listSnapshots, mark, openWorkspace, putAttachment, startKited, synced,
+  workspaceOpened,
+} from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { commitAll, git, newRepo, read, until, writeFiles } from '../util.ts';
 
@@ -67,10 +71,10 @@ async function project(a: Kited, files: Record<string, string>, others: Kited[],
   return projectId;
 }
 
-/** k 上的线程跑完一个回合：发消息、等模型第 number 次调用、给出 reply（有的话）再结束，等回到空闲。 */
-async function turn(k: Kited, model: ManualModel, threadId: string, number: number, text: string, reply?: string) {
+/** k 上的线程跑完一个回合：发消息（可带附件 ID）、等模型第 number 次调用、给出 reply（有的话）再结束，等回到空闲。 */
+async function turn(k: Kited, model: ManualModel, threadId: string, number: number, text: string, reply?: string, attachments?: string[]) {
   const since = mark(k);
-  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id: crypto.randomUUID(), text });
+  const sent = await k.call('POST', `/threads/${threadId}/messages`, { id: crypto.randomUUID(), text, ...(attachments ? { attachments } : {}) });
   if (sent.status !== 200) throw new Error(`发消息失败：${sent.status} ${JSON.stringify(sent.body)}`);
   const call = await model.call(number);
   if (reply) await call.response.emit({ type: 'item', item: item(reply) });
@@ -91,14 +95,15 @@ const inputs = (request: ModelRequest) => request.history.flatMap((entry) => ent
 /*
  * 几个部分的配合：副本（数据库行、journal、通知游标）的跟进与导入、执行设备检出上的快照链与工作区分支经对端取到目标检出、
  * 用最后一个快照还原未提交的改动、lease 在 Git 平台上的比较后更新、源机核对后冻结，以及副本随执行设备换人：
- * 目标机接管后原来的副本删掉，冻结的源机改跟新的执行设备。
+ * 目标机接管后原来的副本删掉，冻结的源机改跟新的执行设备。消息附件的原件随副本到目标机，目标机建工作树时放进工作区一份，
+ * 目标机新 clone 的检出也要忽略它（git status 与快照里都没有）。
  * 去程走手动流转（POST /workspaces/:id/transfer），源机一步做完交接、目标还原、源机核对，返回时 A 已冻结，直接读本机记录；
  * 回程分开调交接（B）与还原（A）两个入口。
  * 真实 bug（旧实现）：交接只带未归档线程的会话文件，交接前归档的线程到了目标机没有历史；
  * 流转回原机时工作树在同一路径重建，快照模块按路径缓存的私有索引失效，回合收尾报 kite/index.lock 不存在；
  * 会话历史按线程缓存显示投影，还原换上带回来的记录后原机仍返回离开前的投影（下面先读一次历史把它缓存住），看不到在 B 上的回合。
  */
-test('有远程的项目：手动流转把独立工作区交给 B，未提交的改增删、会话历史、交接前归档的线程都在，通知只到一次，lease 是 B 的 epoch 2，返回时 A 已冻结；B 交回 A 替换冻结记录，epoch 3 续接并存快照', async () => {
+test('有远程的项目：手动流转把独立工作区交给 B，未提交的改增删、会话历史、交接前归档的线程和它发过的附件都在，通知只到一次，lease 是 B 的 epoch 2，返回时 A 已冻结；B 交回 A 替换冻结记录，epoch 3 续接并存快照', async () => {
   const models = { a: new ManualModel(), b: new ManualModel() };
   const a = machine(models.a);
   const b = machine(models.b);
@@ -118,7 +123,10 @@ test('有远程的项目：手动流转把独立工作区交给 B，未提交的
   const started = await a.call('POST', `/workspaces/${workspaceId}/operations/agent.start`, { operationId: 'side' });
   expect(started.status).toBe(200);
   const side = started.body.instanceId as string;
-  await turn(a, models.a, side, 2, '旁支回合');
+  const note = '旁支附上的说明\n';
+  const attached = await putAttachment(a, workspaceId, crypto.randomUUID(), '旁支说明.txt', Buffer.from(note));
+  expect(attached.status).toBe(200);
+  await turn(a, models.a, side, 2, '旁支回合', undefined, [attached.body.id]);
   expect((await a.call('POST', `/instances/${side}/archive`)).status).toBe(200);
   const sideRecords = ((await a.call('GET', `/threads/${side}/history`)).body as History).records.length;
   expect(sideRecords).toBeGreaterThan(0);
@@ -143,8 +151,18 @@ test('有远程的项目：手动流转把独立工作区交给 B，未提交的
   expect(git(onB.cwd, 'status', '--porcelain').split('\n').sort()).toEqual([' D gone.txt', ' M tracked.txt', '?? new.txt']);
   expect(leaseOf(bare, workspaceId)).toEqual({ machine: machineB, epoch: 2, state: 'active' });
   expect(((await b.call('GET', `/threads/${side}/history`)).body as History).records).toHaveLength(sideRecords);
+  expect(await getAttachment(b, workspaceId, attached.body.id)).toEqual({ status: 200, bytes: Buffer.from(note) });
+  expect(read(join(onB.cwd, attachmentPath(attached.body)))).toBe(note);
 
+  // B 上的回合改一个文件，回合结束拍快照：B 的检出是新 clone 的，快照里也不能有附件。
+  writeFiles(onB.cwd, { 'on-b.txt': 'B 上写的\n' });
+  const onBSince = mark(b);
   const continued = await turn(b, models.b, thread.id, 1, '在 B 上的回合');
+  await b.waitEvent((e) => e.type === 'workspace.snapshot' && e.workspaceId === workspaceId && after(b, onBSince)(e));
+  const latest = (await listSnapshots(b, workspaceId))[0]!;
+  const snapshotted = git(checkoutPath(b.home, projectId), 'ls-tree', '-r', '--name-only', latest.commit).split('\n');
+  expect(snapshotted).toContain('on-b.txt');
+  expect(snapshotted.filter((file) => file.startsWith('.kite/attachments'))).toEqual([]);
   const history = continued.request.history;
   expect(inputs(continued.request)).toContainEqual(expect.objectContaining({ text: '第一回合', source: 'human' }));
   expect(history).toContainEqual({ type: 'output', item: item('a-reply') });
@@ -165,6 +183,7 @@ test('有远程的项目：手动流转把独立工作区交给 B，未提交的
   expect(home).toMatchObject({ id: workspaceId, epoch: 3, status: 'open' });
   expect(leaseOf(bare, workspaceId)).toEqual({ machine: machineA, epoch: 3, state: 'active' });
   expect(await humans(a, thread.id)).toEqual(['第一回合', '在 B 上的回合']);
+  expect(read(join(home.cwd, attachmentPath(attached.body)))).toBe(note);
   const since = mark(a);
   expect((await a.call('POST', `/threads/${thread.id}/messages`, { id: 'back-home', text: '回到原机继续' })).status).toBe(200);
   const resumed = await models.a.call(3);
@@ -421,4 +440,54 @@ test('没有远程的项目：A 交出工作区，B 从 A 的检出 clone 并以
     && entry.snapshot?.workspaces.some((w) => w.id === workspaceId && w.epoch === 2 && w.status === 'open')), 'A 看到 B 以 epoch 2 持有');
   expect(((await a.call('POST', `/workspaces/${workspaceId}/lease/check`)).body as WorkspaceModel).workspace.status).toBe('transferred');
   expect(await statusOf(b, workspaceId)).toBe('open');
+}, 5_000);
+
+/** dir 下（含子目录）各文件的字节数之和；目录还没建或文件刚被移走时按 0 算。 */
+function stagedBytes(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  let total = 0;
+  for (const rel of readdirSync(dir, { recursive: true, encoding: 'utf8' })) {
+    try {
+      const stat = statSync(join(dir, rel));
+      if (stat.isFile()) total += stat.size;
+    } catch { /* 读的时候刚被移走 */ }
+  }
+  return total;
+}
+
+/*
+ * 上传流、工作区锁与交接在时序上的配合。真实 bug（旧实现）：上传附件只在开始时检查一次工作区状态，之后不再查；
+ * 传到一半工作区开始交接，传完照样存进本机已经交出去的工作区，接管的机器拿不到这个附件，之后发消息报「没有这个附件」。
+ * 请求体是先送一段、再挂住的流：等这一段落进数据目录的暂存目录 uploads/（说明开始时的检查已经过了、正在收），
+ * 再交接，交接返回后才放开流送完。依赖 Bun 的 fetch 在 duplex: 'half' 下边读流边发请求体，不等流结束。
+ */
+test('附件传到一半工作区开始交接：传完的上传返回 409，附件取不到，也不存进本机这个工作区的附件目录', async () => {
+  const a = machine(new ManualModel());
+  const projectId = await project(a, { 'a.txt': '一\n' }, []);
+  const workspaceId = (await openWorkspace(a, projectId)).workspace.id;
+  const id = crypto.randomUUID();
+  const head = new Uint8Array(256 * 1024).fill(1);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (pulls++ === 0) { controller.enqueue(head); return; }
+      await held;
+      controller.enqueue(new Uint8Array(256 * 1024).fill(2));
+      controller.close();
+    },
+  });
+  const uploading = fetch(`${a.url}/workspaces/${workspaceId}/attachments/${id}?name=${encodeURIComponent('大文件.bin')}`, {
+    method: 'PUT', headers: { 'X-Kite-Machine': a.daemon.kite.store.machine.id }, body, duplex: 'half',
+  } as RequestInit);
+  try {
+    await until(() => stagedBytes(join(a.home, 'uploads')) >= head.length, '第一段落进暂存目录');
+    expect((await handover(a, workspaceId)).status).toBe(200);
+  } finally { release(); }
+  const uploaded = await uploading;
+  await uploaded.arrayBuffer();
+  expect(uploaded.status).toBe(409);
+  expect((await getAttachment(a, workspaceId, id)).status).toBe(404);
+  expect(existsSync(join(attachmentStore(a.home, workspaceId), id))).toBe(false);
 }, 5_000);

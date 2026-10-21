@@ -3,7 +3,8 @@
  * 原生记录与界面保留原文，只有交给模型（含换后端时转换的历史）才按来源包装。
  */
 import { z } from 'zod';
-import type { Input, InputNotice, InputSender, StopRequest } from './types.ts';
+import { MAX_MESSAGE_ATTACHMENTS, attachmentPath, attachmentRef } from '../workspace/attachments.ts';
+import type { AttachmentRef, Input, InputNotice, InputSender, StopRequest } from './types.ts';
 
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
@@ -17,14 +18,20 @@ const inputNotice: z.ZodType<InputNotice> = z.object({
   kind: z.enum(['agent.report', 'agent.workspace', 'monitor.events', 'terminal.exit', 'line.monitor', 'conflict', 'moved', 'resumed', 'question', 'secret']),
   title: z.string(), subject: z.string().optional(), instance: id.optional(),
 }).strict();
-/** 每种来源只带自己的字段，正文不能为空；收下输入、读回记录和接口参数都用它校验。 */
+/** 每种来源只带自己的字段，正文不能为空（人发的带了附件时可以只有附件）；收下输入、读回记录和接口参数都用它校验。 */
 export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [
-  z.object({ id, text, source: z.literal('human'), via: inputVia.optional() }).strict(),
+  z.object({ id, text: z.string(), source: z.literal('human'), via: inputVia.optional(),
+    attachments: z.array(attachmentRef).min(1).max(MAX_MESSAGE_ATTACHMENTS).optional() }).strict()
+    .refine((input) => !!input.text.trim() || !!input.attachments, '内容不能为空'),
   z.object({ id, text, source: z.literal('kite'), notice: inputNotice.optional(), response: z.literal(true).optional() }).strict(),
   z.object({ id, text, source: z.literal('agent'), from: inputSender }).strict(),
 ]);
 
 export const senderName = (from: InputSender) => from.kind === 'line' ? 'Line' : from.title;
+
+const attachmentIds = (input: Input) => input.source === 'human' ? (input.attachments ?? []).map((ref) => ref.id).join('\n') : '';
+/** 同一个输入 ID 重发时是不是同一条：正文、来源和附件都要一样。 */
+export const sameInput = (a: Input, b: Input) => a.id === b.id && a.text === b.text && a.source === b.source && attachmentIds(a) === attachmentIds(b);
 
 /**
  * 停止时退回的：退给发起停止的一方。用户自己停下时退人发的，回到输入框；代理或 Line 停下时退它自己发来的，
@@ -43,8 +50,20 @@ const KITE_NOTICE = '【这条消息由 Kite 自动发出，不是用户说的�
 const OPEN = '<agent-message from="';
 const CLOSE = '</agent-message>';
 
-/** 交给模型的正文：代理来信标明发信方，Kite 自动发的写明不是用户说的话；转交的用户回应与人发的原样。 */
+const megabytes = (size: number) => size < 1024 * 1024 ? `${Math.max(1, Math.round(size / 1024))} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`;
+const kindName = (ref: AttachmentRef) => ref.mediaType === 'application/pdf' ? 'PDF' : ref.mediaType.startsWith('text/') ? '文本'
+  : ref.mediaType.startsWith('image/') ? '图片' : '文件';
+
+/** 人发的消息带的附件，接在正文后面告诉模型在工作区的哪里；有尺寸的图片同时附在这条消息里。 */
+function attachmentNote(attachments: AttachmentRef[]): string {
+  const lines = attachments.map((ref) => `- ${attachmentPath(ref)}（${ref.width && ref.height
+    ? `图片 ${ref.width}×${ref.height}，已附在这条消息里` : `${kindName(ref)}，${megabytes(ref.size)}`}）`);
+  return ['<attachments>', '用户随这条消息附上的文件，已放进工作区：', ...lines, '</attachments>'].join('\n');
+}
+
+/** 交给模型的正文：代理来信标明发信方，Kite 自动发的写明不是用户说的话；转交的用户回应与人发的原样，带附件的接上附件说明。 */
 export function modelText(input: Input): string {
+  if (input.source === 'human' && input.attachments) return [input.text, attachmentNote(input.attachments)].filter((part) => part.trim()).join('\n\n');
   if (input.source === 'agent') {
     // 名称里的引号、尖括号与换行会破坏包装；正文里的结束标记转义，免得冒充包装之外的内容。
     const name = senderName(input.from).replace(/["<>\r\n]/g, ' ').trim() || '代理';

@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { inputSchema, stopBy } from '../harness/input.ts';
-import type { Input, Outcome, Phase, Recovery } from '../harness/types.ts';
+import type { Outcome, Phase, Recovery } from '../harness/types.ts';
 
 const input = inputSchema;
 const schema = z.object({
@@ -57,4 +57,3 @@ export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 're
   contextWindow: data.contextWindow,
   waitingForResume: !!data.recovery || (phase === 'idle' && data.paused),
 });
-export const sameInput = (a: Input, b: Input) => a.id === b.id && a.text === b.text && a.source === b.source;

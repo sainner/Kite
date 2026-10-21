@@ -38,6 +38,8 @@ export function roughTokens(value: string | ContextItem[]): number {
     if (item.type === 'tool_result') {
       const { images, ...rest } = item.result;
       tokens += roughTokens(JSON.stringify(rest)) + (images?.length ?? 0) * IMAGE_TOKENS;
+    } else if (item.type === 'input') {
+      tokens += roughTokens(JSON.stringify(item.input)) + (item.images?.length ?? 0) * IMAGE_TOKENS;
     } else if (item.type === 'output') {
       const { encrypted_content: _, ...raw } = item.item.raw;
       tokens += roughTokens(JSON.stringify(raw));
@@ -91,10 +93,10 @@ export function compactionItems(options: {
     for (const item of range.toReversed()) {
       // 代理来信对子代理来说就是任务本身，和人发的消息一样保留原文。
       if (item.type !== 'input' || item.input.source === 'kite') continue;
-      const tokens = roughTokens(item.input.text);
+      const tokens = roughTokens(item.input.text) + (item.images?.length ?? 0) * IMAGE_TOKENS;
       if (tokens > budget) {
         // 最新一条超出时截断保留；更早的消息只进摘要。
-        if (!retained.length) retained.push({ type: 'input', input: { ...item.input, text: truncate(item.input.text, budget) } });
+        if (!retained.length) retained.push({ ...item, input: { ...item.input, text: truncate(item.input.text, budget) } });
         break;
       }
       retained.unshift(item);

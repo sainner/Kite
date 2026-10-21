@@ -14,15 +14,15 @@ import { isDeepStrictEqual } from 'node:util';
 import { engineAttachmentTypes } from '../claude/context-filter/hooks/register.ts';
 import { acquireClaudeLock } from '../claude/host.ts';
 import { readClaudeControl, saveClaudeControl, type ClaudeControl } from '../claude/control.ts';
-import { CLAUDE_TOOL_SEARCH, claudeToolResult, claudeToolResultContent, structuredClaudeTool } from '../claude/tools.ts';
+import { CLAUDE_TOOL_SEARCH, claudeImage, claudeToolResult, claudeToolResultContent, claudeUserContent, structuredClaudeTool } from '../claude/tools.ts';
 import { modelText } from '../harness/input.ts';
 import { TOOL_SEARCH } from '../harness/tool-search.ts';
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
-import { outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/history.ts';
+import { inputItem, outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/history.ts';
 import { messageTexts } from '../harness/responses.ts';
 import { appendThreadJournal } from '../harness/thread-host.ts';
-import type { ContextItem, Input, Json, JsonObject, JournalRecord, ModelItem, ToolResult } from '../harness/types.ts';
+import type { ContextItem, Input, Json, JsonObject, JournalRecord, ModelItem, ToolImage, ToolResult } from '../harness/types.ts';
 import type { RuntimeKind, ThreadContext } from '../model.ts';
 import { appendClaudeEntries, readClaudeEntries, type ClaudeEntry } from './claude-records.ts';
 
@@ -123,9 +123,12 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
   const translate = (entry: ClaudeEntry): ContextItem[] => {
     const items: ContextItem[] = [];
     const message = object(entry.message);
+    // CLI 附在回合里的伴随条目（图片在 CLI 缓存里的路径、权限与用量的说明等），不是宿主发的输入，CLI 自己转交时也跳过。
+    if (entry.type === 'user' && entry.turnCompanion === true) return items;
     if (entry.type === 'user') {
       const content = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : Array.isArray(message.content) ? message.content.map(object) : [];
       const texts: string[] = [];
+      const images: ToolImage[] = [];
       for (const block of content) {
         if (block.type === 'tool_result') {
           const name = calls.get(block.tool_use_id);
@@ -133,10 +136,11 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
           if (name === CLAUDE_TOOL_SEARCH) continue;
           items.push({ type: 'tool_result', callId: block.tool_use_id, result: claudeToolResult(block, structuredClaudeTool(name)) });
         } else if (block.type === 'text') texts.push(block.text);
+        else if (block.type === 'image') images.push(claudeImage(block, '用户消息'));
         else throw new Error(`不能翻译 Claude 用户消息中的 ${String(block.type)} 内容`);
       }
       // 上游的中断说明等也以 user 角色送达模型，没有宿主输入记录的按 Kite 来源保留。
-      if (texts.length) items.push({ type: 'input', input: input(entry.uuid!, texts.join(''), object(entry.origin).kind === 'human') });
+      if (texts.length) items.push(inputItem(input(entry.uuid!, texts.join(''), object(entry.origin).kind === 'human'), images));
     } else if (entry.type === 'assistant') {
       // API 错误是本地记录，不进入模型请求。
       if (entry.isApiErrorMessage) return items;
@@ -159,7 +163,11 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
         // 只有 Kite 注册了 hooks；它们投递的都是宿主的配置与上下文通知。
         if (text) items.push({ type: 'notification', notification: { id: entry.uuid!, kind: `claude.${String(attachment.hookEvent)}`, source: 'host', authority: 'instruction' }, text });
       } else if (attachment.type === 'queued_command') {
-        items.push({ type: 'input', input: input(String(attachment.source_uuid ?? entry.uuid), String(attachment.prompt), object(attachment.origin).kind === 'human') });
+        // 带图片的排队消息，prompt 是正文块后面跟图片块。
+        const blocks = Array.isArray(attachment.prompt) ? attachment.prompt.map(object) : [{ type: 'text', text: String(attachment.prompt) }];
+        const text = blocks.filter((block) => block.type === 'text').map((block) => String(block.text)).join('');
+        items.push(inputItem(input(String(attachment.source_uuid ?? entry.uuid), text, object(attachment.origin).kind === 'human'),
+          blocks.filter((block) => block.type === 'image').map((block) => claudeImage(block, '排队消息'))));
       } else if (!skippedAttachments.has(attachment.type)) throw new Error(`不能翻译 Claude 附件 ${String(attachment.type)}`);
     } else if (entry.type === 'system') {
       if (entry.subtype === 'compact_boundary') throw new Error('不能翻译已压缩的 Claude 会话');
@@ -181,13 +189,17 @@ type ClaudeTarget = { nativeId: string; cwd: string; model: string; parent: stri
   /** Claude 会话现有条目；重组时来自 Claude 的段按它原样拷贝。 */
   native?: ClaudeEntry[] };
 
-/** 输入在 Claude 会话里的原生条目：回合开头是 user 消息，回合中途（跟在工具结果之后）是排队的命令附件；正文按来源包装。 */
-function claudeInput(input: Input, midTurn: boolean): { type: string; [key: string]: unknown } {
+/**
+ * 输入在 Claude 会话里的原生条目：回合开头是 user 消息，回合中途（跟在工具结果之后）是排队的命令附件；正文按来源包装，
+ * 附件里的图片跟在正文后面（排队命令的 prompt 同样可以是内容块）。
+ */
+function claudeInput(input: Input, midTurn: boolean, images?: ToolImage[]): { type: string; [key: string]: unknown } {
   const origin = input.source === 'human' ? { origin: { kind: 'human' } } : {};
+  const content = claudeUserContent(modelText(input), images);
   return midTurn
-    ? { type: 'attachment', attachment: { type: 'queued_command', prompt: modelText(input), source_uuid: randomUUID(), commandMode: 'prompt',
+    ? { type: 'attachment', attachment: { type: 'queued_command', prompt: content, source_uuid: randomUUID(), commandMode: 'prompt',
       ...origin, humanTurn: input.source === 'human' } }
-    : { type: 'user', message: { role: 'user', content: modelText(input) }, ...origin };
+    : { type: 'user', message: { role: 'user', content }, ...origin };
 }
 
 /** 一个模型条目对应的 Claude 内容块；工具调用 ID 规范化后登记，供结果找回调用与工具名。 */
@@ -329,7 +341,7 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
       case 'input': {
         close();
         const { input } = item;
-        add(claudeInput(input, afterResult));
+        add(claudeInput(input, afterResult, item.images));
         if (!afterResult) release();
         if (input.source === 'human') lastPrompt = input.text;
         break;
@@ -363,11 +375,15 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
   const through = String(records.at(-1)!.seq);
   const importId = randomUUID();
   const inputs = new Map<string, Input>();
+  const images = new Map<string, ToolImage[]>();
   const contexts = new Map<string, string>();
   let notificationCursor = 0;
   let instructions: string | undefined;
   for (const row of records) {
-    if (row.type === 'input.received') inputs.set(row.input.id, row.input);
+    if (row.type === 'input.received') {
+      inputs.set(row.input.id, row.input);
+      if (row.images) images.set(row.input.id, row.images);
+    }
     if (row.type === 'context.prepared') contexts.set(row.snapshot.id, restoreContext(row.snapshot).instructions);
     if (row.type === 'context.imported') notificationCursor = Math.max(notificationCursor, row.notificationCursor);
     if (row.type === 'request.started') {
@@ -420,7 +436,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add(claudeInput(input, false));
+            add(claudeInput(input, false, images.get(id)));
           }
           for (const note of notes) notice('UserPromptSubmit', note);
         } else {
@@ -428,7 +444,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add(claudeInput(input, true));
+            add(claudeInput(input, true, images.get(id)));
           }
         }
         request = { id: row.requestId, blocks: [], results: new Map() };

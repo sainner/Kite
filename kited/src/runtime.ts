@@ -29,6 +29,7 @@ import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
 import { ruleAllows } from './agents/tool-policy.ts';
 import { searchTool } from './harness/tool-search.ts';
+import { Attachments } from './workspace/attachments.ts';
 import type { NetworkAsk } from './execution/command.ts';
 
 export interface Runtime {
@@ -140,8 +141,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     withdraw: (id: string) => host.withdrawSecret(id),
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
+  const attachments = new Attachments(home);
+  const images = (input: Input) => input.source === 'human' && input.attachments ? attachments.images(workspaceId, input.attachments) : [];
   if (runtime === 'claude') {
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork,
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork, images,
       ...(host.background ? { background: host.background } : {}),
       ...(host.outside ? { outside: host.outside } : {}),
       prepare(afterNotification) {
@@ -222,7 +225,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   return {
     get state() { return thread.runner.state.phase; }, get busy() { return thread.runner.state.busy; },
     get recovery() { return thread.runner.state.recovery; },
-    send: (input) => thread.runner.send(input),
+    send: (input) => thread.runner.send(input, images(input)),
     interrupt: (request) => thread.runner.interrupt(request), shutdown: () => thread.close(),
     resume: async () => {
       if (thread.runner.state.recovery) throw new KiteError('请先确认旧执行已停止，再恢复会话', 409);

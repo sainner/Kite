@@ -293,11 +293,14 @@ nonisolated private struct WorkspaceFileScheme: URLSchemeHandler {
     }
 }
 
-/// 工作机上某个端口的网页，给终端的网页视图用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开一个转发
-/// （PortRelay），经组网连到工作机为这个端口开的转发。store 是这个目标在本设备的网站数据，见 WebSource.address。
+/// 工作机上某个端口的网页，给终端的网页视图用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开转发
+/// （PortRelays），经组网连到工作机为这个端口开的转发。本工作区其他运行中终端的端口也开着同号转发，页面里嵌着或调用的
+/// 另一个端口上的服务照工作机上的地址打开。store 是这个目标在本设备的网站数据，见 WebSource.address。
 struct PortPreview: View {
     let client: KitedClient
     let port: Int
+    /// 本工作区运行中终端监听的全部端口。
+    let workspacePorts: [Int]
     let store: UUID
     /// 消息里点的链接或地址栏里输入的路径：在页面里打开到它，每次都打开一回；没有时是首页。
     var link: WebLink?
@@ -324,28 +327,39 @@ struct PortPreview: View {
         .task(id: "\(client.identity) \(port)") {
             url = nil
             start = nil
-            // kited 自己的端口在本机和组网上都开着，页面开在它上面就和接口同源，能带上请求头调用接口
-            guard port != URL(string: client.address)?.port, port != URL(string: KitedClient.local)?.port else {
+            guard servable(port) else {
                 report("这是工作机服务自己的端口，不能预览")
                 return
             }
             if client.isLocal { show(URL(string: "http://localhost:\(port)")); return }
-            guard let host = URL(string: client.address)?.host(percentEncoded: false), let target = UInt16(exactly: port) else {
+            guard let host = workerHost, let target = UInt16(exactly: port) else {
                 report("工作机地址或端口无效")
                 return
             }
-            let relay: PortRelay
-            do { relay = try await PortRelay.start(host: host, port: target) { try await Tailnet.shared.socksProxy() } }
-            catch {
+            // 视图在就一直转发，离开或换了目标时（任务取消）放开
+            do {
+                try await PortRelays.shared.hold(host: host, port: target) { relay in
+                    // 首页开在 IPv4 回环上：写 localhost 时 WebKit 先连 ::1，同号端口在 ::1 上被本机别的服务占着时会打开错的页面。
+                    show(URL(string: "http://127.0.0.1:\(relay.port)"))
+                }
+            } catch {
                 report("本机转发没有打开：\(error.localizedDescription)")
-                return
             }
-            // 转发只听 IPv4 回环；写 localhost 时 WebKit 先连 ::1，本机正好有服务占着同号端口就会打开错的页面。
-            show(URL(string: "http://127.0.0.1:\(relay.port)"))
-            // 视图在就一直转发，离开或换了目标时（任务取消）关掉
-            while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
-            relay.stop()
         }
+        // 页面连向工作区别的端口（嵌着的页面、另一个端口上的接口）照工作机上的地址打开；同号被本机占用的另分端口，那个地址就打不开。
+        .task(id: "\(client.identity) \(others)") {
+            guard !client.isLocal, let host = workerHost else { return }
+            await PortRelays.shared.hold(host: host, ports: others)
+        }
+    }
+
+    private var workerHost: String? { URL(string: client.address)?.host(percentEncoded: false) }
+    /// kited 自己的端口在本机和组网上都开着，页面开在它上面就和接口同源，能带上请求头调用接口；工作区别的端口也一样不开。
+    private func servable(_ port: Int) -> Bool {
+        port != URL(string: client.address)?.port && port != URL(string: KitedClient.local)?.port
+    }
+    private var others: [UInt16] {
+        workspacePorts.filter { $0 != port && servable($0) }.compactMap { UInt16(exactly: $0) }
     }
 
     private func show(_ root: URL?) {

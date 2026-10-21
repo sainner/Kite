@@ -1,3 +1,4 @@
+import QuickLook
 import SwiftUI
 
 /// 气泡里的正文按 ``` 切成的一段：文字，或者等宽排的代码。source 是这段在 Message.text 里的位置，复制时对回原文：
@@ -49,87 +50,77 @@ extension Message {
 }
 
 #if os(iOS)
-/// 消息上面的附件：图片是缩略图，其余文件是一张小卡片，靠右排，放不下换行。iPhone、iPad 的原生气泡托管它（PhoneBubbleRowSlot）；
-/// Mac 的是原生的 AttachmentRowView。
+/// 消息上面的附件：图片是缩略图（取到之前是底色上一个照片图标），其余文件是一张小卡片，靠右排，放不下换行。点一下取原件，用快速查看打开。
+/// iPhone、iPad 的原生气泡托管它（PhoneBubbleRowSlot）；Mac 的是原生的 AttachmentRowView。
 struct MessageAttachmentRow: View {
     let attachments: [Attachment]
+    @Environment(\.attachmentSource) private var source
+    @State private var previewing: URL?
+    @State private var failure: String?
 
     var body: some View {
-        TrailingFlow(spacing: 6) {
-            ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
-                switch attachment {
-                case .image(let name, let width, let height):
-                    // 假数据没有图片本身，按尺寸画个框
-                    RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous)
-                        .fill(Theme.codeBackground)
-                        .frame(width: min(Metrics.attachmentHeight * CGFloat(width) / CGFloat(max(height, 1)), Metrics.attachmentHeight * 2),
-                               height: Metrics.attachmentHeight)
-                        .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
-                        .help(name)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(TranscriptSpeech.imageAttachment(name))
-                case .file(let name):
-                    HStack(spacing: 8) {
-                        Image(systemName: Self.icon(name)).foregroundStyle(.secondary)
-                        Text(name).font(Theme.secondary).lineLimit(1)
-                    }
-                    .padding(.horizontal, 12)
-                    .frame(height: 44)
-                    .overlay(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous).strokeBorder(Theme.rule))
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(TranscriptSpeech.fileAttachment(name))
-                }
+        AttachmentFlow(spacing: 6, trailing: true) {
+            ForEach(attachments) { attachment in
+                Button { open(attachment) } label: { item(attachment) }
+                    .buttonStyle(.pointingPlain)
+                    .disabled(source == nil)
             }
+        }
+        .quickLookPreview($previewing)
+        .alert("打不开附件", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+            Button("好", role: .cancel) { failure = nil }
+        } message: { Text(failure ?? "") }
+    }
+
+    @ViewBuilder private func item(_ attachment: Attachment) -> some View {
+        if let width = attachment.width, let height = attachment.height {
+            AttachmentThumbnail(attachment: attachment, source: source)
+                .frame(width: min(Metrics.attachmentHeight * CGFloat(width) / CGFloat(max(height, 1)), Metrics.attachmentHeight * 2),
+                       height: Metrics.attachmentHeight)
+                .clipShape(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(TranscriptSpeech.imageAttachment(attachment.name))
+        } else {
+            HStack(spacing: 8) {
+                Image(systemName: attachment.icon).foregroundStyle(.secondary)
+                Text(attachment.name).font(Theme.secondary).lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 44)
+            .overlay(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous).strokeBorder(Theme.rule))
+            .contentShape(RoundedRectangle(cornerRadius: Metrics.contentRadius, style: .continuous))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(TranscriptSpeech.fileAttachment(attachment.name))
         }
     }
 
-    private static func icon(_ name: String) -> String {
-        switch (name as NSString).pathExtension.lowercased() {
-        case "pdf": "doc.richtext"
-        case "csv", "xlsx", "xls", "numbers": "tablecells"
-        case "zip": "doc.zipper"
-        default: "doc"
+    private func open(_ attachment: Attachment) {
+        guard let source else { return }
+        Task {
+            do { previewing = try await AttachmentContent.shared.original(attachment, from: source) }
+            catch { failure = error.localizedDescription }
         }
     }
 }
 
-/// 一行一行排，放不下就换行，每行靠右。
-private struct TrailingFlow: Layout {
-    var spacing: CGFloat
+/// 图片附件的缩略图，取到之前是底色上一个照片图标（AttachmentFace）。
+struct AttachmentThumbnail: View {
+    let attachment: Attachment
+    let source: AttachmentSource?
+    @State private var image: PlatformImage?
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let rows = rows(width: proposal.width ?? .infinity, subviews)
-        let width = rows.map(\.width).max() ?? 0
-        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
-        return CGSize(width: width, height: height)
+    /// 换了附件，或者换了来源（刚连上、流转到了别的工作机）时重新取；取过的在缓存里，不会重下。
+    private struct Key: Equatable {
+        let id: String
+        let source: AttachmentSource?
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var y = bounds.minY
-        for row in rows(width: bounds.width, subviews) {
-            var x = bounds.maxX - row.width
-            for index in row.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: ProposedViewSize(size))
-                x += size.width + spacing
-            }
-            y += row.height + spacing
+    var body: some View {
+        AttachmentFace(image: image).task(id: Key(id: attachment.id, source: source)) {
+            image = AttachmentContent.shared.cached(attachment.id)
+            if image == nil { image = await AttachmentContent.shared.thumbnail(attachment, from: source) }
         }
-    }
-
-    private func rows(width: CGFloat, _ subviews: Subviews) -> [(indices: [Int], width: CGFloat, height: CGFloat)] {
-        var rows: [(indices: [Int], width: CGFloat, height: CGFloat)] = []
-        for (index, subview) in subviews.enumerated() {
-            let size = subview.sizeThatFits(.unspecified)
-            if let last = rows.indices.last, rows[last].width + spacing + size.width <= width {
-                rows[last].indices.append(index)
-                rows[last].width += spacing + size.width
-                rows[last].height = max(rows[last].height, size.height)
-            } else {
-                rows.append(([index], size.width, size.height))
-            }
-        }
-        return rows
     }
 }
+
 #endif

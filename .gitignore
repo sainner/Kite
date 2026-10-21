@@ -7,3 +7,4 @@ xcuserdata/
 kited/net/bin/
 /app/Vendor
 kited/test/manual/compile_commands.json
+/kited/test/manual/fixtures/

@@ -2,7 +2,7 @@
 import AppKit
 import SwiftUI
 
-/// 性能测量的 Mac 部分：测量窗口、滚到要测的那一段、拖缝前的布置、静息占用、打字和发送、截图。见 PerfProbe。
+/// 性能测量的 Mac 部分：测量窗口、滚到要测的那一段、拖缝前的布置、滚动、静息占用、打字和发送、存和回放会话数据、截图。见 PerfProbe。
 extension PerfProbe {
     static var window: NSWindow?
 
@@ -103,11 +103,7 @@ extension PerfProbe {
                 injectCompaction(thread)
             }
             try await Task.sleep(for: .seconds(1))
-            for list in lists {
-                guard let view = row("compaction", in: list)?.view as? CompactionRowView else { continue }
-                if !view.header.expanded { view.header.action?() }
-                if !view.buttons.original.isHidden { view.buttons.original.action?() }
-            }
+            expandCompactions(lists)
             try await Task.sleep(for: .seconds(1.2))
             try await scroll(lists, to: "compaction")
         case "running":
@@ -158,7 +154,8 @@ extension PerfProbe {
     private static func row(_ kind: String, in list: TranscriptListView) -> TranscriptRowSlot? {
         let slots = list.arrangement.slots
         switch kind {
-        case "compaction": return slots.first { $0 is CompactionRowSlot }
+        // 带原文的（Kite 的压缩）优先，Claude 原生的压缩只有分界
+        case "compaction": return slots.first { $0 is CompactionRowSlot && hasOriginal($0) } ?? slots.first { $0 is CompactionRowSlot }
         case "work": return slots.last { $0 is WorkRowSlot }
         case "block":
             // 嵌卡片最多的那段回复，一样多取靠后的
@@ -179,6 +176,15 @@ extension PerfProbe {
             if value is BlockAttachment { count += 1 }
         }
         return count
+    }
+
+    /// 展开各列表里压缩分界的摘要和原文（drag-fold、scroll-fold），没有压缩分界的列表不管。
+    private static func expandCompactions(_ lists: [TranscriptListView]) {
+        for list in lists {
+            guard let view = row("compaction", in: list)?.view as? CompactionRowView else { continue }
+            if !view.header.expanded { view.header.action?() }
+            if !view.buttons.original.isHidden { view.buttons.original.action?() }
+        }
     }
 
     /// 本地造一次压缩：一段顶层记录收进摘要，原文可以展开。
@@ -224,6 +230,8 @@ extension PerfProbe {
         case let name where name.hasPrefix("idle-"): try await idle(String(name.dropFirst("idle-".count)), session)
         case "type": try await typing(session, send: false)
         case "send": try await typing(session, send: true)
+        case "scroll", "scroll-wheel", "scroll-fold": try await scrolling(scene, session)
+        case "record": try await record(session)
         default: throw Failure("没有 \(scene) 这个场景")
         }
     }
@@ -346,6 +354,162 @@ extension PerfProbe {
             try await Task.sleep(for: .milliseconds(200))
         }
         try await Task.sleep(for: .seconds(1))
+    }
+
+    // MARK: - 滚动
+
+    /// 滚动：每帧把列表的滚动位置挪一截（同滚动视图收到滚动事件后改 clip view 的位置，列表照常收到位置变了的通知），台面上的会话从左到右各一遍：
+    /// 从底部按 -perfScrollSpeed（默认 2400 点每秒）往上滚 -perfScrollSeconds 秒（默认 8），停 1.2 秒，再往下滚同样久，滚到头就停。
+    /// 不发合成的滚动事件：经 NSApp.sendEvent 到不了列表，直接交给列表的 scrollWheel 也几乎不动（2026-10-21 实测）。
+    /// scroll 是触控板：前后发开始、结束滚动的通知（同 NSScrollView 的手势滚动），列表认得出人在滚，空闲补量停着；
+    /// scroll-wheel 是鼠标滚轮：不发这两个通知，同不带相位的滚轮。
+    /// scroll-fold 先把压缩分界的摘要和原文展开（会话里没有 Kite 的压缩就本地造一次，同 drag-fold），从原文末尾往上滚，同 scroll。
+    /// 开滚前等屏外的行都按眼下的宽量完（最多 30 秒）；-perfScrollEarly 1 时不等，看打开后补量还没做完时滚。
+    private static func scrolling(_ scene: String, _ session: Session) async throws {
+        let conversations = conversations(session)
+        guard !conversations.isEmpty else { throw Failure("台面上没有会话窗口") }
+        let lists = conversations.map(\.list)
+        let live = scene != "scroll-wheel"
+        if scene == "scroll-fold" {
+            for conversation in conversations where !hasOriginal(conversation.list) {
+                let thread = conversation.thread, transcript = thread.transcript
+                session.onFinish { thread.transcript = transcript }
+                injectCompaction(thread)
+            }
+            try await Task.sleep(for: .seconds(1))
+            expandCompactions(lists)
+            try await Task.sleep(for: .seconds(1.2))
+        }
+        if number("perfScrollEarly") != 1 { try await measured(lists) }
+        for list in lists {
+            if scene == "scroll-fold", let slot = row("compaction", in: list) {
+                // 原文的末尾对着可见区的底边
+                scroll(list, toTop: slot.frame.maxY - visible(list).height)
+            } else {
+                scroll(list, toTop: .greatestFiniteMagnitude)
+            }
+        }
+        try await Task.sleep(for: .seconds(1.2))
+        await capture("setup")
+        try await ready(session)
+        let speed = number("perfScrollSpeed") ?? 2400
+        let seconds = number("perfScrollSeconds") ?? 8
+        let center = NotificationCenter.default
+        for (index, list) in lists.enumerated() {
+            for up in [true, false] {
+                var segment = Segment(name: up ? "scroll-up" : "scroll-down", index: index, start: .now)
+                segment.unmeasured = list.arrangement.slots.filter(unmeasured).count
+                if live { center.post(name: NSScrollView.willStartLiveScrollNotification, object: list) }
+                try await measuring {
+                    try await Clock().run(timeout: seconds + 10) { link in
+                        let shown = visible(list)
+                        let height = list.documentView?.frame.height ?? 0
+                        segment.ticks.append(Tick(link, widths: [Double(shown.minY), Double(height)]))
+                        let elapsed = link.timestamp - (segment.ticks.first?.time ?? link.timestamp)
+                        let room = up ? shown.minY : height - shown.maxY
+                        guard elapsed < seconds, room > 1 else { return false }
+                        let step = CGFloat(speed * max(link.targetTimestamp - link.timestamp, 1.0 / 120))
+                        scroll(list, toTop: up ? shown.minY - step : shown.minY + step)
+                        return true
+                    }
+                }
+                if live { center.post(name: NSScrollView.didEndLiveScrollNotification, object: list) }
+                segment.end = .now
+                let settle = Mark.now
+                try await Task.sleep(for: .seconds(1.2))
+                segment.settleCpuMs = threadCPU() - settle.cpu
+                session.record(segment)
+                if index == 0 && up { await capture("scrolled") }
+            }
+        }
+    }
+
+    /// 列表里有带原文的压缩分界（Kite 的压缩；Claude 原生的压缩没有原文）。
+    private static func hasOriginal(_ list: TranscriptListView) -> Bool {
+        list.arrangement.slots.contains { $0 is CompactionRowSlot && hasOriginal($0) }
+    }
+
+    private static func hasOriginal(_ slot: TranscriptRowSlot) -> Bool {
+        guard case .item(let item) = slot.row.content, case .compacted(_, let children) = item.kind else { return false }
+        return !children.isEmpty
+    }
+
+    /// 等各列表屏外的行都按眼下的宽量完，最多 30 秒。
+    private static func measured(_ lists: [TranscriptListView]) async throws {
+        for _ in 0..<60 {
+            if !lists.flatMap(\.arrangement.slots).contains(where: unmeasured) { return }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    /// 这一行还没按眼下的宽量准。
+    private static func unmeasured(_ slot: TranscriptRowSlot) -> Bool { slot.measured?.width != slot.frame.width || slot.provisional }
+
+    // MARK: - 存、回放会话数据
+
+    /// 存会话数据（record）：台面上原来摆着的会话从左到右，各向工作机重新要一份完整历史（事件流的首帧 thread.history，原样），
+    /// 连同清单交给脚本，存成以后回放用的数据（见 replay）。
+    private static func record(_ session: Session) async throws {
+        let conversations = conversations(session)
+        guard !conversations.isEmpty else { throw Failure("台面上没有会话窗口") }
+        struct Entry: Encodable {
+            let index: Int
+            let thread: String
+            let title: String
+            let records: Int
+            let rows: Int
+        }
+        var entries: [Entry] = []
+        for (index, conversation) in conversations.enumerated() {
+            let thread = conversation.thread
+            guard let client = thread.client else { throw Failure("会话 \(thread.title) 没连着工作机") }
+            let snapshot = try await history(of: thread.id, client: client)
+            await deliver("fixture-\(index).json", Data(snapshot.utf8))
+            entries.append(Entry(index: index, thread: thread.id, title: thread.title, records: thread.transcript.records.count,
+                                 rows: conversation.list.arrangement.slots.count))
+        }
+        await deliver("fixture-manifest.json", entries)
+    }
+
+    /// 会话的完整历史：连上这个会话的事件流，取首帧（thread.history）的原文就断开，同 KitedClient.events。
+    private static func history(of id: String, client: KitedClient) async throws -> String {
+        let (connection, stream) = try await client.streamRequest("/events", thread: id)
+        defer { connection.invalidateAndCancel() }
+        var request = stream
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 60
+        let (bytes, response) = try await connection.bytes(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw Failure("读会话 \(id) 的事件流返回 \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        }
+        for try await line in bytes.lines where line.hasPrefix("data:") {
+            return line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        }
+        throw Failure("会话 \(id) 的事件流没有首帧")
+    }
+
+    /// 回放存下的会话数据（-perfFixture 给份数，脚本在 /fixture/<序号> 交出）：台面上从左到右的会话窗口依次换成存下的那份完整历史，
+    /// 会话 id 换成窗口里这个会话的。窗口里的会话空着（数据清掉后新建的代理）、还是草稿都行。工作机之后的事件照常进来（会话空闲时没有）；
+    /// 对话不存盘，测完 App 退出就没了。附件（图片）按窗口里这个会话去取，取不到，按占位画。
+    static func replay(_ session: Session) async throws {
+        guard let count = number("perfFixture").map(Int.init), count > 0 else { return }
+        guard let port else { throw Failure("回放会话数据要脚本给 -perfPort") }
+        // 空会话的列表藏着，按会话窗口找
+        let threads = views(ThreadWindowView.self).filter { !$0.isHiddenOrHasHiddenAncestor }.sorted(by: leftToRight).map(\.thread)
+        guard threads.count >= count else {
+            throw Failure("台面上只有 \(threads.count) 个会话窗口，存下的会话数据有 \(count) 份")
+        }
+        for index in 0..<count {
+            let thread = threads[index]
+            guard let url = URL(string: "http://127.0.0.1:\(port)/fixture/\(index)") else { continue }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure("取不到第 \(index) 份会话数据") }
+            object["threadId"] = thread.id
+            let event = try JSONDecoder().decode(RemoteEvent.self, from: JSONSerialization.data(withJSONObject: object))
+            try thread.apply(event)
+            session.report.fixture.append("\(index) → \(thread.id)：\(thread.transcript.records.count) 条记录")
+        }
     }
 
     // MARK: - 截图

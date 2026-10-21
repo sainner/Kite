@@ -1,7 +1,8 @@
 /** Journal 的同步投影：请求、工具与压缩段共享同一份历史状态。 */
 import { restoreContext } from './context/assembler.ts';
 import { roughTokens } from './compaction.ts';
-import type { ContextItem, Input, JournalRecord, ModelItem, Outcome, Recovery, ToolDefinition, ToolResult } from './types.ts';
+import { sameInput } from './input.ts';
+import type { ContextItem, Input, JournalRecord, ModelItem, Outcome, Recovery, ToolDefinition, ToolImage, ToolResult } from './types.ts';
 
 /** 段由产生它的记录 seq 标识，压缩按 seq 区间替换。 */
 interface Placed { seq: number; at: number }
@@ -58,8 +59,13 @@ export function replayUnits(records: readonly JournalRecord[]): ContextUnit[] {
   return history.contextUnits();
 }
 
+/** 输入在上下文里的条目，带着收下时定下的附件图片。 */
+export const inputItem = (input: Input, images?: ToolImage[]): ContextItem => ({ type: 'input', input, ...(images?.length ? { images } : {}) });
+
 export class HarnessHistory {
   readonly inputs = new Map<string, Input>();
+  /** 收下输入时定下的附件图片，见 ContextItem 的 input。 */
+  readonly images = new Map<string, ToolImage[]>();
   readonly pending = new Set<string>();
   readonly requests = new Map<string, SavedRequest>();
   /** 完整快照留在 journal；运行中只保留固定前缀和当前有效正文。 */
@@ -108,6 +114,7 @@ export class HarnessHistory {
       case 'input.received':
         if (this.inputs.has(row.input.id)) throw new Error('记录包含重复输入');
         this.inputs.set(row.input.id, structuredClone(row.input));
+        if (row.images?.length) this.images.set(row.input.id, row.images);
         this.pending.add(row.input.id);
         if (!this.recovery) this.waitingForResume = false;
         return;
@@ -118,7 +125,7 @@ export class HarnessHistory {
         if (this.stops.has(row.id)) throw new Error('停止收据重复');
         for (const input of row.returned) {
           const known = this.inputs.get(input.id);
-          if (known && (!this.pending.has(input.id) || known.text !== input.text || known.source !== input.source)) throw new Error('停止收据包含已消费或冲突输入');
+          if (known && (!this.pending.has(input.id) || !sameInput(known, input))) throw new Error('停止收据包含已消费或冲突输入');
           this.inputs.set(input.id, structuredClone(input));
           this.pending.delete(input.id);
         }
@@ -336,7 +343,7 @@ export class HarnessHistory {
       if ('feedback' in segment) { units.push({ items: [{ type: 'feedback', text: segment.feedback }] }); continue; }
       if ('imported' in segment) { units.push({ items: segment.imported, imported: segment.source }); continue; }
       const items: ContextItem[] = [...segment.notifications];
-      for (const input of segment.inputs) items.push({ type: 'input', input });
+      for (const input of segment.inputs) items.push(inputItem(input, this.images.get(input.id)));
       for (const item of segment.items) items.push({ type: 'output', item });
       for (const item of segment.items) {
         if (!item.call) continue;
@@ -352,7 +359,7 @@ export class HarnessHistory {
   estimate(instructions: string, tools: ToolDefinition[], extra: ContextItem[]): number {
     const changed = this.contextChanged?.seq ?? 0;
     const measured = this.segments.findLast((segment): segment is SavedRequest => 'usage' in segment && segment.usage !== undefined && segment.seq > changed);
-    const pending = [...this.pending].map((id): ContextItem => ({ type: 'input', input: this.inputs.get(id)! }));
+    const pending = [...this.pending].map((id) => inputItem(this.inputs.get(id)!, this.images.get(id)));
     if (!measured) return roughTokens(instructions) + roughTokens(JSON.stringify(tools)) + roughTokens([...this.items(), ...pending, ...extra]);
     const results = measured.items.flatMap((item): ContextItem[] => {
       const result = item.call && measured.results.get(item.call.id);

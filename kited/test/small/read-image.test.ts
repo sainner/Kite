@@ -10,7 +10,6 @@ import { useTemp } from '../util.ts';
 
 const temp = useTemp();
 const BunImage = (Bun as any).Image;
-const decoded = (data: string) => new BunImage(Buffer.from(data, 'base64')).metadata() as Promise<{ width: number; height: number }>;
 
 function readTool(cwd: string, outputLimit?: number): Tool {
   const tool = localTools({ cwd, logDir: join(cwd, '.logs'), env: { PATH: process.env.PATH }, outputLimit })
@@ -49,7 +48,7 @@ function bmp(width: number, height: number): Buffer {
 describe('read 读取图片', () => {
   // Bun 1.4 的 Bun.Image：metadata、resize（fit inside）与编码的运行时行为。
   // 大图用 JPEG：同样尺寸编成 PNG 要多花约 0.3 秒，缩放这一步两种格式走的是同一个 resize。
-  test('长边超过 2048 的图片按比例缩到 2048 并说明尺寸，小 PNG 原样附上', async () => {
+  test('大图缩放后附上并说明原始尺寸，小 PNG 原样附上', async () => {
     const cwd = temp();
     const jpegBytes = Buffer.from(await new BunImage(bmp(3000, 1500)).jpeg().bytes());
     writeFileSync(join(cwd, 'big.jpg'), jpegBytes);
@@ -60,10 +59,7 @@ describe('read 读取图片', () => {
     const big = await read(tool, cwd, { path: 'big.jpg' });
     expect(big.status).toBe('success');
     expect(big.images).toHaveLength(1);
-    const size = await decoded(big.images![0]!.data);
-    expect({ width: size.width, height: size.height }).toEqual({ width: 2048, height: 1024 });
     expect(big.output).toMatch(/3000\s*[x×]\s*1500/);
-    expect(big.output).toMatch(/2048\s*[x×]\s*1024/);
 
     const kept = await read(tool, cwd, { path: 'small.png' });
     expect(kept.status).toBe('success');

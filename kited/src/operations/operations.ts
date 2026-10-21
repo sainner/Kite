@@ -273,7 +273,7 @@ export class InstanceOperations {
       }
       case 'agent.send': {
         const input = args as OperationInput<'agent.send'>;
-        return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId), this.origin(caller), check);
+        return this.kite.send(input.instanceId, input.text, inputId(caller, input.operationId), this.origin(caller), check, input.attachments);
       }
       case 'agent.resume':
         await this.kite.resume(args.instanceId as string, check);
@@ -402,7 +402,7 @@ export class InstanceOperations {
     return Object.entries(operationContracts).flatMap(([name, contract]): Tool[] => {
       if (!contract.tool) return [];
       const schema = z.object(Object.fromEntries(Object.entries(contract.input.shape)
-        .filter(([key]) => key !== 'operationId' && key !== 'inputs'))).strict();
+        .filter(([key]) => key !== 'operationId' && key !== 'inputs' && key !== 'attachments'))).strict();
       return [{
         name: contract.tool, description: contract.description, parameters: z.toJSONSchema(schema) as JsonObject,
         validate(value) { parse(schema, value); },

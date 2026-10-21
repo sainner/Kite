@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { ToolBatch } from './tools.ts';
 import { HarnessHistory, type ContextUnit } from './history.ts';
-import { inputSchema, returnedOnStop } from './input.ts';
+import { inputSchema, returnedOnStop, sameInput } from './input.ts';
 import { loadedDefinitions, sameDefinition, TOOL_SEARCH } from './tool-search.ts';
 import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
 import { contextUpdateContext } from './context/notifications.ts';
@@ -11,7 +11,7 @@ import { AUTO_COMPACT_RATIO, compactInstructions, compactionItems, compactTempla
 import type { ContextAssembly } from './context/types.ts';
 import type {
   CompactionRequest, ContextItem, HarnessRequest, Input, JournalEvent, JournalRecord, JsonObject, ModelItem, Outcome, Phase,
-  RequestSnapshot, StopRequest, HarnessEvent, HarnessOptions, ThreadRunner, ThreadState, Tool, ToolDefinition,
+  RequestSnapshot, StopRequest, HarnessEvent, HarnessOptions, ThreadRunner, ThreadState, Tool, ToolDefinition, ToolImage,
 } from './types.ts';
 
 const quote = (text: string) => {
@@ -66,17 +66,18 @@ export class HarnessRunner implements ThreadRunner {
 
   get lifecycle(): 'open' | 'closing' | 'closed' { return this.closed ? 'closed' : this.closing ? 'closing' : 'open'; }
 
-  async send(input: Input): Promise<boolean> {
+  /** images 是附件里的图片交给模型的样子，由宿主在收下时给出，随这条输入记下。 */
+  async send(input: Input, images?: ToolImage[]): Promise<boolean> {
     this.assertOpen();
     if (!inputSchema.safeParse(input).success) throw new Error('输入 id、正文和来源必须有效');
     const previous = this.history.inputs.get(input.id);
     if (previous) {
-      if (previous.text !== input.text || previous.source !== input.source) throw new Error(`输入 id 冲突：${input.id}`);
+      if (!sameInput(previous, input)) throw new Error(`输入 id 冲突：${input.id}`);
       return false;
     }
     if (this.stopping) throw new Error('会话正在停止，请稍后发送');
     if (this.history.recovery) throw new Error('会话需要先确认恢复');
-    this.record({ type: 'input.received', input });
+    this.record({ type: 'input.received', input, ...(images?.length ? { images } : {}) });
     this.kick();
     return true;
   }
@@ -104,7 +105,7 @@ export class HarnessRunner implements ThreadRunner {
     for (const input of request.inputs ?? []) {
       if (!inputSchema.safeParse(input).success) throw new Error('待核定输入无效');
       const known = this.history.inputs.get(input.id) ?? returned.get(input.id);
-      if (known && (known.text !== input.text || known.source !== input.source)) throw new Error(`输入 id 冲突：${input.id}`);
+      if (known && !sameInput(known, input)) throw new Error(`输入 id 冲突：${input.id}`);
       if (!known) returned.set(input.id, input);
     }
     // 冻结后再落盘；同步事件观察者也不能趁这段窗口提交下一回合。

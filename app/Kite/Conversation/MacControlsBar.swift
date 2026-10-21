@@ -108,6 +108,8 @@ final class ControlsBarView: RepresentedRoot {
     /// 过渡途中玻璃比它矮，超出顶边的由 responseClip 裁掉。
     private let response = NSHostingController(rootView: AnyView(EmptyView()))
     private let responseClip = ResponseClip()
+    /// 待发的附件那一行，在输入框上面。
+    private let strip = DraftStripHost()
     /// 卡片正在显示的等待；没有时只有输入区。
     private var shownWaiting: String?
     private var responseKey: WaitingResponseKey?
@@ -156,10 +158,15 @@ final class ControlsBarView: RepresentedRoot {
         responseClip.isHidden = true
         responseClip.addSubview(response.view)
         addSubview(responseClip)
+        strip.resized = { [weak self] in self?.contentChanged() }
+        addSubview(strip.view, positioned: .below, relativeTo: responseClip)
+        registerForDraggedTypes([.fileURL])
 
         attach.label = .symbol("paperclip")
         attach.title = "添加附件"
         attach.isEnabled = false
+        attach.action = { [weak self] in self?.controls?.chooseFiles(in: self?.window) }
+        field.attachments = { [weak self] in self?.controls?.attach(from: $0) ?? false }
         previousButton.label = .symbol("arrow.left")
         previousButton.title = "上一题"
         previousButton.action = { [weak self] in self?.controls?.answering?.back() }
@@ -233,6 +240,8 @@ final class ControlsBarView: RepresentedRoot {
         voice.foreground = listening ? .accentColor : .secondary
         voice.title = listening ? "结束语音输入" : "语音输入"
         voice.isEnabled = enabled
+        attach.isEnabled = enabled && controls.canAttach
+        strip.show(controls.thread, environment: environment)
         primary.label = .symbol(controls.primaryAction.symbol)
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
@@ -249,6 +258,18 @@ final class ControlsBarView: RepresentedRoot {
         let fading = controls.state.fading
         applyPose(fading: fading)
         if fading == nil { shownFading = nil }
+    }
+
+    // MARK: - 拖进来的文件
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        controls?.canAttach == true && enabled && sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard enabled else { return false }
+        return controls?.attach(from: sender.draggingPasteboard) ?? false
     }
 
     /// 审批、密钥请求展开时按钮行左边的决定：换了一项（决定不同）才重建；回应途中都按不了，要存密钥的没填好值时按不了。
@@ -397,7 +418,7 @@ final class ControlsBarView: RepresentedRoot {
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0) + 2 * ComposerField.fieldInset
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize)
+        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize, strip: strip.height(width: width))
     }
 
     /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批、密钥请求时是它们的决定。
@@ -439,8 +460,11 @@ final class ControlsBarView: RepresentedRoot {
         // 有卡片时输入区贴着底边
         let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
+        if plan.strip > 0 {
+            place(strip.view, CGRect(x: Metrics.controlInset, y: Metrics.controlInset + dy, width: ComposerLayout.stripWidth(width), height: plan.strip))
+        }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
-        let top = ComposerLayout.fieldTop + dy
+        let top = plan.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset - ComposerField.fieldInset, y: top, width: fieldWidth + 2 * ComposerField.fieldInset,
                             height: field.drawHeight(width: fieldWidth + 2 * ComposerField.fieldInset, text: field.text)))
         place(fadingView, CGRect(x: field.frame.minX, y: top, width: field.frame.width, height: plan.field))

@@ -1,16 +1,18 @@
 import { afterEach, expect, test } from 'bun:test';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import { FileJournal, readJournal } from '../../src/harness/journal.ts';
+import { responsesInput } from '../../src/harness/responses.ts';
 import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
+import { attachmentPath } from '../../src/workspace/attachments.ts';
 import {
-  addProject, after, call, createWorkspace, folderWorkspace, type Kited, listSnapshots, machine, mark, openAgent, startKited, waitIdle,
+  addProject, after, call, createWorkspace, folderWorkspace, type Kited, listSnapshots, machine, mark, openAgent, putAttachment, startKited, waitIdle,
 } from '../harness.ts';
 import { input, item, ManualModel, Seen } from '../harness-loop.ts';
-import { commitMainline, git, gitOk, makeTemp, newDir, read, writeFiles } from '../util.ts';
+import { commitMainline, git, gitOk, imageSize, makeTemp, newDir, png, read, writeFiles } from '../util.ts';
 
 const roots: string[] = [];
 let kited: Kited | undefined;
@@ -81,6 +83,61 @@ test('默认 harness 线程的真实工具只改工作树，结果和快照先�
   expect(existsSync(session.workspace.cwd)).toBe(false);
   expect(gitOk(checkout, 'rev-parse', '--verify', '--quiet', `refs/kite/snapshots/${session.workspace.id}`)).toBe(true);
   expect((await listSnapshots(kk, session.workspace.id)).map((value) => value.commit)).toContain(afterTools!.commit);
+}, 1000);
+
+/*
+ * 几个部分的配合：附件经 HTTP 存进附件存储并在工作区里放一份；发消息时操作层把附件 ID 换成存好的附件，harness 收下输入时
+ * 把图片规整好记进 journal，适配器（OpenAI Responses 格式）把正文后的附件说明和图片交给模型；显示投影的人消息带着附件。
+ * git：工作区里那份不进快照靠的是检出（裸仓库）的 info/exclude，与快照用的几条 git 命令合起来是否认这条忽略，要跑起来才知道。
+ */
+test('只带附件、没有正文的消息：模型收到两个附件在工作区里的路径和那张图片，记录里的人消息带着附件，工作区里那份不进之后的快照，发出的附件不能再删', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const opened = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
+  const { workspace, checkout } = opened;
+  const id = await openAgent(kk.call, workspace.id);
+  const picture = await png(6, 4);
+  const note = Buffer.from('附件里的说明\n');
+  const image = await putAttachment(kk, workspace.id, crypto.randomUUID(), '截图.png', picture);
+  const text = await putAttachment(kk, workspace.id, crypto.randomUUID(), 'notes.txt', note);
+  expect(image).toMatchObject({ status: 200, body: { name: '截图.png', mediaType: 'image/png', size: picture.length, width: 6, height: 4 } });
+  expect(text).toMatchObject({ status: 200, body: { name: 'notes.txt', size: note.length } });
+  expect(text.body.width).toBeUndefined();
+  const refs = [image.body, text.body];
+  expect(readFileSync(join(workspace.cwd, attachmentPath(image.body)))).toEqual(picture);
+  expect(readFileSync(join(workspace.cwd, attachmentPath(text.body)))).toEqual(note);
+
+  const sent = await kk.call('POST', `/threads/${id}/messages`, { id: 'only-attachments', text: '', attachments: refs.map((ref) => ref.id) });
+  expect(sent.status).toBe(200);
+  const first = await model.call(1);
+  const user = responsesInput(first.request.history).filter((message) => message.role === 'user').at(-1)!;
+  const parts = user.content as Array<{ type: string; text?: string; image_url?: string }>;
+  const told = parts.flatMap((part) => part.type === 'input_text' ? [part.text!] : []).join('\n');
+  for (const ref of refs) expect(told).toContain(attachmentPath(ref));
+  const images = parts.filter((part) => part.type === 'input_image');
+  expect(images).toHaveLength(1);
+  expect(images[0]!.image_url).toStartWith('data:image/');
+  expect(await imageSize(images[0]!.image_url!)).toEqual({ width: 6, height: 4 });
+
+  // 模型改一个文件，工具批次后拍快照。
+  const patch = calledItem('after-attachments', 'patch', { operations: [{ type: 'create_file', path: 'reply.txt', diff: '+看过附件\n+' }] });
+  await first.response.emit({ type: 'item', item: patch });
+  first.response.complete();
+  const since = mark(kk);
+  (await model.call(2)).response.complete();
+  await waitIdle(kk, id, since);
+  const snapshot = (await listSnapshots(kk, workspace.id)).find((value) => value.toolUseIds.includes('after-attachments'));
+  expect(snapshot).toBeDefined();
+  const files = git(checkout.path, 'ls-tree', '-r', '--name-only', snapshot!.commit).split('\n');
+  expect(files).toContain('reply.txt');
+  expect(files.filter((file) => file.startsWith('.kite/attachments'))).toEqual([]);
+  expect(existsSync(join(workspace.cwd, attachmentPath(image.body)))).toBe(true);
+
+  const history = (await kk.call('GET', `/threads/${id}/history`)).body as History;
+  expect(history.records.flatMap(({ block }) => block.type === 'human' ? [block] : []))
+    .toEqual([expect.objectContaining({ id: 'only-attachments', text: '', attachments: refs })]);
+  expect((await kk.call('DELETE', `/workspaces/${workspace.id}/attachments/${image.body.id}`)).status).toBe(409);
 }, 1000);
 
 /*

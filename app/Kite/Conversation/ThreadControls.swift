@@ -68,6 +68,12 @@ struct ThreadControls: View {
         @Bindable var answers = thread.answers
         let answering = controls.answering != nil
         return VStack(spacing: 2) {
+            if !thread.draftAttachments.isEmpty {
+                DraftAttachmentStrip(thread: thread)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Metrics.controlInset)
+                    .padding(.bottom, ComposerLayout.stripGap - 2)
+            }
             TextField(controls.placeholder, text: answering ? $answers.currentOther : $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
@@ -117,15 +123,22 @@ struct ThreadControls: View {
         }
         .padding(.top, Metrics.controlInset)
         .padding(.bottom, Metrics.controlButtonInset)
+        // 拖进来的文件当附件
+        .dropDestination(for: URL.self) { urls, _ in
+            let files = urls.filter(\.isFileURL)
+            guard controls.canAttach, !files.isEmpty else { return false }
+            controls.attach(files: files)
+            return true
+        }
     }
 
     private func actionButtons(_ controls: ThreadControlsModel) -> some View {
         let listening = controls.listening
         return HStack(spacing: ThreadControlsModel.actionGap) {
             HStack(spacing: 0) {
-                Button {} label: { Image(systemName: "paperclip") }
+                Button { controls.chooseFiles(in: NSApp.keyWindow) } label: { Image(systemName: "paperclip") }
                     .buttonStyle(PaneButtonStyle())
-                    .disabled(true).accessibilityLabel("添加附件")
+                    .disabled(!controls.canAttach).accessibilityLabel("添加附件")
                 Button(action: toggleVoice) { Image(systemName: listening ? "mic.fill" : "mic") }
                     .buttonStyle(PaneButtonStyle(foreground: listening ? .accentColor : .secondary))
                     .accessibilityLabel(listening ? "结束语音输入" : "语音输入")

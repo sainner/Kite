@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { inputSchema, type inputVia } from '../harness/input.ts';
 import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
+import { MAX_MESSAGE_ATTACHMENTS } from '../workspace/attachments.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
 import { stateSchema as terminalStateSchema } from '../terminal/state.ts';
 
@@ -72,7 +73,8 @@ export const operationContracts = {
   'agent.send': {
     title: '发送消息', description: '向获准的 agent 实例发送消息，对方看到的消息标明是你发的；对方这一回合结束时把结果回报给你。',
     tool: 'agent_send', effect: 'write', retry: 'input',
-    input: target.extend({ text }).strict(), output: z.object({ id }).strict(),
+    // attachments 只给界面：用户发的消息带的附件，模型的工具声明里没有；正文为空时由宿主拒绝，带附件的可以没有正文。
+    input: target.extend({ text: z.string(), attachments: z.array(id).min(1).max(MAX_MESSAGE_ATTACHMENTS).optional() }).strict(), output: z.object({ id }).strict(),
   },
   'agent.resume': {
     title: '继续执行', description: '继续获准的 agent 实例。',

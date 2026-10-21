@@ -10,10 +10,16 @@ export type JsonObject = { [key: string]: Json };
  * （用户自己回答的提问、密钥请求的结果），是用户在界面上做的，交给模型时不加「不是用户说的话」。代理来信必带发信方 from，名称在收下时固定。
  */
 export type InputOrigin =
-  | { source: 'human'; via?: InputVia }
+  | { source: 'human'; via?: InputVia; attachments?: AttachmentRef[] }
   | { source: 'kite'; notice?: InputNotice; response?: true }
   | { source: 'agent'; from: InputSender };
 export type Input = { id: string; text: string } & InputOrigin;
+
+/**
+ * 人发的消息带的附件，收下时按工作机上存好的那份固定：原件在附件存储里，工作区里另有一份给代理用（见 workspace/attachments.ts）。
+ * 尺寸只有图片才有，是原图的。
+ */
+export interface AttachmentRef { id: string; name: string; mediaType: string; size: number; width?: number; height?: number }
 
 /** Kite 自动发的是哪种通知，只用于界面显示，不交给模型。 */
 export interface InputNotice {
@@ -66,7 +72,8 @@ export interface ToolImage {
 }
 
 export type ContextItem =
-  | { type: 'input'; input: Input }
+  /** images 是附件里的图片规整后交给模型的样子，收下输入时定下，随记录保存，适配器按各自协议附在这条输入上。 */
+  | { type: 'input'; input: Input; images?: ToolImage[] }
   | { type: 'output'; item: ModelItem }
   | { type: 'tool_result'; callId: string; result: ToolResult }
   | { type: 'feedback'; text: string }
@@ -168,7 +175,7 @@ export interface Recovery { message: string }
 export interface StopRequest { id: string; inputs?: Input[]; by?: { kind: 'agent'; instance: string } | InputVia }
 
 export type JournalEvent =
-  | { type: 'input.received'; input: Input }
+  | { type: 'input.received'; input: Input; images?: ToolImage[] }
   | { type: 'input.cancelled'; inputId: string }
   /** 停止收据同时撤回队列、登记未确认输入，迟到重试不得重新入队。 */
   | { type: 'thread.stopped'; id: string; returned: Input[] }
@@ -249,8 +256,8 @@ export type CompactionRequest = { id: string } & ({ from: string; through: strin
 export interface ThreadRunner {
   readonly state: ThreadState;
   readonly lifecycle: 'open' | 'closing' | 'closed';
-  /** 收下返回 true；同一 ID 已收下过（重试）时不再处理，返回 false。 */
-  send(input: Input): Promise<boolean>;
+  /** 收下返回 true；同一 ID 已收下过（重试）时不再处理，返回 false。images 是附件里的图片交给模型的样子，随输入记下。 */
+  send(input: Input, images?: ToolImage[]): Promise<boolean>;
   cancel(inputId: string): Promise<void>;
   interrupt(request?: StopRequest): Promise<Input[]>;
   /** 显式继续错误或恢复后的会话；可以在没有新输入时继续已有上下文。 */

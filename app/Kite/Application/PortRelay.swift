@@ -1,13 +1,76 @@
 import Foundation
 import Network
 
+/// 设备上为工作机端口开的转发，按目标共用：同一台工作机的同一个端口只开一个，几个网页视图看到的是同一个本机地址。
+/// 网页视图打开期间，本工作区每个运行中终端的端口都开着（见 PortPreview）。最后一个用它的视图离开后稍等一会儿才关，
+/// 视图重建（重新加载、工作区的端口有增减）时接着用，端口号不变。
+final class PortRelays {
+    static let shared = PortRelays()
+    private static let linger = Duration.seconds(2)
+
+    private struct Key: Hashable {
+        let host: String
+        let port: UInt16
+    }
+    private final class Entry {
+        let opening: Task<PortRelay, any Error>
+        var relay: PortRelay?
+        var holders = 0
+        init(_ opening: Task<PortRelay, any Error>) { self.opening = opening }
+    }
+    private var entries: [Key: Entry] = [:]
+
+    /// 用着通向工作机 host 上 port 的转发，直到调用的任务取消；开好时交给 opened。开不起来时抛错，下次再用时重开。
+    func hold(host: String, port: UInt16, opened: (PortRelay) -> Void = { _ in }) async throws {
+        let key = Key(host: host, port: port)
+        let entry: Entry
+        // 监听失败停下的转发不再给人用
+        if let existing = entries[key], existing.relay?.isStopped != true { entry = existing }
+        else {
+            entry = Entry(Task { try await PortRelay.start(host: host, port: port) { try await Tailnet.shared.socksProxy() } })
+            entries[key] = entry
+        }
+        entry.holders += 1
+        defer { release(entry, key) }
+        let relay: PortRelay
+        do { relay = try await entry.opening.value }
+        catch {
+            if entries[key] === entry { entries[key] = nil }
+            throw error
+        }
+        entry.relay = relay
+        guard !Task.isCancelled else { return }
+        opened(relay)
+        while !Task.isCancelled { try? await Task.sleep(for: .seconds(3600)) }
+    }
+
+    /// 同时用着几个端口的转发，直到调用的任务取消；开不起来的跳过。
+    func hold(host: String, ports: [UInt16]) async {
+        await withDiscardingTaskGroup { group in
+            for port in ports { group.addTask { try? await self.hold(host: host, port: port) } }
+        }
+    }
+
+    private func release(_ entry: Entry, _ key: Key) {
+        entry.holders -= 1
+        guard entry.holders == 0 else { return }
+        Task {
+            try? await Task.sleep(for: Self.linger)
+            guard entry.holders == 0 else { return }
+            if entries[key] === entry { entries[key] = nil }
+            (try? await entry.opening.value)?.stop()
+        }
+    }
+}
+
 /// 把设备回环上的一个端口转到工作机组网地址上的同号端口，给网页视图看工作机上运行的网页（docs/成果查看与位置.md「运行中的网页」）。
-/// 网页只连本机回环（127.0.0.1）：拿不到组网身份，经这里也只能到这一个目标。每条连接各自经组网节点的 SOCKS 代理拨出，
+/// 网页只连本机回环：拿不到组网身份，经这里也只能到这一个目标。每条连接各自经组网节点的 SOCKS 代理拨出，
 /// 节点重启（iOS 回到前台）后新连接照常可用。只听回环，本机其他程序经它也只能到同一个目标。
 nonisolated final class PortRelay: @unchecked Sendable {
     /// 实际监听的端口：尽量和工作机上的相同，页面看到的地址就和在工作机上一样；被占用时由系统另分一个。
     let port: UInt16
-    private let listener: NWListener
+    /// IPv4 回环上一个；IPv6 回环上的同号端口没被占时再一个，页面里写 [::1] 或 localhost 的地址也到同一个目标。
+    private let listeners: [NWListener]
     private let target: (host: String, port: UInt16)
     private let proxy: @Sendable () async throws -> SocksProxy
     private let queue: DispatchQueue
@@ -15,9 +78,9 @@ nonisolated final class PortRelay: @unchecked Sendable {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var stopped = false
 
-    private init(listener: NWListener, port: UInt16, target: (String, UInt16), proxy: @escaping @Sendable () async throws -> SocksProxy,
+    private init(listeners: [NWListener], port: UInt16, target: (String, UInt16), proxy: @escaping @Sendable () async throws -> SocksProxy,
                  queue: DispatchQueue) {
-        self.listener = listener
+        self.listeners = listeners
         self.port = port
         self.target = target
         self.proxy = proxy
@@ -25,40 +88,52 @@ nonisolated final class PortRelay: @unchecked Sendable {
     }
 
     static func start(host: String, port: UInt16, proxy: @escaping @Sendable () async throws -> SocksProxy) async throws -> PortRelay {
-        do { return try await listen(on: port, host: host, port: port, proxy: proxy) }
-        catch { return try await listen(on: 0, host: host, port: port, proxy: proxy) }
-    }
-
-    private static func listen(on local: UInt16, host: String, port: UInt16,
-                               proxy: @escaping @Sendable () async throws -> SocksProxy) async throws -> PortRelay {
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: local == 0 ? .any : NWEndpoint.Port(rawValue: local)!)
-        let listener = try NWListener(using: parameters)
         let queue = DispatchQueue(label: "PortRelay")
-        let ready = Once()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready: ready.run { continuation.resume() }
-                case .failed(let error): ready.run { continuation.resume(throwing: error) }
-                case .cancelled: ready.run { continuation.resume(throwing: CancellationError()) }
-                default: break
-                }
+        let primary: NWListener
+        do { primary = try await listen(.ipv4(.loopback), on: port, queue: queue) }
+        catch { primary = try await listen(.ipv4(.loopback), on: 0, queue: queue) }
+        guard let bound = primary.port?.rawValue else { primary.cancel(); throw KitedError(message: "本机转发端口没有打开") }
+        let secondary = try? await listen(.ipv6(.loopback), on: bound, queue: queue)
+        let relay = PortRelay(listeners: [primary] + (secondary.map { [$0] } ?? []), port: bound, target: (host, port), proxy: proxy, queue: queue)
+        for listener in relay.listeners {
+            listener.newConnectionHandler = { [weak relay] connection in
+                guard let relay else { connection.cancel(); return }
+                relay.accept(connection)
             }
-            listener.newConnectionHandler = { $0.cancel() }
-            listener.start(queue: queue)
-        }
-        guard let bound = listener.port?.rawValue else { listener.cancel(); throw KitedError(message: "本机转发端口没有打开") }
-        let relay = PortRelay(listener: listener, port: bound, target: (host, port), proxy: proxy, queue: queue)
-        listener.newConnectionHandler = { [weak relay] connection in
-            guard let relay else { connection.cancel(); return }
-            relay.accept(connection)
-        }
-        listener.stateUpdateHandler = { [weak relay] state in
-            if case .failed = state { relay?.stop() }
+            listener.stateUpdateHandler = { [weak relay] state in
+                if case .failed = state { relay?.stop() }
+            }
         }
         return relay
     }
+
+    /// 在回环地址上开一个监听，等它就绪；local 为 0 时由系统分端口。接上转发之前到的连接直接断开。
+    private static func listen(_ address: NWEndpoint.Host, on local: UInt16, queue: DispatchQueue) async throws -> NWListener {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: address, port: local == 0 ? .any : NWEndpoint.Port(rawValue: local)!)
+        let listener = try NWListener(using: parameters)
+        let ready = Once()
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                listener.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready: ready.run { continuation.resume() }
+                    case .failed(let error): ready.run { continuation.resume(throwing: error) }
+                    case .cancelled: ready.run { continuation.resume(throwing: CancellationError()) }
+                    default: break
+                    }
+                }
+                listener.newConnectionHandler = { $0.cancel() }
+                listener.start(queue: queue)
+            }
+        } catch {
+            listener.cancel()
+            throw error
+        }
+        return listener
+    }
+
+    var isStopped: Bool { lock.withLock { stopped } }
 
     func stop() {
         let all = lock.withLock {
@@ -66,7 +141,7 @@ nonisolated final class PortRelay: @unchecked Sendable {
             defer { connections = [:] }
             return Array(connections.values)
         }
-        listener.cancel()
+        listeners.forEach { $0.cancel() }
         all.forEach { $0.cancel() }
     }
 

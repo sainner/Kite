@@ -50,6 +50,11 @@ struct TerminalPane: View {
     private var running: Bool { status?.running ?? true }
     private var ports: [TerminalStatus.Port] { pushed?.ports ?? [] }
     private var port: Int? { running ? pushed?.webPort : nil }
+    /// 本工作区运行中终端监听的端口：其他设备上网页视图为它们都开转发，页面里连向别的端口也打得开（见 PortPreview）。
+    private var workspacePorts: [Int] {
+        Set(area.instances.filter { $0.status == .open && $0.state?.terminal?.running == true }
+            .flatMap { $0.state?.terminal?.ports ?? [] }.map(\.port)).sorted()
+    }
     /// 消息里点的链接，端口对得上才打开到它的路径（见 AppModel.openLocalPort）。
     private var link: WebLink? { area.webLinks[instance.id].flatMap { $0.target.port == port ? $0 : nil } }
     /// 页面当前的路径、查询和锚点，首页是 /。
@@ -92,8 +97,8 @@ struct TerminalPane: View {
                         .shown(!showsWeb)
                 }
                 if webKept || showsWeb, let port, let store = UUID(uuidString: instance.id) {
-                    PortPreview(client: client, port: port, store: store, link: link, browser: browser, report: { webFailure = $0 },
-                                visible: showsWeb)
+                    PortPreview(client: client, port: port, workspacePorts: workspacePorts, store: store, link: link, browser: browser,
+                                report: { webFailure = $0 }, visible: showsWeb)
                         .id("\(port) \(reload)")
                         .shown(showsWeb)
                 }

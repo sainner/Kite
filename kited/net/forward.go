@@ -17,7 +17,9 @@ import (
 
 // forwards 是给同账号设备开的网页预览端口：组网上的端口 N 转到本机的 localhost:N，见 docs/成果查看与位置.md「运行中的网页」。
 // 哪些端口可以转由 kited 决定（本工作区仍在运行的终端实例所监听的端口），这里只照单开关，并拒绝 kited 与本节点自己的端口。
-// 请求按本机访问的样子转交：Host 改成 localhost:N，不加转发头，开发服务器的主机检查、绝对路径资源和自动刷新照常工作。
+// 请求按本机访问的样子转交：Host 保留页面所用的本机地址（127.0.0.1、[::1] 或 localhost），端口换成 N，不加转发头，
+// 开发服务器的主机检查、按 Host 核对来源、绝对路径资源和自动刷新照常工作。统一改成 localhost 时，开在 127.0.0.1 上的页面
+// 来源与 Host 对不上，只认 [::1] 的服务直接拒绝。
 type forwards struct {
 	srv      *tsnet.Server
 	lc       *local.Client
@@ -64,11 +66,23 @@ func (f *forwards) handler(port int) http.Handler {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(target)
-			r.Out.Host = target.Host
+			r.Out.Host = net.JoinHostPort(loopbackName(r.In.Host), strconv.Itoa(port))
 		},
 		FlushInterval: -1,
 	}
 	return guard(f.lc, f.active, proxy)
+}
+
+// loopbackName 是请求 Host 里的本机地址；直接用组网地址访问等其他写法按 localhost 算。
+func loopbackName(host string) string {
+	name, _, err := net.SplitHostPort(host)
+	if err != nil {
+		name = strings.Trim(host, "[]")
+	}
+	if ip := net.ParseIP(name); name == "localhost" || ip != nil && ip.IsLoopback() {
+		return name
+	}
+	return "localhost"
 }
 
 // parsePorts 读逗号分隔的端口，读不懂的跳过。

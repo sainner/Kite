@@ -14,16 +14,16 @@ const raw = z.record(z.string(), z.json());
 const input = inputSchema;
 const call = z.object({ id, name: id, arguments: z.json() });
 const item = z.object({ id, raw, format: z.enum(['anthropic', 'deepseek']).optional(), call: call.optional() });
+const images = z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional();
 const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),
-  images: z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional(),
-  tools: z.array(toolDefinitionSchema).optional() });
+  images, tools: z.array(toolDefinitionSchema).optional() });
 const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
   z.object({ kind: z.literal('failed'), message: z.string() }),
 ]);
 const request = { turnId: id, requestId: id };
 const contextItem = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('input'), input }),
+  z.object({ type: z.literal('input'), input, images }),
   z.object({ type: z.literal('output'), item }),
   z.object({ type: z.literal('tool_result'), callId: id, result }),
   z.object({ type: z.literal('feedback'), text: z.string() }),
@@ -31,7 +31,7 @@ const contextItem = z.discriminatedUnion('type', [
     source: id, authority: z.enum(['instruction', 'observation']) }) }),
 ]);
 const event = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('input.received'), input }),
+  z.object({ type: z.literal('input.received'), input, images }),
   z.object({ type: z.literal('input.cancelled'), inputId: id }),
   z.object({ type: z.literal('thread.stopped'), id, returned: z.array(input) }),
   z.object({ type: z.literal('turn.started'), turnId: id }),

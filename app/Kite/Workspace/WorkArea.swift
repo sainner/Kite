@@ -77,7 +77,7 @@ final class WorkArea: Identifiable {
         pluginConnection = connection
         self.remote = remote
         self.definitions = definitions
-        draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+        draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name)
         let openWindows = remote.windows.filter { $0.state == .open }
         windows = openWindows
         instances = remote.instances
@@ -111,7 +111,7 @@ final class WorkArea: Identifiable {
         // 草稿已经变成代理，留一个新的草稿对象，免得之后按草稿改它的连接状态
         if drafted != nil, !draftThread.isDraft {
             draftWindow = nil
-            draftThread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+            draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name)
         }
         rebuildWindows()
         if let settingsInstance, !instances.contains(where: { $0.id == settingsInstance.id && $0.status == .open }) {
@@ -393,7 +393,7 @@ final class WorkArea: Identifiable {
     }
 
     private func makeDraftThread() -> WorkThread {
-        let thread = WorkThread(workspace: remote.workspace.cwd, project: remote.project.name)
+        let thread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name)
         thread.draftChoice = DraftAgentChoice()
         thread.connected = remote.workspace.status == .open
         return thread

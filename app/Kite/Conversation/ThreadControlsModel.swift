@@ -107,7 +107,68 @@ struct ThreadControlsModel {
     /// 回应卡片上的「交给 Line」：有 Line、这不是 Line 自己发起的请求时才有。
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
-    var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// 没写字，也没放附件。
+    var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && thread.draftAttachments.isEmpty }
+
+    // MARK: - 附件
+
+    /// 附件传到哪：所属工作机连着时是这个工作区。作答时不收附件，回答只收文字。
+    var attachmentSource: AttachmentSource? {
+        guard answering == nil, let client = try? model.activeClient(in: area) else { return nil }
+        return AttachmentSource(client: client, workspace: area.id)
+    }
+
+    var canAttach: Bool { attachmentSource != nil }
+
+    /// 选好的文件放进输入框，当场开始传。
+    func attach(files: [URL]) { add(files) { try DraftAttachment(staging: $0) } }
+
+    /// 粘贴、拍下的图片这类只有数据的。
+    func attach(data: Data, name: String) { add([data]) { try DraftAttachment(data: $0, name: name) } }
+
+    /// 一条消息最多带 maxAttachments 个，放不下的不读；读不了的跳过，其余照常放进去。
+    private func add<Item>(_ items: [Item], _ make: (Item) throws -> DraftAttachment) {
+        guard let source = attachmentSource else { return }
+        let room = thread.attachmentRoom
+        var made: [DraftAttachment] = []
+        var failure: (any Error)?
+        for item in items.prefix(room) {
+            do { made.append(try make(item)) } catch { failure = error }
+        }
+        thread.attach(made, to: source)
+        if items.count > room { thread.error = "一条消息最多带 \(WorkThread.maxAttachments) 个附件" }
+        if let failure { thread.error = "附件读取失败：\(failure.localizedDescription)" }
+    }
+
+    #if os(macOS)
+    /// 回形针：选文件（可以多选），选好放进输入框。
+    func chooseFiles(in window: NSWindow?) {
+        guard canAttach else { return }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.prompt = "添加"
+        let controls = self
+        let done: (NSApplication.ModalResponse) -> Void = { if $0 == .OK { controls.attach(files: panel.urls) } }
+        if let window { panel.beginSheetModal(for: window, completionHandler: done) } else { panel.begin(completionHandler: done) }
+    }
+
+    /// 粘贴板、拖进来的东西：有文件就当附件；只有图片数据（截图、网页上拷的图）时存成 PNG。只有字的返回假，照常交给输入框。
+    func attach(from pasteboard: NSPasteboard) -> Bool {
+        guard canAttach else { return false }
+        if let files = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !files.isEmpty {
+            attach(files: files)
+            return true
+        }
+        // 有现成的 PNG 就直接用，没有时才从图片转
+        guard pasteboard.string(forType: .string) == nil,
+              let png = pasteboard.data(forType: .png) ?? NSImage(pasteboard: pasteboard)?.tiffRepresentation
+                .flatMap({ NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }) else { return false }
+        attach(data: png, name: "图片.png")
+        return true
+    }
+    #endif
     /// decide 是审批或密钥请求展开、输入框空着时的主决定（允许一次、存为项目专用等，见 WaitingDecision.primary），主题色实心圆里一个对勾。
     enum PrimaryAction: Equatable {
         case send, stop, resume
@@ -264,8 +325,8 @@ struct ThreadControlsModel {
 
     // MARK: - 发送
 
-    /// 回车、发送键能不能发：草稿不空、上一条的字淡完了、会话能收。
-    var canSubmit: Bool { !blank && state.fading == nil && thread.canSend }
+    /// 回车、发送键能不能发：草稿或附件不空、附件都传好了、上一条的字淡完了、会话能收。
+    var canSubmit: Bool { !blank && thread.attachmentsReady && state.fading == nil && thread.canSend }
 
     /// 发送。frame 是控制区（玻璃那一块）在窗口坐标中的位置，点阵的波从这里推开；fieldHeight 是输入框此刻的高，
     /// 输入框撑着它淡完再变矮。新工作区先选择项目，这时不清草稿、不淡出，关闭选择窗口时仍保留原输入。
@@ -275,7 +336,8 @@ struct ThreadControlsModel {
         // 波只画在窗口里，朝窗口顶边走，和对话往上滑同一次更新起步
         let stage = stage, scope = scope
         let reach = frame.minY - (scope?.frame.minY ?? frame.minY)
-        let message = Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines))
+        var message = Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines))
+        message.attachments = thread.takeAttachments()
         if let waiting = skipping { thread.skip(waiting, sending: message) }
         send(message) {
             stage?.emitWave(from: frame, parameters: Self.sendWave(from: frame, reach: reach), in: scope)
@@ -338,6 +400,7 @@ struct ThreadEffortControl: View {
 
 /// 两端原生输入区（MacControlsBar、PhoneControlsBar）的版式，照 ThreadControls：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；
 /// 按钮行左右、底 controlButtonInset；顶 controlInset。附件、语音一组间距 0，和后面的主按钮间距 actionGap；横排时思考强度和按钮组之间至少两个按钮间距。
+/// 有待发的附件时，那一行（DraftAttachmentStrip）在最上面，左右、顶离玻璃 controlInset，下面隔 stripGap 才是输入框。
 enum ComposerLayout {
     static let fieldInset = Metrics.controlInset + 8
     static let fieldPadding: CGFloat = 6
@@ -348,20 +411,31 @@ enum ComposerLayout {
     static let fieldFill = Color.gray.opacity(0.12)
     static var fieldFillRadius: CGFloat { Metrics.controlRadius - Metrics.controlInset }
 
+    static let stripGap: CGFloat = 4
+
     struct Plan {
         var height: CGFloat
         var field: CGFloat
         var effort: CGSize
         var hidesActions: Bool
+        /// 待发附件那一行的高，没有附件时 0。
+        var strip: CGFloat = 0
+
+        /// 输入框的顶边：有附件时往下让出那一行。
+        var fieldTop: CGFloat { ComposerLayout.fieldTop + (strip > 0 ? strip + ComposerLayout.stripGap : 0) }
     }
 
-    /// 输入框（连同淡出的字）排出 field 高、思考强度是 effort 大时：玻璃多高，按钮行还放不放得下附件、语音和主按钮。
-    static func plan(width: CGFloat, field: CGFloat, effort: CGSize) -> Plan {
+    /// 待发附件那一行的宽：玻璃左右各让 controlInset。
+    static func stripWidth(_ width: CGFloat) -> CGFloat { max(width - 2 * Metrics.controlInset, 0) }
+
+    /// 输入框（连同淡出的字）排出 field 高、思考强度是 effort 大、待发附件那一行 strip 高时：玻璃多高，按钮行还放不放得下附件、语音和主按钮。
+    static func plan(width: CGFloat, field: CGFloat, effort: CGSize, strip: CGFloat = 0) -> Plan {
         let buttons = 3 * Metrics.paneButton + ThreadControlsModel.actionGap
         let hidesActions = effort.width + 2 * Metrics.paneButtonGap + buttons > width - 2 * Metrics.controlButtonInset
         let row = max(effort.height, Metrics.paneButton)
-        let height = Metrics.controlInset + 2 * fieldPadding + field + rowSpacing + row + Metrics.controlButtonInset
-        return Plan(height: height, field: field, effort: effort, hidesActions: hidesActions)
+        let attachments = strip > 0 ? strip + stripGap : 0
+        let height = Metrics.controlInset + attachments + 2 * fieldPadding + field + rowSpacing + row + Metrics.controlButtonInset
+        return Plan(height: height, field: field, effort: effort, hidesActions: hidesActions, strip: strip)
     }
 
     /// 审批的决定在按钮行左边一个挨一个，之间 actionGap（同收件箱卡片里的那一行）：各个按钮离这一组左边多远，和整组多大。
@@ -377,7 +451,7 @@ enum ComposerLayout {
 
     /// 按钮行：思考强度靠左，附件、语音、主按钮靠右，都在这一行里竖直居中。
     static func row(width: CGFloat, plan: Plan) -> (effort: CGRect, attach: CGRect, voice: CGRect, primary: CGRect) {
-        let top = fieldTop + plan.field + fieldPadding + rowSpacing
+        let top = plan.fieldTop + plan.field + fieldPadding + rowSpacing
         let inset = Metrics.controlButtonInset, size = Metrics.paneButton
         let row = max(plan.effort.height, size)
         let effort = CGRect(x: inset, y: top + (row - plan.effort.height) / 2, width: plan.effort.width, height: plan.effort.height)

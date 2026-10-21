@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// iPhone、iPad 原生输入区（ControlsBarView）的输入框。配置照现版 SwiftUI 竖向 TextField 底下的 UITextView 逐项设
 /// （2026-10-14 iPad 真机导过，见下）：TextKit 2，容器宽跟着视图、高不限，无内边距、行内边距 0，正文字号、字色 label、
@@ -14,6 +15,9 @@ final class ComposerField: UITextView, UITextViewDelegate {
     var textChanged: ((String) -> Void)?
     /// 成为、交出第一响应者。
     var focusChanged: ((Bool) -> Void)?
+    /// 粘贴板上只有图片时（截图、拷的照片）交给它当附件，PNG 数据；有字的照常粘贴。能收附件时才开（acceptsImages）。
+    var pasteImage: ((Data) -> Void)?
+    var acceptsImages = false
 
     /// 最多显示几行，再多在里面滚。
     static let maximumLines = 8
@@ -27,6 +31,22 @@ final class ComposerField: UITextView, UITextViewDelegate {
     private var unwrapped: (text: String, font: UIFont, width: CGFloat, height: CGFloat)?
     /// 折行时上一次按宽量的。
     private var measured: (width: CGFloat, text: String, font: UIFont, height: CGFloat)?
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)), acceptsImages, UIPasteboard.general.hasImages { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        let board = UIPasteboard.general
+        // 有现成的 PNG 就直接用，没有时才从图片转
+        if acceptsImages, board.hasImages, !board.hasStrings,
+           let data = board.data(forPasteboardType: UTType.png.identifier) ?? board.image?.pngData() {
+            pasteImage?(data)
+            return
+        }
+        super.paste(sender)
+    }
 
     static func make() -> ComposerField {
         let layout = NSTextLayoutManager()
