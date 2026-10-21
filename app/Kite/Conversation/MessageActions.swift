@@ -54,11 +54,13 @@ struct AgentTextActions: View {
     }
 }
 
-/// 人发的消息的操作栏：排队中的是重试、编辑、取消发送；收到了的是压缩起点和终点（Kite 的通知没有）。都有复制，折起来的还有展开全文。
+/// 消息气泡的操作栏：人发的排队中是重试、编辑、取消发送（代理来信没有）；收到了的是压缩起点和终点（Kite 的通知没有）。都有复制，折起来的还有展开全文。
 /// iPhone、iPad 的原生列表托管它（PhoneBubbleRowSlot.actionBar）；Mac 的见 BubbleRowSlot.actionItems，按钮和这里一一对应，改的时候两处一起改。
 struct MessageActionButtons: View {
     let message: Message
     let queued: Bool
+    /// 代理来信：不是用户写的，排队中也不能编辑、取消。
+    let letter: Bool
     /// 能当压缩的起点终点：Kite 的通知没有输入 ID，不能。
     let compactable: Bool
     let foldable: Bool
@@ -68,7 +70,7 @@ struct MessageActionButtons: View {
     @Environment(\.toast) private var toast
 
     var body: some View {
-        if queued {
+        if queued, !letter {
             if thread.failed.contains(message.id) {
                 ActionButton("重试发送", icon: "arrow.clockwise") { done { thread.retry(message) } }
                     .disabled(!thread.connected)

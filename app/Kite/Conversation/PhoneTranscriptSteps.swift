@@ -239,12 +239,18 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         let failed = call.state == .failed || call.state == .unknown
         let danger = UIColor(Theme.danger)
-        if call.use.kind == .agentStart {
+        let scale = window?.screen.scale ?? traitCollection.displayScale
+        switch call.use.kind {
+        case .agentStart:
             // 创建 agent 画要建的那个角色的头像，出错时也不变色
-            let scale = window?.screen.scale ?? traitCollection.displayScale
             icon.image = AgentAvatar.still(creating: call, diameter: Metrics.toolIcon, scale: scale, environment: environment)
                 .map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
-        } else {
+        case .sendMessage:
+            // 告知 agent 画对方的头像，右下角的纸飞机同别的图标变色
+            let badge = (failed ? Theme.danger : Color.secondary).resolve(in: environment).cgColor
+            icon.image = AgentAvatar.still(telling: call, diameter: Metrics.toolIcon, scale: scale, color: badge, environment: environment)
+                .map { UIImage(cgImage: $0, scale: scale, orientation: .up) }
+        default:
             icon.image = UIImage(systemName: call.use.kind.icon, withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
             icon.tintColor = failed ? danger : .secondaryLabel
         }
@@ -252,7 +258,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
                               size: 0)
         name.set(call.use.displayName, font: semibold, color: failed ? danger : .label)
         let root = environment.workingDirectory
-        let text = call.use.rowSummary(relativeTo: root, generating: call.state == .generating)
+        let text = call.use.rowSummary(relativeTo: root, generating: call.state == .generating) { AgentAvatar.target($0, environment: environment)?.title }
         let color: UIColor = failed ? danger : .secondaryLabel
         if call.state != .generating, !call.fileReferences.isEmpty {
             // 文件引用：带下划线的链接，中间用 · 隔开，放不下截中间

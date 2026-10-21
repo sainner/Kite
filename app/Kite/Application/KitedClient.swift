@@ -133,7 +133,24 @@ struct RemoteInput: Codable {
     let text: String
     let source: String
     var midTurn: Bool? = nil
+    /// 代理来信的发信方（kited 的 InputSender）：代理带标题；Line 自己的话以它的经由为发信方，没有标题。
+    var from: From? = nil
     var message: Message { Message(id: id, text: text, midTurn: midTurn ?? false) }
+
+    struct From: Codable {
+        let kind: String
+        let instance: String
+        var title: String? = nil
+    }
+
+    /// 排队中画出来的：人发的消息和代理来信；Kite 的通知不画。来信的名称同记录里的 sender（kited 的 senderName）。
+    var queued: Queued? {
+        switch source {
+        case "human": Queued(message: message)
+        case "agent": from.map { Queued(message: message, sender: Sender(name: $0.kind == "line" ? "Line" : $0.title ?? "", instance: $0.instance)) }
+        default: nil
+        }
+    }
 }
 
 struct StopRequest: Encodable {

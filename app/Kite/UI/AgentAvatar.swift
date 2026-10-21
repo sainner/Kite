@@ -260,6 +260,65 @@ extension AgentAvatar {
         guard let model = environment[AppModel.self], let area = environment[WorkArea.self] else { return nil }
         return model.emblem(for: instance, in: area)
     }
+
+    /// 对话里点名的那个代理（告知的对象）：标题和签名。先在这个工作区里找，子工作区里的到别的工作区找；都没有为 nil。
+    static func target(_ instance: String, environment: EnvironmentValues) -> (title: String, design: EmblemDesign?)? {
+        guard let model = environment[AppModel.self], let area = environment[WorkArea.self] else { return nil }
+        for candidate in [area] + model.workspaces {
+            if let found = candidate.instances.first(where: { $0.id == instance }) {
+                return (found.title, model.emblem(for: instance, in: candidate))
+            }
+        }
+        return nil
+    }
+
+    /// 对话里告知 agent 那一步的图标：对方的头像，右下角挖掉一圈、放一个 color 色的纸飞机，在什么底色上都分得开。
+    /// 对方找不到时用默认图案、按调用的 ID 取姿态，同创建 agent 那一步。
+    static func still(telling call: Call, diameter: CGFloat, scale: CGFloat, color: CGColor, environment: EnvironmentValues) -> CGImage? {
+        let instance = call.use.input["instanceId"]?.string
+        let design = instance.flatMap { target($0, environment: environment) }?.design
+        guard let face = still(design: design, instance: instance ?? call.use.id, diameter: diameter, scale: scale, environment: environment),
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: face.width, height: face.height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.scaleBy(x: scale, y: scale)
+        context.draw(face, in: CGRect(x: 0, y: 0, width: diameter, height: diameter))
+        // 位图原点在左下，右下角是 x 大、y 小；挖掉的一圈比纸飞机大 1 点
+        let badge = (diameter / 2).rounded()
+        context.setBlendMode(.clear)
+        context.fillEllipse(in: CGRect(x: diameter - badge, y: 0, width: badge, height: badge).insetBy(dx: -1, dy: -1))
+        context.setBlendMode(.normal)
+        // 符号按左上为原点画：上下翻过来
+        context.translateBy(x: 0, y: diameter)
+        context.scaleBy(x: 1, y: -1)
+        drawSymbol("paperplane.fill", in: CGRect(x: diameter - badge, y: diameter - badge, width: badge, height: badge), color: color, context: context)
+        return context.makeImage()
+    }
+
+    /// 在左上为原点、按点算的 context 里画一个符号，按比例放进 rect 正中。
+    private static func drawSymbol(_ name: String, in rect: CGRect, color: CGColor, context: CGContext) {
+        func fit(_ size: CGSize) -> CGRect {
+            guard size.width > 0, size.height > 0 else { return rect }
+            let ratio = min(rect.width / size.width, rect.height / size.height)
+            let fitted = CGSize(width: size.width * ratio, height: size.height * ratio)
+            return CGRect(x: rect.midX - fitted.width / 2, y: rect.midY - fitted.height / 2, width: fitted.width, height: fitted.height)
+        }
+        #if os(macOS)
+        let configuration = NSImage.SymbolConfiguration(pointSize: rect.height, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [NSColor(cgColor: color) ?? .secondaryLabelColor]))
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration) else { return }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        image.draw(in: fit(image.size), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        NSGraphicsContext.restoreGraphicsState()
+        #else
+        guard let image = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: rect.height, weight: .semibold))?
+            .withTintColor(UIColor(cgColor: color), renderingMode: .alwaysOriginal) else { return }
+        UIGraphicsPushContext(context)
+        image.draw(in: fit(image.size))
+        UIGraphicsPopContext()
+        #endif
+    }
 }
 
 #if os(macOS)

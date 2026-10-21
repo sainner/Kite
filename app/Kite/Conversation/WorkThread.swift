@@ -182,7 +182,7 @@ final class WorkThread: Identifiable {
             let history = event.records ?? []
             remoteRecords = history
             positions = Dictionary(uniqueKeysWithValues: history.enumerated().map { ($0.element.id, $0.offset) })
-            received = Set(history.compactMap { $0.block.type == "human" ? $0.block.id : nil })
+            received = Set(history.compactMap { ["human", "agent"].contains($0.block.type) ? $0.block.id : nil })
             pending = event.pending ?? []
             state = event.state
             connected = true
@@ -204,7 +204,7 @@ final class WorkThread: Identifiable {
                 remoteRecords.append(record)
                 recordsChanged = true
             }
-            if record.block.type == "human", let id = record.block.id {
+            if ["human", "agent"].contains(record.block.type), let id = record.block.id {
                 received.insert(id)
                 pending.removeAll { $0.id == id }
             }
@@ -247,7 +247,7 @@ final class WorkThread: Identifiable {
 
     private func render(recordsChanged: Bool = false) {
         let running = state?.busy == true && ["running", "stopping", "finishing"].contains(state?.phase ?? "")
-        let messages = pending.filter { $0.source == "human" }.map(\.message) + outbox
+        let messages = pending.compactMap(\.queued) + outbox.map { Queued(message: $0) }
         if recordsChanged {
             var records: [Record] = []
             visiblePositions.removeAll(keepingCapacity: true)

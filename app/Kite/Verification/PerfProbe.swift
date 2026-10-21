@@ -548,7 +548,7 @@ import UIKit
     static func hold(_ message: Message, in thread: WorkThread) -> Bool? {
         guard holdsSends else { return nil }
         let startsTurn = !thread.transcript.running && thread.transcript.pending.isEmpty
-        thread.transcript.pending.append(message)
+        thread.transcript.pending.append(Queued(message: message))
         held.append(Held(thread: thread, id: message.id))
         return startsTurn
     }

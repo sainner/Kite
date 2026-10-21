@@ -270,13 +270,20 @@ final class CallHeaderView: NativeButton {
         let failed = call.state == .failed || call.state == .unknown
         let danger = NSColor(cgColor: Theme.danger.resolve(in: environment).cgColor) ?? .systemRed
         let tint = failed ? danger : NSColor.secondaryLabelColor
-        if call.use.kind == .agentStart {
+        let diameter = Metrics.toolIcon, scale = window?.backingScaleFactor ?? 2
+        switch call.use.kind {
+        case .agentStart:
             // 创建 agent 画要建的那个角色的头像，出错时也不变色
-            let diameter = Metrics.toolIcon
-            icon.image = AgentAvatar.still(creating: call, diameter: diameter, scale: window?.backingScaleFactor ?? 2, environment: environment)
+            icon.image = AgentAvatar.still(creating: call, diameter: diameter, scale: scale, environment: environment)
                 .map { NSImage(cgImage: $0, size: NSSize(width: diameter, height: diameter)) }
             icon.contentTintColor = nil
-        } else {
+        case .sendMessage:
+            // 告知 agent 画对方的头像，右下角的纸飞机同别的图标变色
+            let badge = (failed ? Theme.danger : Color.secondary).resolve(in: environment).cgColor
+            icon.image = AgentAvatar.still(telling: call, diameter: diameter, scale: scale, color: badge, environment: environment)
+                .map { NSImage(cgImage: $0, size: NSSize(width: diameter, height: diameter)) }
+            icon.contentTintColor = nil
+        default:
             let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular)
             icon.image = NSImage(systemSymbolName: call.use.kind.icon, accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
             icon.contentTintColor = tint
@@ -284,7 +291,7 @@ final class CallHeaderView: NativeButton {
         let bold = Theme.secondary.weight(.semibold).resolve(in: context).ctFont as NSFont
         name.set(call.use.displayName, font: bold, color: failed ? danger : .labelColor)
         let root = environment.workingDirectory
-        let text = call.use.rowSummary(relativeTo: root, generating: call.state == .generating)
+        let text = call.use.rowSummary(relativeTo: root, generating: call.state == .generating) { AgentAvatar.target($0, environment: environment)?.title }
         showsReferences = call.state != .generating && !call.fileReferences.isEmpty
         if showsReferences {
             references.show(call.fileReferences, scope: environment.referenceScope, font: font, color: tint, openURL: environment.openURL)
@@ -375,7 +382,7 @@ final class CallHeaderView: NativeButton {
         let available = max(bounds.width - inset * 2 - chipsWidth - gap * 2 - start, 0)
         let summaryWidth = min(showsReferences ? references.textWidth : summary.textWidth, available)
         let lineHeight = name.lineHeight
-        // 比字高的图标（创建 agent 的头像）撑高这一组，字竖着居中
+        // 比字高的图标（创建、告知 agent 的头像）撑高这一组，字竖着居中
         let imageSize = icon.image?.size ?? .zero
         let groupHeight = max(lineHeight, imageSize.height)
         let top = ((bounds.height - groupHeight) / 2).rounded()

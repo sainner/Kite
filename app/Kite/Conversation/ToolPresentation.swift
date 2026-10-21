@@ -73,7 +73,7 @@ enum ToolKind: Hashable {
         case .terminalRead: "看了 \(count) 次后台输出"
         case .terminalList: "查看了终端"
         case .listAgents: "查看了能联系的 agent"
-        case .sendMessage: "给其他 agent 发了 \(count) 条消息"
+        case .sendMessage: "告知其他 agent \(count) 次"
         case .question: "向用户提了 \(count) 次问题"
         case .credentials: "查看了密钥引用"
         case .agentStart: "创建了 \(count) 个 agent"
@@ -186,7 +186,7 @@ extension ToolUse {
         case .terminalRead: "后台输出"
         case .terminalList: "终端列表"
         case .listAgents: "agent 列表"
-        case .sendMessage: "发消息"
+        case .sendMessage: "告知"
         case .question: "提问"
         case .credentials: "密钥引用"
         case .agentStart: "创建 agent"
@@ -206,7 +206,8 @@ extension ToolUse {
         }
     }
 
-    func rowSummary(relativeTo root: String, generating: Bool) -> String {
+    /// 一步标题行上名字后面的摘要。agentTitle 按实例 ID 给出代理的标题，告知那一步说的是对方是谁、不是消息内容。
+    func rowSummary(relativeTo root: String, generating: Bool, agentTitle: (String) -> String?) -> String {
         let path = file.map { relativePath($0, to: root) } ?? ""
         switch kind {
         case .read:
@@ -231,6 +232,9 @@ extension ToolUse {
             return input["title"]?.string ?? firstLine(input["prompt"]?.string)
         case .monitorStart:
             return input["title"]?.string ?? ""
+        case .sendMessage:
+            // Claude 的 SendMessage 参数里本来就是名字
+            return input["instanceId"]?.string.flatMap(agentTitle) ?? input["to"]?.string ?? ""
         case .lineStatus, .lineRelay:
             return input["machine"]?.string ?? ""
         case .lineHandle:
@@ -312,7 +316,7 @@ extension ToolUse {
         case .terminalRead: return "看后台终端 \(input["instanceId"]?.string ?? "")"
         case .terminalList: return "查看终端"
         case .listAgents: return "查看能联系的 agent"
-        case .sendMessage: return "给 \(input["to"]?.string ?? "agent") 发消息"
+        case .sendMessage: return "告知 \(input["to"]?.string ?? "agent")"
         case .question:
             let texts = questionTexts
             return texts.count == 1 ? "问「\(texts[0])」" : "问 \(texts.count) 个问题"

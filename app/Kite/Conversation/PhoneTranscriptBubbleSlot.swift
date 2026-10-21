@@ -7,7 +7,7 @@ import UIKit
 /// 附件排在气泡上面（托管 MessageAttachmentRow，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 长按气泡任何地方（含内边距、折叠按钮）都开操作栏，接着拖是选字（用户 2026-10-13 定）；
 /// iPad 指针右键开关操作栏。刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，浮的途中不能选字（同 Mac）。
-/// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上；气泡上面一行是发信方的头像和名字（PhoneSenderLine），同 Mac。
+/// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上，排队中同人发的只描边；气泡上面一行是发信方的头像和名字（PhoneSenderLine），同 Mac。
 /// Kite 的通知也是它：气泡同代理来信，里面是正文；上面一行是 PhoneNoticeHeader（图标、种类、箭头）。默认收着、只有这一行，
 /// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。同 Mac。
 final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
@@ -84,13 +84,10 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         super.update(row, context: context)
         let message: Message, queued: Bool, sender: Sender?, notice: Notice?
         switch row.content {
-        case .message(let typed, let pending): (message, queued, sender, notice) = (typed, pending, nil, nil)
+        case .message(let typed, let pending, let from): (message, queued, sender, notice) = (typed, pending, from, nil)
         case .item(let item):
-            switch item.kind {
-            case .agent(let letter, let from): (message, queued, sender, notice) = (letter, false, from, nil)
-            case .kite(let kite): (message, queued, sender, notice) = (Message(id: "\(item.id)", text: kite.text), false, nil, kite)
-            default: return
-            }
+            guard case .kite(let kite) = item.kind else { return }
+            (message, queued, sender, notice) = (Message(id: "\(item.id)", text: kite.text), false, nil, kite)
         }
         let wasQueued = self.queued
         self.message = message
@@ -120,7 +117,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         interaction.dismissActions = { context.select(nil) }
         interaction.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
         container.text.accessibilityLabel = notice != nil ? TranscriptSpeech.noticeBody
-            : sender.map(TranscriptSpeech.agent) ?? TranscriptSpeech.message(queued: queued)
+            : sender.map { TranscriptSpeech.agent($0, queued: queued) } ?? TranscriptSpeech.message(queued: queued)
         container.text.accessibilityCustomActions = context.actionable
             ? [UIAccessibilityCustomAction(name: TranscriptSpeech.actions) { _ in context.select(id); return true }] : nil
     }
@@ -295,7 +292,8 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     func actionBar() -> (side: HorizontalEdge, content: AnyView)? {
         guard let message, let context, context.actionable else { return nil }
         let expanded = Binding { [weak self] in self?.expanded ?? false } set: { [weak self] in self?.setExpanded($0) }
-        let buttons = MessageActionButtons(message: message, queued: queued, compactable: notice == nil, foldable: foldable, expanded: expanded)
+        let buttons = MessageActionButtons(message: message, queued: queued, letter: sender != nil, compactable: notice == nil,
+                                           foldable: foldable, expanded: expanded)
         return (letter ? .leading : .trailing, AnyView(buttons.environment(\.self, context.environment)))
     }
 

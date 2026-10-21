@@ -1,15 +1,17 @@
 import CoreGraphics
 import Foundation
 
-/// 对话里的一行：一条人发的消息，或者记录派生出来的一项。主对话和子 agent 做的事都这样排。
-/// 人发的消息按消息的 id 认，排队中和收到了走同一个分支：从排队中变成收到，还是同一个气泡，底色直接填进来。
+/// 对话里的一行：一条人发的消息或代理来信，或者记录派生出来的一项。主对话和子 agent 做的事都这样排。
+/// 消息和来信按 id 认，排队中和收到了走同一个分支：从排队中变成收到，还是同一个气泡，底色直接填进来。
 struct TranscriptRow: Identifiable {
     enum Content {
         case item(Item)
-        case message(Message, queued: Bool)
+        /// sender 是代理来信的发信方，人发的为 nil。
+        case message(Message, queued: Bool, sender: Sender? = nil)
 
+        /// 人发的消息。代理来信虽然也按消息认，间距和轮次同工具行。
         var isMessage: Bool {
-            if case .message = self { true } else { false }
+            if case .message(_, _, .none) = self { true } else { false }
         }
     }
 
@@ -23,7 +25,7 @@ struct TranscriptRow: Identifiable {
     var isMessage: Bool { content.isMessage }
 
     /// 一串记录排成的行，排队中的消息接在最后。
-    static func rows(items: [Item], pending: [Message]) -> [TranscriptRow] {
+    static func rows(items: [Item], pending: [Queued]) -> [TranscriptRow] {
         var rows: [TranscriptRow] = []
         func append(_ id: RowID, _ content: Content, startsTurn: Bool) {
             let humanTurn = startsTurn && content.isMessage
@@ -36,14 +38,14 @@ struct TranscriptRow: Identifiable {
             rows.append(TranscriptRow(id: id, content: content, gap: gap, startsHumanTurn: humanTurn))
         }
         for item in items {
-            if case .human(let message) = item.kind {
-                append(.message(message.id), .message(message, queued: false), startsTurn: item.startsTurn)
-            } else {
-                append(.item(item.id), .item(item), startsTurn: item.startsTurn)
+            switch item.kind {
+            case .human(let message): append(.message(message.id), .message(message, queued: false), startsTurn: item.startsTurn)
+            case .agent(let letter, let sender): append(.message(letter.id), .message(letter, queued: false, sender: sender), startsTurn: false)
+            default: append(.item(item.id), .item(item), startsTurn: item.startsTurn)
             }
         }
-        for message in pending {
-            append(.message(message.id), .message(message, queued: true), startsTurn: !message.midTurn)
+        for queued in pending {
+            append(.message(queued.id), .message(queued.message, queued: true, sender: queued.sender), startsTurn: !queued.message.midTurn)
         }
         return rows
     }
@@ -55,8 +57,9 @@ struct TranscriptRow: Identifiable {
         hasher.combine(gap)
         switch content {
         case .item(let item): item.kind.shape(into: &hasher)
-        case .message(let message, let queued):
+        case .message(let message, let queued, let sender):
             hasher.combine(queued)
+            hasher.combine(sender)
             message.shape(into: &hasher)
         }
     }

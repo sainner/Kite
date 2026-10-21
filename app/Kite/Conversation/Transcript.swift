@@ -9,14 +9,14 @@ struct Transcript {
     /// 有回合在进行（kited 的 busy）。没有结果的工具调用这时算正在跑，否则算没跑完。
     var running: Bool { didSet { items = derive() } }
     /// 发出去了、agent 还没收到的消息，按发出的顺序。收到的那一刻才变成一条记录，撤回的永远不进记录。
-    /// 包含服务已接收但尚未纳入模型请求的输入，以及客户端还没收到投递确认的消息。
-    var pending: [Message]
+    /// 包含服务已接收但尚未纳入模型请求的输入（人发的和代理来信），以及客户端还没收到投递确认的消息。
+    var pending: [Queued]
     /// 界面上的样子。记录或 running 变了才重新派生，视图重画时直接拿。
     private(set) var items: [Item] = []
     private var replacingRecord = false
     private var locations: [Int: (item: Int, call: Int?)] = [:]
 
-    init(root: String, records: [Record] = [], running: Bool = false, pending: [Message] = []) {
+    init(root: String, records: [Record] = [], running: Bool = false, pending: [Queued] = []) {
         self.root = root
         self.records = records
         self.running = running
@@ -60,6 +60,13 @@ enum Block {
 struct Sender: Hashable {
     let name: String
     let instance: String
+}
+
+/// 排着队的一条：人发的消息，或别的代理发来的（sender 是发信方）。
+struct Queued: Identifiable {
+    var message: Message
+    var sender: Sender? = nil
+    var id: String { message.id }
 }
 
 /// Kite 自动发给 agent 的一条（子代理回报、monitor 事件、合并冲突、转交的用户回应等）。正文是写给模型的，界面上一律画成 Kite 的气泡，

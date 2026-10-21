@@ -13,7 +13,7 @@ enum TranscriptSpeech {
     static func fold(expanded: Bool) -> String { expanded ? "收起" : "展开全文" }
 
     /// 代理来信：正文前面读的说明。
-    static func agent(_ sender: Sender) -> String { "\(sender.name) 发来的消息" }
+    static func agent(_ sender: Sender, queued: Bool = false) -> String { "\(sender.name) 发来的消息" + (queued ? "，排队中" : "") }
     /// Kite 的通知：读那一句。
     static func notice(_ notice: Notice) -> String { "Kite 通知，" + notice.title }
     static func noticeHint(expanded: Bool) -> String { expanded ? "收起正文" : "展开正文" }
@@ -73,8 +73,8 @@ enum TranscriptSpeech {
     /// 整行读成一句：远处还没建视图的行由列表的代理元素读它。
     static func summary(_ row: TranscriptRow) -> String {
         switch row.content {
-        case .message(let message, let queued):
-            return self.message(queued: queued) + "，" + message.typed
+        case .message(let message, let queued, let sender):
+            return (sender.map { agent($0, queued: queued) } ?? self.message(queued: queued)) + "，" + message.typed
         case .item(let item):
             switch item.kind {
             case .human(let message): return self.message(queued: false) + "，" + message.typed

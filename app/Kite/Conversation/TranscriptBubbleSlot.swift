@@ -6,7 +6,7 @@ import SwiftUI
 /// 排队中只描边、跟系统文字色，两者之间 0.3 秒淡入淡出；太长的折到 messageFold 高，底下渐隐，下面一个展开、收起的按钮；
 /// 附件排在气泡上面（AttachmentRowView，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，见 TranscriptListView.rise。
-/// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上；气泡上面一行是发信方的头像和名字（SenderLineView），折叠和操作同人发的。
+/// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上，排队中同人发的只描边；气泡上面一行是发信方的头像和名字（SenderLineView），折叠和操作同人发的。
 /// Kite 的通知也是它：气泡同代理来信，里面是正文；上面一行是 NoticeHeaderView（图标、种类、箭头）。默认收着、只有这一行，
 /// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。
 final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
@@ -76,13 +76,10 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         super.update(row, context: context)
         let message: Message, queued: Bool, sender: Sender?, notice: Notice?
         switch row.content {
-        case .message(let typed, let pending): (message, queued, sender, notice) = (typed, pending, nil, nil)
+        case .message(let typed, let pending, let from): (message, queued, sender, notice) = (typed, pending, from, nil)
         case .item(let item):
-            switch item.kind {
-            case .agent(let letter, let from): (message, queued, sender, notice) = (letter, false, from, nil)
-            case .kite(let kite): (message, queued, sender, notice) = (Message(id: "\(item.id)", text: kite.text), false, nil, kite)
-            default: return
-            }
+            guard case .kite(let kite) = item.kind else { return }
+            (message, queued, sender, notice) = (Message(id: "\(item.id)", text: kite.text), false, nil, kite)
         }
         let wasQueued = self.queued
         let first = self.message == nil
@@ -97,7 +94,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         container.text.secondaryClick = toggle
         container.bubble.secondaryClick = toggle
         container.text.setAccessibilityLabel(notice != nil ? TranscriptSpeech.noticeBody
-                                             : sender.map(TranscriptSpeech.agent) ?? TranscriptSpeech.message(queued: queued))
+                                             : sender.map { TranscriptSpeech.agent($0, queued: queued) } ?? TranscriptSpeech.message(queued: queued))
         container.text.setAccessibilityCustomActions(toggle.map { toggle in
             [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
         })
@@ -189,8 +186,8 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         layout.anchor(in: frame, topWidth: container.topWidth, leading: letter)
     }
 
-    /// 消息的操作栏，和气泡靠着的那边对齐，同 MessageActionButtons：排队中的是重试发送（发送失败时）、编辑、取消发送；收到了的是压缩起点和终点。
-    /// 都有复制，折起来的还有展开全文；Kite 的通知没有压缩。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
+    /// 消息的操作栏，和气泡靠着的那边对齐，同 MessageActionButtons：排队中人发的是重试发送（发送失败时）、编辑、取消发送，排队中的来信不是用户写的、没有这几项；
+    /// 收到了的是压缩起点和终点。都有复制，折起来的还有展开全文；Kite 的通知没有压缩。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
     func actionItems() -> (side: HorizontalEdge, items: [ActionItem])? {
         guard let message, let context, context.actionable, let thread = context.environment[WorkThread.self] else { return nil }
         let selection = context.environment.selectedRow
@@ -199,7 +196,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             { selection.close(); withAnimation(.snappy, body) }
         }
         var items: [ActionItem] = []
-        if queued {
+        if queued, sender == nil {
             if thread.failed.contains(message.id) {
                 items.append(ActionItem(title: "重试发送", icon: "arrow.clockwise", enabled: thread.connected, perform: done { thread.retry(message) }))
             }

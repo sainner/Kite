@@ -104,7 +104,7 @@ enum TranscriptPlacement: Equatable {
                 slot = make(row)
                 slot.update(row, context: context)
                 // 刚发出去的消息先在下面藏着，跟着滑到底的那一下浮上来，见各端列表的 startGlideIfReady
-                if case .message(let message, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
+                if case .message(let message, _, _) = row.content, context.environment.arrivingMessages.contains(message.id) {
                     slot.rise = 1
                     arrivals += 1
                 }

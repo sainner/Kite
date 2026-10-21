@@ -93,7 +93,7 @@ func slotKind(_ row: TranscriptRow) -> SlotKind {
     case .item(let item):
         switch item.kind {
         case .text: .prose
-        // 人发的消息在 TranscriptRow.rows 里都成了 .message，走不到这里
+        // 人发的消息和代理来信在 TranscriptRow.rows 里都成了 .message，走不到这里
         case .human, .agent, .kite: .bubble
         case .work: .work
         case .thinking: .thinking
