@@ -164,7 +164,8 @@ export type Outcome =
   | { kind: 'failed'; message: string };
 
 export interface Recovery { message: string }
-export interface StopRequest { id: string; inputs?: Input[] }
+/** by 是发起停止的代理或经界面入口的 Line，它发来、还没交给模型的消息退给它；用户在界面上停止时没有。 */
+export interface StopRequest { id: string; inputs?: Input[]; by?: { kind: 'agent'; instance: string } | InputVia }
 
 export type JournalEvent =
   | { type: 'input.received'; input: Input }

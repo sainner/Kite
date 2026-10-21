@@ -3,13 +3,13 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { inputSchema } from '../harness/input.ts';
+import { inputSchema, stopBy } from '../harness/input.ts';
 import type { Input, Outcome, Phase, Recovery } from '../harness/types.ts';
 
 const input = inputSchema;
 const schema = z.object({
   inputs: z.array(z.object({ input, sdkId: z.string(), at: z.number(), status: z.enum(['queued', 'submitted', 'unconfirmed', 'active', 'done', 'cancelled']), delivered: z.boolean(), midTurn: z.boolean().default(false) })),
-  stops: z.array(z.object({ id: z.string(), request: z.string(), returned: z.array(input), completed: z.boolean().default(false) })),
+  stops: z.array(z.object({ id: z.string(), request: z.string(), returned: z.array(input), completed: z.boolean().default(false), by: stopBy.optional() })),
   processes: z.array(z.number().int().positive()),
   initialContext: z.string().optional(), context: z.string().optional(), through: z.number().default(0),
   paused: z.boolean().default(false),

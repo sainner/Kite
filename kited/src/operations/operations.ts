@@ -287,7 +287,9 @@ export class InstanceOperations {
         if ((await this.kite.threadState(input.instanceId)).busy) {
           this.kite.reports.stopping(input.instanceId, caller.kind === 'ui' ? { kind: caller.via ? 'line' : 'user' } : { kind: 'agent', instance: caller.instanceId });
         }
-        return this.kite.interrupt(input.instanceId, { id: inputId(caller, input.operationId), inputs: input.inputs }, check);
+        // 代理和 Line 自己发去的消息退给它们；插件发的是 Kite 来源，不退。
+        const by = caller.kind === 'model' ? { kind: 'agent' as const, instance: caller.instanceId } : caller.kind === 'ui' ? caller.via : undefined;
+        return this.kite.interrupt(input.instanceId, { id: inputId(caller, input.operationId), inputs: input.inputs, ...(by ? { by } : {}) }, check);
       }
       case 'files.diff': return new FileDiffStore(join(this.kite.home, 'diffs', workspaceId)).read(args.diffId as string);
       case 'files.state': return fileSelection(this.kite.store.instance(args.instanceId as string)!.state);

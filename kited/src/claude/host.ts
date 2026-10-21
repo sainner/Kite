@@ -413,7 +413,7 @@ export function openClaudeHost(options: {
           data.inputs.push({ input, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: false });
         }
       }
-      const receipt = { id: request.id, request: encoded, returned: [] as Input[], completed: false };
+      const receipt = { id: request.id, request: encoded, returned: [] as Input[], completed: false, ...(request.by ? { by: request.by } : {}) };
       data.stops.push(receipt);
       windowQuery?.abort();
       data.paused = false; phase = 'stopping'; save(); controller.abort();
@@ -424,7 +424,7 @@ export function openClaudeHost(options: {
         const cancelled = new Set(await running?.stop() ?? []);
         for (const entry of data.inputs) if (entry.status === 'queued' || entry.status === 'unconfirmed' || (cancelled.has(entry.sdkId) && !entry.delivered)) {
           // 不退回的留在队列里，Claude 撤下的改回排队，下次重新交接。
-          if (returnedOnStop(entry.input)) { entry.status = 'cancelled'; receipt.returned.push(entry.input); }
+          if (returnedOnStop(entry.input, request.by)) { entry.status = 'cancelled'; receipt.returned.push(entry.input); }
           else if (entry.status !== 'unconfirmed') entry.status = 'queued';
         }
         save();
@@ -466,7 +466,7 @@ export function openClaudeHost(options: {
         entry.status = entry.delivered ? 'done' : 'unconfirmed';
       }
       for (const receipt of data.stops) if (!receipt.completed) {
-        for (const entry of data.inputs) if ((entry.status === 'queued' || entry.status === 'unconfirmed') && returnedOnStop(entry.input)) {
+        for (const entry of data.inputs) if ((entry.status === 'queued' || entry.status === 'unconfirmed') && returnedOnStop(entry.input, receipt.by)) {
           if (!receipt.returned.some((input) => input.id === entry.input.id)) receipt.returned.push(entry.input);
           entry.status = 'cancelled';
         }

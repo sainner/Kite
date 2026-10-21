@@ -99,7 +99,7 @@ export class HarnessRunner implements ThreadRunner {
     const returned = new Map<string, Input>();
     for (const id of this.history.pending) {
       const input = this.history.inputs.get(id)!;
-      if (returnedOnStop(input)) returned.set(input.id, input);
+      if (returnedOnStop(input, request.by)) returned.set(input.id, input);
     }
     for (const input of request.inputs ?? []) {
       if (!inputSchema.safeParse(input).success) throw new Error('待核定输入无效');

@@ -79,7 +79,7 @@ export const operationContracts = {
     tool: 'agent_resume', effect: 'write', retry: 'receipt', input: target, output: ok,
   },
   'agent.stop': {
-    title: '停止执行', description: '停止获准的 agent 实例，等待受管执行停止并返回未消费的输入。',
+    title: '停止执行', description: '停止获准的 agent 实例，等待受管执行停止。你发给它、它还没读到的消息退回给你（returned），还要它做的停下后再用 agent_send 发，新消息会让它继续。',
     tool: 'agent_stop', effect: 'write', retry: 'stop',
     input: target.extend({ inputs: z.array(inputSchema).optional() }).strict(), output: z.object({ returned: z.array(inputSchema) }).strict(),
   },

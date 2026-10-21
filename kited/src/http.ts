@@ -586,7 +586,8 @@ export function serve(kite: Kite, listen: Listen) {
         if (!parsed.success) throw new KiteError('停止请求无效');
         // 停止没确认就出了异常时，Claude 要先确认恢复才能交回这次停止的收据。
         if (parsed.data.confirmRecovery) await kite.confirmRecovery(req.params.id);
-        return kite.operations.invoke({ kind: 'ui' }, kite.thread(req.params.id).workspaceId, 'agent.stop', {
+        const via = sourceOf(req);
+        return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.stop', {
           instanceId: req.params.id, operationId: parsed.data.id, inputs: parsed.data.inputs,
         }, req.signal);
       }) },
