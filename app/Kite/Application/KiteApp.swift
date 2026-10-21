@@ -138,7 +138,7 @@ struct KiteCommands: Commands {
             Menu("切换工作区") {
                 ForEach(1...9, id: \.self) { number in
                     Button("第 \(number) 个工作区") { switchWorkspace(at: number - 1) }
-                        .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: [.command, .shift])
+                        .keyboardShortcut(KeyEquivalent(Character("\(number)")), modifiers: [.control, .command])
                 }
             }
             #if os(macOS)
