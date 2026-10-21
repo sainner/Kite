@@ -110,7 +110,8 @@ class StatusLayerView: StatusHostView {
 }
 
 /// 会话状态圆环：0.25 透明的底轨（运行中是锥形明暗渐变，否则纯色）上压一段上下文用量的弧（圆头，从 12 点顺时针）。
-/// 运行中整圈顺时针转、一圈一个周期；停止、收尾和等你回应时整圈按余弦明暗起伏（0.65～1）；空闲或减少动态效果时不动。
+/// 运行中整圈顺时针转、一圈一个周期；正在压缩（running 的子状态）时不转，弧从 12 点画满一圈再从起点收掉；
+/// 停止、收尾和等你回应时整圈按余弦明暗起伏（0.65～1）；空闲或减少动态效果时不动。
 /// 转动和明暗起伏交给 Core Animation，跟屏幕刷新率走，主线程不逐帧重画。节奏按绝对时间对齐（timeIntervalSinceReferenceDate 取进度），
 /// 几个圆环同阶段时同步。换状态时颜色、底轨、明暗、用量弧都从屏上此刻的样子过渡过去，转动也接着此刻的角度和速度走（见 ContextRingLayerView）。
 struct ContextRingLayers {
@@ -173,6 +174,8 @@ final class ContextRingLayerView: StatusLayerView {
     private var spin = RingSpin.still
     /// 正在明暗起伏的周期，不起伏时为空。
     private var pulsing: Double?
+    /// 压缩中的弧一来回的周期，不在压缩时为空。
+    private var sweeping: Double?
 
     override init() {
         super.init()
@@ -210,6 +213,7 @@ final class ContextRingLayerView: StatusLayerView {
         guard look != nil else { return }
         spin = .still
         pulsing = nil
+        sweeping = nil
         apply(animated: false)
     }
 
@@ -218,15 +222,15 @@ final class ContextRingLayerView: StatusLayerView {
         guard let look else { return }
         let now = CACurrentMediaTime()
         let rotating = look.phase == "running" && !look.still
+        let sweeping = look.phase == "compacting" && !look.still
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         updateColors(animated: animated)
         blend(track, "opacity", to: Float(rotating ? 0 : 0.25), animated: animated)
         blend(gradient, "opacity", to: Float(rotating ? 0.25 : 0), animated: animated)
-        blend(arc, "opacity", to: Float(look.fraction == nil ? 0 : 1), animated: animated)
-        // 没有用量时弧淡出，长度停在原处
-        if let fraction = look.fraction { blend(arc, "strokeEnd", to: min(max(fraction, 0), 1), animated: animated) }
-        updatePulse(look.period > 0 && !rotating && !look.still ? look.period : nil, animated: animated, now: now)
+        blend(arc, "opacity", to: Float(sweeping || look.fraction != nil ? 1 : 0), animated: animated)
+        updateStroke(sweep: sweeping ? look.period : nil, fraction: look.fraction, animated: animated, now: now)
+        updatePulse(look.period > 0 && !rotating && !sweeping && !look.still ? look.period : nil, animated: animated, now: now)
         // 减少动态效果时不转，也不加转起来、停下来的过渡
         updateSpin(rotating ? look.period : nil, animated: animated && !environment.accessibilityReduceMotion, now: now)
         CATransaction.commit()
@@ -290,6 +294,65 @@ final class ContextRingLayerView: StatusLayerView {
         let start = flipped ? -CGFloat.pi / 2 : CGFloat.pi / 2
         path.addArc(center: center, radius: radius, startAngle: start, endAngle: start + (flipped ? 2 : -2) * .pi, clockwise: !flipped)
         return path
+    }
+
+    // MARK: - 弧的长度
+
+    /// 平时弧的终点是用量，没有用量时长度停在原处、整段淡出。正在压缩时弧从 12 点顺时针画满一圈、再从起点收掉：
+    /// 起点 0→0→1，终点 0→1→1，一来回一个周期，两半各自缓入缓出。进压缩时从屏上此刻的弧接着画（用量弧就是画到半路的样子），
+    /// 不过渡时按绝对时间对齐；出压缩时起点、终点从此刻的位置过渡回用量弧。
+    private func updateStroke(sweep period: Double?, fraction: Double?, animated: Bool, now: CFTimeInterval) {
+        let usage = fraction.map { CGFloat(min(max($0, 0), 1)) }
+        guard period != sweeping else {
+            if period == nil, let usage { blend(arc, "strokeEnd", to: usage, animated: animated) }
+            return
+        }
+        sweeping = period
+        let shown = arc.presentation()
+        let start = shown?.strokeStart ?? arc.strokeStart, end = shown?.strokeEnd ?? arc.strokeEnd
+        for key in ["sweep", "blend-strokeStart", "blend-strokeEnd"] { arc.removeAnimation(forKey: key) }
+        guard let period else {
+            let target = usage ?? end
+            arc.strokeStart = 0
+            arc.strokeEnd = target
+            guard animated else { return }
+            arc.add(StageAnimation.basic("strokeStart", from: start, to: CGFloat(0), duration: Self.blendDuration), forKey: "blend-strokeStart")
+            arc.add(StageAnimation.basic("strokeEnd", from: end, to: target, duration: Self.blendDuration), forKey: "blend-strokeEnd")
+            return
+        }
+        arc.strokeStart = 0
+        let visible = (shown?.opacity ?? arc.opacity) > 0.01
+        let progress = !animated ? Self.progress(now, period: period)
+            : start > 0.001 ? 0.5 + Self.unease(Double(start)) / 2
+            : visible ? Self.unease(Double(end)) / 2 : 0
+        let steps = 60
+        let samples = (0...steps).map { Self.sweep(Double($0) / Double(steps)) }
+        let group = CAAnimationGroup()
+        group.animations = [("strokeStart", samples.map { $0.start }), ("strokeEnd", samples.map { $0.end })].map { keyPath, values in
+            let animation = CAKeyframeAnimation(keyPath: keyPath)
+            animation.values = values
+            animation.calculationMode = .linear
+            animation.duration = period
+            return animation
+        }
+        group.duration = period
+        group.repeatCount = .infinity
+        group.isRemovedOnCompletion = false
+        group.beginTime = arc.convertTime(now, from: nil) - progress * period
+        arc.add(group, forKey: "sweep")
+    }
+
+    /// 压缩中的弧走到一个周期的 progress（0～1）时的起点和终点。
+    private static func sweep(_ progress: Double) -> (start: Double, end: Double) {
+        progress < 0.5 ? (0, ease(progress * 2)) : (ease(progress * 2 - 1), 1)
+    }
+
+    /// 缓入缓出（smoothstep）。
+    private static func ease(_ x: Double) -> Double { x * x * (3 - 2 * x) }
+
+    /// ease 的反函数：走到多远时长度是 y。
+    private static func unease(_ y: Double) -> Double {
+        0.5 - sin(asin(1 - 2 * min(max(y, 0), 1)) / 3)
     }
 
     // MARK: - 明暗起伏

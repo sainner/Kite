@@ -37,7 +37,7 @@ struct ContextRing: View {
     /// 各阶段的颜色与动画周期，停靠栏的脉冲波也用这一套。
     static func color(_ phase: String) -> Color {
         switch phase {
-        case "running": .accentColor
+        case "running", "compacting": .accentColor
         case "stopping", "waiting": Theme.warning
         case "finishing": Palette.dewy
         default: .secondary
@@ -47,6 +47,8 @@ struct ContextRing: View {
     static func period(_ phase: String) -> Double {
         switch phase {
         case "running": 2.4
+        // 正在压缩：弧画满一圈再收掉，一来回一个周期
+        case "compacting": 2.4
         case "stopping": 1
         // 等你回应：警示黄，按等待的节奏明暗起伏，不转
         case "waiting": WaitingBreath.period

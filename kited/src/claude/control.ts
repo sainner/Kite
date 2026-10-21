@@ -52,7 +52,8 @@ export function saveClaudeControl(directory: string, data: z.input<typeof schema
   try { fsyncSync(folder); } finally { closeSync(folder); }
 }
 export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 'recovery' | 'paused' | 'contextWindow'>, phase: Phase = 'idle', compacting = false): ClaudeState => ({
-  inputs: data.inputs, phase, busy: phase !== 'idle' || compacting, ...(compacting ? { compacting } : {}), lastOutcome: data.outcome, recovery: data.recovery,
+  // 压缩在回合之间进行，宿主内部仍是空闲；对外同 harness，压缩期间是 running。
+  inputs: data.inputs, phase: compacting && phase === 'idle' ? 'running' : phase, busy: phase !== 'idle' || compacting, ...(compacting ? { compacting } : {}), lastOutcome: data.outcome, recovery: data.recovery,
   contextWindow: data.contextWindow,
   waitingForResume: !!data.recovery || (phase === 'idle' && data.paused),
 });

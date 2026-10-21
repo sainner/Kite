@@ -70,6 +70,8 @@ export class TranscriptHistory {
   private transcripts = new Map<string, TranscriptProjection>();
   private loadingTranscripts = new Map<string, Promise<TranscriptProjection>>();
   private activities = new Map<string, ThreadActivity>();
+  /** 从空闲开始压缩的线程：阶段照显示协议是 running，但压缩不是回合。 */
+  private compactingFromIdle = new Set<string>();
 
   constructor(private store: Store, private home: string, bus: Bus, private feed: TranscriptFeed) {
     feed.subscribe((e) => e.type === 'thread.state', (e) => { if (e.type === 'thread.state') this.observe(e.threadId, e.state, e.at); });
@@ -165,6 +167,7 @@ export class TranscriptHistory {
       this.transcripts.delete(id);
       this.loadingTranscripts.delete(id);
       this.activities.delete(id);
+      this.compactingFromIdle.delete(id);
     }
   }
 
@@ -173,13 +176,18 @@ export class TranscriptHistory {
   /** 摘要变了才推送；收尾时间只在实时看到回合从执行转为空闲时记录，回放出来的旧结果不算。 */
   private observe(id: string, state: DisplayState, at?: number): void {
     const previous = this.activities.get(id);
+    // 从空闲开始的压缩回到空闲时不记收尾；回合中途的自动压缩、压缩完直接接上的回合照常算。
+    if (state.compacting && (!previous || previous.phase === 'idle')) this.compactingFromIdle.add(id);
+    else if (!state.compacting && state.phase === 'running') this.compactingFromIdle.delete(id);
+    const compactionOnly = this.compactingFromIdle.has(id);
+    if (state.phase === 'idle') this.compactingFromIdle.delete(id);
     const next: ThreadActivity = { phase: state.phase, waitingForResume: state.waitingForResume,
       // 没回应的请求不阻塞回合，代理停下以后才算在等
       ...(state.waiting ? { waiting: state.waiting.kind } : state.phase === 'idle' && state.asks?.[0] ? { waiting: state.asks[0].kind } : {}),
       ...(state.lastOutcome ? { outcome: state.lastOutcome.kind } : {}), ...(state.error ? { error: true as const } : {}) };
     if (previous && previous.phase === next.phase && previous.waitingForResume === next.waitingForResume && previous.waiting === next.waiting
       && previous.outcome === next.outcome && previous.error === next.error) return;
-    const settled = at !== undefined && previous !== undefined && previous.phase !== 'idle' && next.phase === 'idle' && next.outcome !== undefined;
+    const settled = !compactionOnly && at !== undefined && previous !== undefined && previous.phase !== 'idle' && next.phase === 'idle' && next.outcome !== undefined;
     const changedAt = at ?? previous?.changedAt;
     const settledAt = settled ? at : previous?.settledAt;
     if (changedAt !== undefined) next.changedAt = changedAt;

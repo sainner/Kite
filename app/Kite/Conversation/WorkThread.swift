@@ -67,8 +67,13 @@ final class WorkThread: Identifiable {
     var canCancel: Bool { stopRequest == nil && connected && state?.capabilities.cancel == true }
     var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
-    /// 圆环的阶段：在等人回应时是 waiting，圆环换警示黄、明暗起伏。
-    var statusPhase: String { stopping ? "stopping" : awaiting != nil ? "waiting" : state?.phase ?? "idle" }
+    /// 圆环的阶段：在等人回应时是 waiting，圆环换警示黄、明暗起伏；正在压缩是 running 的子状态 compacting，弧画满再收掉。
+    var statusPhase: String {
+        if stopping { return "stopping" }
+        if awaiting != nil { return "waiting" }
+        if state?.phase == "running" && state?.compacting == true { return "compacting" }
+        return state?.phase ?? "idle"
+    }
     /// 在等人回应的是哪一类：卡着回合的审批；没回应的提问、密钥请求不阻塞，代理停下以后才算在等（同工作机的活动摘要）。
     var awaiting: String? { state?.waiting?.kind ?? (state?.phase == "idle" ? state?.asks?.first?.kind : nil) }
     /// 会话自身的错误：本地操作失败，或工作机报回的错误（含恢复阻塞与上一轮失败的说明）。
