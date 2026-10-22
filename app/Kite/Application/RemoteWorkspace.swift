@@ -184,11 +184,12 @@ struct PreviewStatus: Decodable, Equatable {
 
 /// 网页在哪看：设备自己的网页视图，或工作机上的浏览器（画面传过来）。
 enum PreviewBrowser: String, CaseIterable, Identifiable, Decodable {
-    case device, chromium, firefox
+    case device, webkit, chromium, firefox
     var id: String { rawValue }
     var title: String {
         switch self {
         case .device: "本设备"
+        case .webkit: "WebKit"
         case .chromium: "Chromium"
         case .firefox: "Firefox"
         }

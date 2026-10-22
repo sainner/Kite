@@ -1,7 +1,7 @@
 /**
  * 预览插件 kite.preview（docs/实例操作.md「预览」）：一个实例是一个要看的对象，网页（本工作区的一个端口）或模拟器（宿主为工作区开的那台）。
  * 实例随窗口回收；agent 用 preview_open 开的没有窗口，由它关闭，或随它归档、工作区关闭回收。
- * 网页在设备自己的网页视图里看时（device，默认）工作机不参与，设备经端口转发打开；agent 操作这样的预览时，宿主在工作机的 Chromium 里另开同一个地址，
+ * 网页在设备自己的网页视图里看时（device，默认）工作机不参与，设备经端口转发打开；agent 操作这样的预览时，宿主在工作机的 WebKit 里另开同一个地址，
  * 与设备上的页面不共享状态。在工作机上的浏览器里看时，人和 agent 操作同一个页面。模拟器的画面人和 agent 看的是同一块屏幕。
  * 工作机上的画面（浏览器页面或模拟器）有人看或 agent 要用时才开，闲置一阵关掉，再要时重开。
  * WebSocket 协议：接入地址带 width、height（设备窗口放得下的逻辑尺寸，网页视口跟着最近操作的那台）、mode（live 或 step）；
@@ -174,9 +174,9 @@ export class Previews {
     return next;
   }
 
-  /** 画面用哪个：模拟器，或网页选的浏览器；在设备上看的网页，agent 操作时用 Chromium。 */
+  /** 画面用哪个：模拟器，或网页选的浏览器；在设备上看的网页，agent 操作时用 WebKit，与设备上的内核一致。 */
   private target(state: PreviewState, kind: PreviewKind = 'web'): WorkstationBrowser | 'simulator' {
-    return kind === 'simulator' ? 'simulator' : state.browser ?? 'chromium';
+    return kind === 'simulator' ? 'simulator' : state.browser ?? 'webkit';
   }
 
   private instance(id: string): PluginInstance {
@@ -211,7 +211,7 @@ export class Previews {
       if (this.host.store.workspace(instance.workspaceId)?.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (!size) return this.host.simulators.acquire(instance.workspaceId);
       if (state.port === undefined) throw new KiteError('网页预览还没选端口', 409);
-      return this.browsers.open(target as WorkstationBrowser, { url: `http://localhost:${state.port}/`, path, ...size, ports: () => this.host.ports(instance.workspaceId) });
+      return this.browsers.open(target as WorkstationBrowser, { url: `http://localhost:${state.port}/`, path, ...size });
     })();
     session.opening = opening;
     session.target = target;
@@ -309,7 +309,7 @@ export class Previews {
     const instance = await this.host.run(workspaceId, async () => {
       if (this.host.store.workspace(workspaceId)?.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       const instance: PluginInstance = { id: randomUUID(), workspaceId, definitionId: previewDefinitionId, title: this.title(workspaceId, spec.kind),
-        ...this.initial(workspaceId, spec.kind === 'web' ? { kind: 'web', port: spec.port, browser: spec.browser ?? 'chromium' } : { kind: 'simulator' }),
+        ...this.initial(workspaceId, spec.kind === 'web' ? { kind: 'web', port: spec.port, browser: spec.browser ?? 'webkit' } : { kind: 'simulator' }),
         presentation: 'background', status: 'open', createdAt: Date.now(), origin };
       this.host.store.addPluginInstance(instance);
       this.host.changed(workspaceId);

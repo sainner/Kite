@@ -4,8 +4,8 @@ import type { PluginInstance } from '../model.ts';
 
 export const previewDefinitionId = 'kite.preview';
 
-/** 工作机上的浏览器；不用 WebKit，见 browsers.ts。 */
-export const workstationBrowsers = ['chromium', 'firefox'] as const;
+/** 工作机上的浏览器。 */
+export const workstationBrowsers = ['webkit', 'chromium', 'firefox'] as const;
 export type WorkstationBrowser = (typeof workstationBrowsers)[number];
 /** 网页在哪看：device 是看的设备自己的网页视图，其余是工作机上的浏览器。 */
 export const previewBrowsers = ['device', ...workstationBrowsers] as const;

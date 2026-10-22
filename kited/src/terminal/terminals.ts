@@ -595,7 +595,7 @@ export class Terminals {
     this.host.forward([...this.sessions].filter(([id]) => this.running(id)).flatMap(([, session]) => [...session.ports.keys()]));
   }
 
-  /** 工作区里运行中终端此刻监听的端口：网页预览只能看这些，工作机上的浏览器也只放行到这些端口。 */
+  /** 工作区里运行中终端此刻监听的端口：网页预览只能看这些。 */
   workspacePorts(workspaceId: string): number[] {
     return [...new Set([...this.sessions].filter(([id, session]) => session.workspaceId === workspaceId && this.running(id))
       .flatMap(([, session]) => [...session.ports.keys()]))].sort((a, b) => a - b);

@@ -167,7 +167,7 @@ export const operationContracts = {
   'preview.open': {
     title: '打开预览', description: [
       '打开一个预览给自己看并操作：kind 为 web 时是网页，port 写本工作区运行中终端监听的端口（预置脚本的端口见 terminal_run 的结果），path 是要打开的路径，',
-      'browser 选工作机上的 chromium（默认）或 firefox；kind 为 simulator 时是宿主为本工作区开的 iOS 模拟器，预置脚本经环境变量 KITE_SIMULATOR 拿到它的编号，装好 App 再看。',
+      'browser 选工作机上的 webkit（默认）、chromium 或 firefox；kind 为 simulator 时是宿主为本工作区开的 iOS 模拟器，预置脚本经环境变量 KITE_SIMULATOR 拿到它的编号，装好 App 再看。',
       '返回实例 ID、画面尺寸与画面稳定后的一帧截图；之后用 preview_action 操作，用完 preview_close。预览会出现在用户的停靠栏里，用户能打开看你在做什么。',
       '截图会发给模型厂商，不要在预览里登录真实账号。',
     ].join(''),
@@ -182,7 +182,7 @@ export const operationContracts = {
       'action：screenshot 只截图；left_click、double_click、right_click、long_press（duration 秒）点 coordinate；left_click_drag 从 start_coordinate 拖到 coordinate，模拟器上就是滑动；',
       'scroll 在 coordinate 处按 scroll_direction（up、down、left、right）滚 scroll_amount 格（默认 3）；type 输入 text（模拟器上先点要输入的框，中文也能输入）；key 按一个键或组合键，text 写键名，如 Enter、Escape、Backspace、Tab、ArrowDown、Control+A；',
       'wait 等 duration 秒（默认 1）再截图；网页另有 navigate（text 写本端口上的路径）、back、forward、reload，模拟器另有 home（回主屏幕）。',
-      '用户开的预览也能操作，用 preview_list 找；在用户设备上看的网页（browser 为 device），你操作的是宿主在工作机 Chromium 里另开的同一个地址，用户看不到。',
+      '用户开的预览也能操作，用 preview_list 找；在用户设备上看的网页（browser 为 device），你操作的是宿主在工作机 WebKit 里另开的同一个地址，用户看不到。',
     ].join(''),
     tool: 'preview_action', effect: 'write', retry: 'receipt',
     input: target.extend({

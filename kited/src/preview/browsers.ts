@@ -1,19 +1,17 @@
 /**
- * 工作机上的浏览器：Chromium、Firefox 用 Playwright 无界面运行，每种一个浏览器进程，每个预览一个独立的浏览器上下文（Cookie、存储互不相通）。
- * 页面是不可信内容，只通向本工作区运行中终端监听的端口：每个预览的浏览器上下文经宿主的出口代理连出去（见 proxy.ts），本机地址只放行这些端口，
- * 局域网、组网和本机其他地址一律拦下（kited、kite-net 的端口不在任何终端的进程树里，到不了），公网照常。
- * 不用 WebKit：Mac 上它跟随到本机地址的跳转、页面的第一次导航不走代理，直接连本机任意端口（2026-10 实测），网络进程是系统拉起的 XPC 服务，也套不上沙箱。
+ * 工作机上的浏览器：WebKit、Chromium、Firefox 用 Playwright 无界面运行，每种一个浏览器进程，每个预览一个独立的浏览器上下文（Cookie、存储互不相通，
+ * 不带用户的登录状态）。联网不另设限制，同用户在工作机上自己开的浏览器；管住的是 agent 去哪（navigate 只开本端口上的路径），
+ * kited 的接口自己挡浏览器里的页面（只认本机主机名、要自定义请求头、不开放跨源）。
  * 浏览器第一次用时没装就下载到 Playwright 的默认缓存目录（~/Library/Caches/ms-playwright），要几分钟。
  */
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { KiteError } from '../errors.ts';
-import { startProxy } from './proxy.ts';
 import type { PreviewAction, Screen, ScreenInfo } from './screen.ts';
 import type { WorkstationBrowser } from './state.ts';
 
-export const browserTitles: Record<WorkstationBrowser, string> = { chromium: 'Chromium', firefox: 'Firefox' };
+export const browserTitles: Record<WorkstationBrowser, string> = { webkit: 'WebKit', chromium: 'Chromium', firefox: 'Firefox' };
 /** 没有预览用了，浏览器进程再留这么久，接着开的预览不用重新启动。 */
 const IDLE_CLOSE_MS = 30_000;
 const NAVIGATION_TIMEOUT_MS = 15_000;
@@ -36,8 +34,6 @@ export interface BrowserOptions {
   path?: string;
   width: number;
   height: number;
-  /** 本工作区运行中终端此刻监听的端口。 */
-  ports: () => number[];
 }
 
 interface Running { browser: Promise<Browser>; users: number; idle?: ReturnType<typeof setTimeout> }
@@ -49,22 +45,20 @@ export class Browsers {
   /** env 是起浏览器与下载程序用的环境，显式给出。 */
   constructor(private env: Record<string, string>) {}
 
-  /** 开一个预览的页面：新的浏览器上下文，经它自己的出口代理连出去，打开首页（打不开也返回，页面上显示错误）。 */
+  /** 开一个预览的页面：新的浏览器上下文，打开首页或给的路径（打不开也返回，页面上显示错误）。 */
   async open(name: WorkstationBrowser, options: BrowserOptions): Promise<Screen> {
     const start = pathOn(options.url, options.path ?? '/');
-    const proxy = await startProxy(options.ports);
     const entry = this.acquire(name);
     let context: BrowserContext | undefined;
     try {
       context = await (await entry.browser).newContext({ viewport: { width: options.width, height: options.height }, deviceScaleFactor: DEVICE_SCALE,
-        serviceWorkers: 'block', ignoreHTTPSErrors: true, proxy: { server: `http://127.0.0.1:${proxy.port}` } });
+        serviceWorkers: 'block', ignoreHTTPSErrors: true });
       const page = await context.newPage();
-      const screen = new BrowserScreen(context, page, options.url, () => { proxy.close(); this.release(name, entry); });
+      const screen = new BrowserScreen(context, page, options.url, () => this.release(name, entry));
       await screen.goto(start);
       return screen;
     } catch (error) {
       await context?.close().catch(() => {});
-      proxy.close();
       this.release(name, entry);
       throw error;
     }
@@ -98,8 +92,7 @@ export class Browsers {
 
   private async launch(name: WorkstationBrowser): Promise<Browser> {
     const playwright = await import('playwright-core');
-    // Chromium 由 Playwright 让本机地址也走代理；Firefox 默认本机地址不走代理，要打开这一项
-    const options = { headless: true, env: this.env, ...(name === 'firefox' ? { firefoxUserPrefs: { 'network.proxy.allow_hijacking_localhost': true } } : {}) };
+    const options = { headless: true, env: this.env };
     try { return await playwright[name].launch(options); }
     catch (error) {
       if (!/Executable doesn't exist|download new browsers/i.test(String(error))) throw new KiteError(`${browserTitles[name]} 没有启动：${firstLine(error)}`, 503);
