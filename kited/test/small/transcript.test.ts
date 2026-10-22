@@ -439,3 +439,55 @@ test('重启后只读历史保持记录 id 和排队输入，重复发送及取�
   expect(afterCancel.body.pending).toEqual([]);
   expect(secondModel.calls.values).toHaveLength(0);
 }, 1000);
+
+/*
+ * 真实出过的 bug：JSON.stringify 原样输出 U+0085、U+2028、U+2029，App 读事件流用的 Swift AsyncBytes.lines 把它们也当行尾，
+ * data 行被切断、JSONDecoder 报格式不正确，App 每 2 秒重连一次，这个会话一直显示不出来（工具输出里的网页正文带 U+2028）。
+ * 这里读真实 /events 流的原始字节，按 AsyncBytes.lines 的切行规则（\n、\r、\r\n 之外这三个也算）解析 data 行，
+ * 快照里的人类消息和实时推送的模型回复都要能解出原文。
+ */
+test('线程事件流不含原样的 U+0085、U+2028、U+2029，按 App 的切行规则读 data 行仍能解出原文', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const breaks = [0x85, 0x2028, 0x2029].map((code) => String.fromCharCode(code));
+  const [nel, ls, ps] = breaks;
+  const original = `Time to fly.${ls}${ls} The future of aviation${ps}下一段${nel}结尾`;
+  const appLines = (text: string) => text.split(new RegExp(`\r\n|[\n\r${breaks.join('')}]`));
+
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '初始\n' }) });
+  const { id } = await createWorkspace(kk, project.id, original, 'harness');
+  const first = await model.call(1);
+
+  const controller = new AbortController();
+  const response = await fetch(`${kk.url}/events?thread=${id}`, {
+    headers: { 'X-Kite-Machine': (await machine(kk.url)).id }, signal: controller.signal,
+  });
+  expect(response.status).toBe(200);
+  const reader = response.body!.pipeThrough(new TextDecoderStream()).getReader();
+  streams.push({ close: async () => { controller.abort(); await reader.cancel().catch(() => {}); } });
+  let raw = '';
+  // 只解析已收完的帧：按 App 的切行规则切行，以 data: 开头的行整行交给 JSON.parse，被切断的行在这里抛错。
+  const parsed = () => appLines(raw.slice(0, raw.lastIndexOf('\n\n') + 1))
+    .filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)) as WireEvent);
+  const readUntil = async (done: (events: WireEvent[]) => boolean) => {
+    while (!done(parsed())) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error('事件流在等到事件前关闭');
+      raw += chunk.value;
+    }
+    return parsed();
+  };
+
+  const isReply = (event: WireEvent) => event.type === 'thread.record' && event.record?.block.type === 'text';
+  await readUntil((events) => events.some((event) => event.type === 'thread.history'));
+  await first.response.emit({ type: 'item', item: { id: 'answer-a', raw: { type: 'message', content: [
+    { type: 'output_text', text: original },
+  ] } } });
+  const events = await readUntil((all) => all.some(isReply));
+
+  expect([...raw].filter((char) => breaks.includes(char))).toEqual([]);
+  const history = events.find((event) => event.type === 'thread.history')!;
+  expect(history.records?.find((record) => record.block.type === 'human')?.block.text).toBe(original);
+  expect(events.filter(isReply).at(-1)?.record?.block.text).toBe(original);
+}, 1000);

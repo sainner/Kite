@@ -91,13 +91,20 @@ function long<R extends Request>(fn: (req: R) => Promise<Response>) {
   };
 }
 
+/**
+ * JSON.stringify 原样输出 U+0085、U+2028、U+2029，App 按行读事件流用的 AsyncBytes.lines 把它们也当换行，
+ * data 行会被切断、整条解析失败（网页正文里就有）。只会出现在字符串里，转义成 \uXXXX 后解出来不变。
+ */
+const lineBreaks = /[\u0085\u2028\u2029]/g;
+const escapeLineBreak = (c: string) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`;
+
 /** 同一个事件发给几个订阅者时只序列化一次：工具结果可能很大。 */
 type EventFrame = { type: string; cursor: string };
 const encoded = new WeakMap<EventFrame, string>();
 function encode(e: EventFrame): string {
   let text = encoded.get(e);
   if (text === undefined) {
-    text = `id: ${e.cursor}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
+    text = `id: ${e.cursor}\nevent: ${e.type}\ndata: ${JSON.stringify(e).replace(lineBreaks, escapeLineBreak)}\n\n`;
     encoded.set(e, text);
   }
   return text;
