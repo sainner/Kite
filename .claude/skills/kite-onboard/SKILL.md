@@ -79,8 +79,9 @@ Kite 仓库自己的 `.kite/check` 是一个例子：它调 `kited/scripts/check
 2. **服务留在前台，最后一步用 `exec`**。不加 `&`、不守护化：脱离进程树的服务探测不到端口，停终端时也停不掉。
 3. **启动 App 时直接运行可执行文件**，比如 `exec 记账.app/Contents/MacOS/记账`，不用 `open`。这样 App 就是终端的进程：输出进终端，停止就是退出，重启就是重新构建再打开。用 `open` 时脚本打开 App 就结束，App 和终端脱钩，旧的得自己想办法关。
 4. **装到设备的脚本跑完就退出**，比如用 `devicectl`、`adb` 装到真机，终端随之结束。
-5. **装依赖放 `.kite/setup`**，不放预置脚本。
-6. 改过的预置脚本和主线上的不一样，agent 起它之前要用户批准一次；合回主线后不再问。
+5. **iOS App 装到 `$KITE_SIMULATOR`**。脚本里写到 `KITE_SIMULATOR` 的，Kite 先给工作区建一台专用的模拟器（不启动），编号经这个变量交给脚本，并行的工作区各用各的；在模拟器预览里看。脚本自己启动、安装和打开，比如 `xcrun simctl bootstatus "$KITE_SIMULATOR" -b`，构建时用 `-destination "id=$KITE_SIMULATOR"`，再 `xcrun simctl install "$KITE_SIMULATOR" 路径/记账.app` 和 `xcrun simctl launch --console-pty "$KITE_SIMULATOR" 包名`；带 `--console-pty` 时 App 的输出进终端，脚本留在前台，停终端就停 App。不要用 `booted`，也不要开 Simulator.app。
+6. **装依赖放 `.kite/setup`**，不放预置脚本。
+7. 改过的预置脚本和主线上的不一样，agent 起它之前要用户批准一次；合回主线后不再问。
 
 ## 测试规则为什么放在子 agent 里
 

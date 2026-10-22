@@ -69,6 +69,8 @@ export interface RuntimeOptions {
   terminalShell?: string[];
   /** 测试里缩短终端探测监听端口的间隔（毫秒），默认 2 秒。 */
   terminalPortScanMs?: number;
+  /** 测试里缩短预览等画面稳定的节奏，默认连续 300 毫秒不变、每 100 毫秒截一帧、最多 3 秒。 */
+  previewSettle?: import('./preview/screen.ts').SettleTiming;
 }
 
 export interface RuntimeEvents {

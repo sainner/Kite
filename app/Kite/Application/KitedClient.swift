@@ -454,6 +454,15 @@ struct KitedClient: Equatable {
         return (session, session.webSocketTask(with: request))
     }
 
+    /// 接到预览画面的 WebSocket，协议见 kited 的 preview/previews.ts；带上窗口放得下的逻辑尺寸与实时还是逐帧。
+    func previewSocket(instance: String, width: Int, height: Int, live: Bool) async throws -> (URLSession, URLSessionWebSocketTask) {
+        let (session, request) = try await streamRequest("/instances/\(instance)/preview", thread: nil, webSocket: true, extra: [
+            URLQueryItem(name: "width", value: String(width)), URLQueryItem(name: "height", value: String(height)),
+            URLQueryItem(name: "mode", value: live ? "live" : "step"),
+        ])
+        return (session, session.webSocketTask(with: request))
+    }
+
     /// 按字节取文件，下载到临时文件，调用方挪走或删掉。304 时没有新内容，调用方用自己缓存的那一版。
     /// progress 拿到下载任务的进度对象；method 为 HEAD 时只取大小、类型和修改时间，不返回文件。
     func download(_ path: String, method: String = "GET", headers: [String: String] = [:],

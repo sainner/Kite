@@ -112,6 +112,8 @@ create table if not exists usage_hours (
 create table if not exists script_ports (
   workspace_id text not null, script text not null, port integer not null unique, primary key(workspace_id, script)
 );
+-- 宿主为工作区开的模拟器，是本机的外部资源：只由 preview/simulators.ts 增删，工作区的通用删除与流转换记录都不碰。
+create table if not exists workspace_simulators (workspace_id text primary key, udid text not null);
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
@@ -691,6 +693,17 @@ export class Store implements UsageStore {
       this.db.query("update workspace_windows set state = 'closed' where workspace_id = ?").run(id);
       this.db.query('delete from script_ports where workspace_id = ?').run(id);
     })();
+  }
+  /** 宿主为工作区开的模拟器的编号；还没开过时为 undefined。 */
+  workspaceSimulator(workspaceId: string): string | undefined {
+    return (this.db.query('select udid from workspace_simulators where workspace_id = ?').get(workspaceId) as { udid: string } | null)?.udid;
+  }
+  setWorkspaceSimulator(workspaceId: string, udid: string): void {
+    this.db.query(`insert into workspace_simulators (workspace_id, udid) values (?, ?)
+      on conflict(workspace_id) do update set udid = excluded.udid`).run(workspaceId, udid);
+  }
+  deleteWorkspaceSimulator(workspaceId: string): void {
+    this.db.query('delete from workspace_simulators where workspace_id = ?').run(workspaceId);
   }
   /** 工作区的这个预置脚本分到的端口段的第一个端口；没分过时为 undefined。 */
   scriptPort(workspaceId: string, script: string): number | undefined {

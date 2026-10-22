@@ -25,7 +25,8 @@ afterEach(async () => {
 });
 const temp = useTemp();
 const expectedTools = ['read', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop',
-  'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_run', 'terminal_list', 'terminal_read', 'terminal_stop'].sort();
+  'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_run', 'terminal_list', 'terminal_read', 'terminal_stop',
+  'preview_open', 'preview_action', 'preview_inspect', 'preview_list', 'preview_close'].sort();
 
 /** pid 的直接子进程。 */
 function children(pid: number): number[] {

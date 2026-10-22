@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 10
+    static let version = 11
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -133,6 +133,7 @@ struct RemotePluginInstance: Decodable, Identifiable {
         var diffId: String? = nil
         var plugin: JSON? = nil
         var terminal: TerminalStatus? = nil
+        var preview: PreviewStatus? = nil
     }
     let id: String
     let workspaceId: String
@@ -162,21 +163,35 @@ struct TerminalStatus: Decodable, Equatable {
     var reason: String? = nil
     /// 运行中才有，按端口号排。
     var ports: [Port]? = nil
-    /// 网页视图选的端口，各设备共用。
-    var port: Int? = nil
 
     var running: Bool { phase == "running" }
-    /// 网页视图打开的端口：选过且还在监听的，否则第一个能响应 HTTP 的。
-    var webPort: Int? {
-        let ports = ports ?? []
-        if let port, ports.contains(where: { $0.port == port }) { return port }
-        return ports.first(where: \.http)?.port
-    }
     /// 结束后的副行：原因优先，其次退出码或信号。
     var summary: String {
         if let reason { return reason }
         if let signal { return "已结束 · \(signal)" }
         return exitCode.map { "已退出 · 退出码 \($0)" } ?? "已结束"
+    }
+}
+
+/// 网页预览看的端口与在哪看，kited 的 preview/state.ts 写在实例状态里，各设备共用；模拟器预览没有。
+struct PreviewStatus: Decodable, Equatable {
+    var port: Int? = nil
+    /// 工作机上的浏览器；没有是 device，设备自己的网页视图。
+    var browser: PreviewBrowser? = nil
+
+    var choice: PreviewBrowser { browser ?? .device }
+}
+
+/// 网页在哪看：设备自己的网页视图，或工作机上的浏览器（画面传过来）。
+enum PreviewBrowser: String, CaseIterable, Identifiable, Decodable {
+    case device, chromium, firefox
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .device: "本设备"
+        case .chromium: "Chromium"
+        case .firefox: "Firefox"
+        }
     }
 }
 
@@ -253,27 +268,42 @@ struct RemoteWorkspaceWindow: Decodable, Identifiable {
     }
 }
 
+/// 预览看哪一种：网页或本工作区的模拟器，建好不变（kited 的 preview/state.ts）。
+nonisolated enum PreviewKind: String, Codable, Sendable {
+    case web, simulator
+}
+
+/// 新建预览看什么：网页（可带端口）或本工作区的模拟器。
+struct PreviewSpec: Encodable {
+    let kind: PreviewKind
+    var port: Int? = nil
+
+    static func web(port: Int? = nil) -> Self { .init(kind: .web, port: port) }
+    static let simulator = Self(kind: .simulator)
+}
+
 struct OpenWindowRequest: Encodable {
     let id: String
     let content: Content
 
     /// 新建实例的 ID 也由本机定：本机先按它建好实例和窗口（见 AppModel.sendWindowRequest）。
     /// title 省略时按插件名编号；command 和 script 只用于终端，二选一：command 等 shell 起好后打进去执行，
-    /// script 是要运行的预置脚本名，脚本已经在跑时工作机打开那个终端。
+    /// script 是要运行的预置脚本名，脚本已经在跑时工作机打开那个终端。preview 只用于预览，必带。
     enum Content: Encodable {
-        case create(String, instance: String, title: String? = nil, command: String? = nil, script: String? = nil)
+        case create(String, instance: String, title: String? = nil, command: String? = nil, script: String? = nil, preview: PreviewSpec? = nil)
         case open(WindowTarget)
-        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, script, viewId }
+        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, script, preview, viewId }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
-            case .create(let definitionId, let instanceId, let title, let command, let script):
+            case .create(let definitionId, let instanceId, let title, let command, let script, let preview):
                 try c.encode("create", forKey: .kind)
                 try c.encode(definitionId, forKey: .definitionId)
                 try c.encode(instanceId, forKey: .instanceId)
                 try c.encodeIfPresent(title, forKey: .title)
                 try c.encodeIfPresent(command, forKey: .command)
                 try c.encodeIfPresent(script, forKey: .script)
+                try c.encodeIfPresent(preview, forKey: .preview)
             case .open(let target):
                 try c.encode("open", forKey: .kind)
                 try c.encode(target.instanceId, forKey: .instanceId)

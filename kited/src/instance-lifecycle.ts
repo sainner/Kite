@@ -11,13 +11,14 @@ import { instanceAgent } from './agents/definition.ts';
 import { monitorDefinitionId } from './monitor/monitors.ts';
 import { terminalDefinitionId } from './terminal/terminals.ts';
 import { findScript } from './terminal/scripts.ts';
+import { previewDefinitionId } from './preview/state.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
   role?: { id: string; revision?: string };
 }
 
-type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals'>;
+type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals' | 'previews'>;
 
 interface InstanceControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -72,6 +73,7 @@ export class InstanceLifecycle {
         const definition = this.kite.catalog.get(content.definitionId);
         if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
         if ((content.command !== undefined || content.script !== undefined) && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令或预置脚本新建');
+        if ((content.preview !== undefined) !== (definition.id === previewDefinitionId)) throw new KiteError('预览要带 preview 新建，别的插件不带');
         if (content.command !== undefined && content.script !== undefined) throw new KiteError('命令和预置脚本只能带一个');
         if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
           throw new KiteError('实例 ID 已使用', 409);
@@ -81,10 +83,12 @@ export class InstanceLifecycle {
         if (running) target = { instanceId: running, viewId: 'terminal' };
         else {
           const config = content.script !== undefined
-            ? await this.kite.terminals.scriptConfig(workspaceId, findScript(model.workspace.cwd, content.script).name) : undefined;
-          created = { ...this.newInstance(workspaceId, definition.id, content.title ?? content.script ?? (definition.agent ? '新代理'
-            : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
-            ...(content.instanceId ? { id: content.instanceId } : {}), ...(config ? { config } : {}) };
+            ? await this.kite.terminals.scriptConfig(workspaceId, findScript(model.workspace.cwd, content.script)) : undefined;
+          const preview = content.preview && this.kite.previews.initial(workspaceId, content.preview);
+          created = { ...this.newInstance(workspaceId, definition.id, content.title ?? content.script
+            ?? (content.preview ? this.kite.previews.title(workspaceId, content.preview.kind) : definition.agent ? '新代理'
+              : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
+            ...(content.instanceId ? { id: content.instanceId } : {}), ...(config ? { config } : {}), ...preview };
           if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         }
       } else target = content;
@@ -153,6 +157,7 @@ export class InstanceLifecycle {
   /** 回收已经没有窗口、也不再运行的实例：会话目录、指向它的授权和实例本身；实例 ID 不再复用。在控制队列里调用。 */
   collect(instance: PluginInstance): void {
     this.kite.terminals.forget(instance.id);
+    this.kite.previews.forget(instance.id);
     rmSync(join(this.kite.home, 'sessions', instance.id), { recursive: true, force: true });
     this.kite.store.transaction(() => {
       this.control.revokeGrants(instance);

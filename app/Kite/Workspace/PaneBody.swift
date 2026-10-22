@@ -58,7 +58,7 @@ private struct WorkspacePaneBody: View {
     @ViewBuilder private var content: some View {
         let target = area.windows.first(where: { $0.id == pane.id })?.target
         let instance = area.instance(of: pane)
-        // 按实例的定义分派，不按窗口当前的视图：窗口在实例的几个视图之间切换，正文由同一个视图接着显示（见 TerminalPane）
+        // 按实例的定义分派，不按窗口当前的视图：窗口在实例的几个视图之间切换，正文由同一个视图接着显示
         let renderer = instance.flatMap(area.definition(of:))?.defaultRenderer
         // 本机先建、工作机还没建好的实例：正文要读工作机上的实例，先只有标题栏
         let opening = instance.map { area.isOpening(instance: $0.id) } ?? false
@@ -79,8 +79,10 @@ private struct WorkspacePaneBody: View {
                 FilePane(browser: browser).id(pane.id)
             } else if renderer == "monitor", let instance {
                 MonitorPane(instance: instance).id(pane.id)
-            } else if renderer == "terminal", let target, let instance, let client = area.pluginClient {
-                TerminalPane(instance: instance, client: client, connection: area.pluginConnection, view: target.viewId).id(pane.id)
+            } else if renderer == "terminal", let instance, let client = area.pluginClient {
+                TerminalPane(instance: instance, client: client, connection: area.pluginConnection).id(pane.id)
+            } else if renderer == "preview", let instance, let client = area.pluginClient {
+                PreviewPane(instance: instance, client: client, connection: area.pluginConnection).id(pane.id)
             } else if renderer == "web", let target, let instance, let client = area.pluginClient {
                 // 换了视图是另一份插件页面，重新加载
                 PluginPane(target: target, title: area.appearance(of: pane).name, client: client,

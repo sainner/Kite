@@ -11,7 +11,10 @@ import { grantTools, operationContracts, operationGrantsSchema, scopedOperations
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
 import { findScript, mainlineScript } from '../terminal/scripts.ts';
-import type { InputOrigin, JsonObject, Tool, ToolResult } from '../harness/types.ts';
+import type { InputOrigin, JsonObject, Tool, ToolImage, ToolResult } from '../harness/types.ts';
+import type { Previews } from '../preview/previews.ts';
+import { playwrightKey } from '../preview/screen.ts';
+import { previewDefinitionId } from '../preview/state.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
 import { instanceAgent } from '../agents/definition.ts';
@@ -19,7 +22,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveScript'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveScript' | 'previews'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -39,10 +42,52 @@ const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
 const callerKey = (caller: OperationCaller) => caller.kind === 'ui' ? 'ui' : `${caller.kind}:${caller.instanceId}`;
 const inputId = (caller: OperationCaller, id: string) => caller.kind === 'ui' ? id : `${callerKey(caller)}:${id}`;
 const pluginArguments = z.record(z.string(), z.unknown());
+/** 结果里给模型看的图片：从 JSON 里拿出来，只交给这一次调用的模型（见 dispatch）。 */
+const takeImages = (result: unknown): { value: unknown; images?: ToolImage[] } => {
+  if (!result || typeof result !== 'object' || !Array.isArray((result as { images?: unknown }).images)) return { value: result };
+  const { images, ...value } = result as { images: ToolImage[] };
+  return { value, images };
+};
+
+/** preview_action 的参数照 computer use 的写法，换成预览的动作；坐标、文字缺了的说明要补什么。 */
+function previewAction(input: OperationInput<'preview.action'>): Parameters<Previews['act']>[1] {
+  const missing = (field: string) => new OperationError(`${input.action} 要写 ${field}`, 'denied', 400);
+  const at = () => {
+    if (!input.coordinate) throw missing('coordinate');
+    const [x, y] = input.coordinate as [number, number];
+    return { x, y };
+  };
+  const text = () => { if (!input.text) throw missing('text'); return input.text; };
+  switch (input.action) {
+    case 'screenshot': return { type: 'screenshot' };
+    case 'wait': return { type: 'wait', seconds: input.duration ?? 1 };
+    case 'left_click': return { type: 'click', ...at() };
+    case 'double_click': return { type: 'click', ...at(), count: 2 };
+    case 'right_click': return { type: 'click', ...at(), button: 'right' };
+    case 'long_press': return { type: 'long_press', ...at(), ...(input.duration ? { duration: input.duration } : {}) };
+    case 'left_click_drag': {
+      if (!input.start_coordinate) throw missing('start_coordinate');
+      const [x, y] = input.start_coordinate as [number, number];
+      return { type: 'drag', from: { x, y }, to: at() };
+    }
+    case 'scroll': {
+      // 一格约 100 像素，同浏览器滚轮
+      const step = (input.scroll_amount ?? 3) * 100, direction = input.scroll_direction ?? 'down';
+      return { type: 'scroll', ...at(), dx: direction === 'left' ? -step : direction === 'right' ? step : 0,
+        dy: direction === 'up' ? -step : direction === 'down' ? step : 0 };
+    }
+    case 'type': return { type: 'type', text: text() };
+    case 'key': return { type: 'key', key: playwrightKey(text()) };
+    case 'navigate': return { type: 'navigate', path: text() };
+    case 'back': case 'forward': case 'reload': case 'home': return { type: input.action };
+  }
+}
 
 export class InstanceOperations {
   private active = new Set<Promise<unknown>>();
   private closing = false;
+  /** 操作结果带的图片，按结果对象记着，invokeModel 取了交给模型；收据里不存、重放没有，界面调用也不回。 */
+  private images = new WeakMap<object, ToolImage[]>();
   constructor(private kite: OperationServices) {}
 
   grants(id: string): { grants: OperationGrant[]; revision: string } {
@@ -228,16 +273,20 @@ export class InstanceOperations {
       this.authorize(caller, workspaceId, name, args);
     };
     check();
+    let images: ToolImage[] | undefined;
     const run = async () => {
       await this.confirm(caller, name, args, signal);
-      return contract.output.parse(await this.perform(caller, workspaceId, name, args, check, signal));
+      const taken = takeImages(await this.perform(caller, workspaceId, name, args, check, signal));
+      images = taken.images;
+      return contract.output.parse(taken.value);
     };
     // 消息和停止已有 journal 收据，直接复用，避免另记一份停止结果。
-    if (contract.retry !== 'receipt') return run();
-    return contract.output.parse(await this.kite.receipts.run({
+    const value = contract.retry !== 'receipt' ? await run() : contract.output.parse(await this.kite.receipts.run({
       actor: callerKey(caller), id: args.operationId as string,
       request: JSON.stringify({ workspaceId, name, args }), execute: run,
     }));
+    if (images?.length && value && typeof value === 'object') this.images.set(value, images);
+    return value;
   }
 
   private async perform(caller: OperationCaller, workspaceId: string, name: OperationName, args: Record<string, unknown>, check: () => void, signal?: AbortSignal): Promise<unknown> {
@@ -351,10 +400,36 @@ export class InstanceOperations {
         const input = args as OperationInput<'terminal.read'>;
         return this.kite.terminals.read(input.instanceId, input.offset, input.limit);
       }
-      case 'terminal.select': {
+      case 'preview.open': {
+        if (caller.kind === 'ui') throw new OperationError('界面用新建窗口打开预览', 'denied', 403);
+        const input = args as OperationInput<'preview.open'>;
         check();
-        const input = args as OperationInput<'terminal.select'>;
-        return this.kite.terminals.selectPort(input.instanceId, input.port);
+        return this.kite.previews.open(workspaceId, { kind: input.kind, port: input.port, path: input.path, browser: input.browser },
+          { instanceId: caller.instanceId, operationId: input.operationId, turnId: caller.turnId, callId: caller.callId }, signal);
+      }
+      case 'preview.action': {
+        const input = args as OperationInput<'preview.action'>;
+        const action = previewAction(input);
+        check();
+        return this.kite.previews.act(input.instanceId, action, signal);
+      }
+      case 'preview.inspect': return this.kite.previews.inspect(args.instanceId as string);
+      case 'preview.list': {
+        const windows = new Set(this.kite.store.windows(workspaceId).map((window) => window.target.instanceId));
+        return { previews: this.kite.store.instances(workspaceId).filter((instance) => instance.definitionId === previewDefinitionId && instance.status === 'open')
+          .map((instance) => ({ ...this.kite.previews.describe(instance), createdBy: instance.origin?.instanceId ?? null, window: windows.has(instance.id) })) };
+      }
+      case 'preview.close': {
+        check();
+        const target = this.kite.store.instance(args.instanceId as string)!;
+        if (caller.kind !== 'ui' && target.origin?.instanceId !== caller.instanceId) throw new OperationError('只能关闭你自己用 preview_open 开的预览', 'denied', 403);
+        await this.kite.previews.closePreview(target.id);
+        return { ok: true };
+      }
+      case 'preview.select': {
+        check();
+        const input = args as OperationInput<'preview.select'>;
+        return this.kite.previews.select(input.instanceId, { port: input.port, browser: input.browser });
       }
       case 'terminal.stop': {
         check();
@@ -407,7 +482,8 @@ export class InstanceOperations {
       const result = await this.invoke({ kind: 'model', instanceId, turnId: context.turnId, callId: context.callId }, workspaceId, name,
         operationContracts[name].effect === 'read' ? args : { ...args, operationId: `${context.turnId}:${context.callId}` }, context.signal);
       const isError = name === 'plugin.call' && (result as { isError?: boolean }).isError;
-      return { status: isError ? 'error' : 'success', output: JSON.stringify(result) };
+      const images = result && typeof result === 'object' ? this.images.get(result) : undefined;
+      return { status: isError ? 'error' : 'success', output: JSON.stringify(result), ...(images ? { images } : {}) };
     } catch (error) {
       const failure = operationError(error);
       const outcome = failure.outcome;

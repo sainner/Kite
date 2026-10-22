@@ -8,6 +8,7 @@ enum ToolKind: Hashable {
     case cronCreate, cronDelete, cronList, monitor, taskStop, terminalRun, terminalRead, terminalList, listAgents, sendMessage
     /// Kite 自己的工具：提问、密钥引用、代理协作、监视和个人 agent（Line）的工具，见 kited 的 agentToolCatalog。
     case question, credentials, agentStart, agentResume, agentStop, agentMerge, monitorStart, monitorList, monitorStop
+    case previewOpen, previewAction, previewInspect, previewList, previewClose
     case lineStatus, lineHandle, lineRelay, lineControl, lineWorkspace
     /// 插件实例的工具。
     case plugin
@@ -40,6 +41,10 @@ enum ToolKind: Hashable {
         case .agentStop, .monitorStop: "stop.circle"
         case .agentMerge: "arrow.triangle.merge"
         case .monitorStart, .monitorList: "waveform.path.ecg"
+        case .previewOpen, .previewList: "eye"
+        case .previewAction: "hand.tap"
+        case .previewInspect: "list.bullet.indent"
+        case .previewClose: "eye.slash"
         case .lineStatus: "square.grid.2x2"
         case .lineHandle: "tray"
         case .lineRelay: "arrowshape.turn.up.right"
@@ -85,6 +90,11 @@ enum ToolKind: Hashable {
         case .monitorStart: "开了 \(count) 个监视"
         case .monitorList: "查看了监视"
         case .monitorStop: "停了 \(count) 个监视"
+        case .previewOpen: "打开了 \(count) 个预览"
+        case .previewAction: "操作了 \(count) 次预览"
+        case .previewInspect: "读了 \(count) 次界面结构"
+        case .previewList: "查看了预览"
+        case .previewClose: "关了 \(count) 个预览"
         case .lineStatus: "查看了 \(count) 次工作区"
         case .lineHandle: "代处理了 \(count) 项收件箱事项"
         case .lineRelay: "转达了 \(count) 次用户的话"
@@ -128,6 +138,11 @@ extension ToolUse {
         case "agent_stop": .agentStop
         case "agent_merge": .agentMerge
         case "monitor_start": .monitorStart
+        case "preview_open": .previewOpen
+        case "preview_action": .previewAction
+        case "preview_inspect": .previewInspect
+        case "preview_list": .previewList
+        case "preview_close": .previewClose
         case "monitor_list": .monitorList
         case "monitor_stop": .monitorStop
         case "line_status": .lineStatus
@@ -200,6 +215,11 @@ extension ToolUse {
         case .monitorStart: "开始监视"
         case .monitorList: "监视列表"
         case .monitorStop: "停止监视"
+        case .previewOpen: "打开预览"
+        case .previewAction: "操作预览"
+        case .previewInspect: "界面结构"
+        case .previewList: "预览列表"
+        case .previewClose: "关闭预览"
         case .lineStatus: "工作区概况"
         case .lineHandle: "代处理"
         case .lineRelay: "转达"
@@ -238,6 +258,10 @@ extension ToolUse {
             return input["title"]?.string ?? ""
         case .terminalRun:
             return input["script"]?.string ?? ""
+        case .previewOpen:
+            return previewTarget
+        case .previewAction:
+            return previewActionTitle
         case .sendMessage:
             // Claude 的 SendMessage 参数里本来就是名字
             return input["instanceId"]?.string.flatMap(agentTitle) ?? input["to"]?.string ?? ""
@@ -257,6 +281,36 @@ extension ToolUse {
             return input["description"]?.string ?? input["query"]?.string ?? input["url"]?.string
                 ?? input["skill"]?.string ?? input["to"]?.string ?? input["text"]?.string.map(firstLine)
                 ?? (path.isEmpty ? mcp?.server ?? "" : path)
+        }
+    }
+
+    /// preview_open 看的是什么：localhost:端口/路径 与浏览器，或模拟器。
+    private var previewTarget: String {
+        guard input["kind"]?.string != "simulator" else { return "模拟器" }
+        let port = input["port"].flatMap { value -> String? in if case .number(let number) = value { return "localhost:\(Int(number))" } else { return nil } }
+        return [port.map { $0 + (input["path"]?.string ?? "") }, input["browser"]?.string].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// preview_action 这次做什么。
+    private var previewActionTitle: String {
+        let text = input["text"]?.string.map(firstLine) ?? ""
+        switch input["action"]?.string {
+        case "screenshot": return "截图"
+        case "left_click": return "点按"
+        case "double_click": return "双击"
+        case "right_click": return "右键点按"
+        case "long_press": return "长按"
+        case "left_click_drag": return "拖动"
+        case "scroll": return "滚动"
+        case "type": return "输入「\(text)」"
+        case "key": return "按 \(text)"
+        case "wait": return "等一会儿"
+        case "navigate": return "打开 \(text)"
+        case "back": return "后退"
+        case "forward": return "前进"
+        case "reload": return "重新加载"
+        case "home": return "回主屏幕"
+        default: return "操作预览"
         }
     }
 
@@ -335,6 +389,11 @@ extension ToolUse {
         case .monitorStart: return input["title"]?.string.map { "开始监视「\($0)」" } ?? "开始监视"
         case .monitorList: return "查看监视"
         case .monitorStop: return "停掉监视"
+        case .previewOpen: return "打开预览 \(previewTarget)"
+        case .previewAction: return previewActionTitle
+        case .previewInspect: return "读界面结构"
+        case .previewList: return "查看预览"
+        case .previewClose: return "关闭预览"
         case .lineStatus:
             if input["threadId"] != nil { return "读线程最后的回复" }
             return input["machine"]?.string.map { "查看 \($0) 的工作区" } ?? "查看全部工作区"

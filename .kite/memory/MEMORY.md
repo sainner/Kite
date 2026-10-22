@@ -14,6 +14,7 @@
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的外置硬盘，暂未插上；命名位置的提供方
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
+- [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用外置硬盘 ORICO
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈
@@ -41,7 +42,7 @@
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测，含预置脚本（旧代理没有 terminal_run）；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
-- [预览插件收尾](todo-preview-plugin.md) — 网页移出终端、各浏览器、模拟器、App 窗口，已决定未实现；逐帧的界面细节与 Claude 模拟器面板参照
+- [预览插件收尾](todo-preview-plugin.md) — 第一步已实现待手测、自定的几项待确认；Firefox 在 macOS 27 起不来；Safari 与 App 窗口未做
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
 - [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退

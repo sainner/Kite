@@ -60,7 +60,7 @@ final class WorkArea: Identifiable {
     @ObservationIgnored private var visibleInstances: Set<String> = []
     /// 为打开引用新建、工作机还没建好的文件实例：浏览器建出来就收着目录，见 AppModel.openFileReference。
     @ObservationIgnored var referencedFiles: Set<String> = []
-    /// 消息里点的本机网页链接、网页地址栏里输入的路径，按终端实例 ID：网页视图打开到链接的路径。页面里的跳转按设备各自保存，这个也只在本机。
+    /// 消息里点的本机网页链接、网页地址栏里输入的路径，按预览实例 ID：网页预览打开到链接的路径。页面里的跳转按设备各自保存，这个也只在本机。
     var webLinks: [String: WebLink] = [:]
     /// 停靠栏里展开的「更多」或家族格，外层在前；只在本机，不保存。
     var dockExpansion: [String] = []
@@ -148,11 +148,37 @@ final class WorkArea: Identifiable {
         definitions.first { $0.id == instance.definitionId }
     }
 
-    /// 打开实例时先显示哪个视图：终端有监听的端口时是网页，其余是默认视图。
+    /// 打开实例时先显示哪个视图：默认视图。
     func openingView(of instance: RemotePluginInstance) -> String? {
         guard let definition = definition(of: instance) else { return nil }
-        if instance.state?.terminal?.ports?.isEmpty == false, definition.views.contains(where: { $0.id == "web" }) { return "web" }
         return (definition.views.first { $0.id == definition.defaultView } ?? definition.views.first)?.id
+    }
+
+    /// 本工作区运行中终端监听的端口，按端口号排；同一个端口在几个终端里时算一个，能用 HTTP 打开的那个为准。
+    var workspacePortStatus: [TerminalStatus.Port] {
+        let all = instances.filter { $0.status == .open && $0.state?.terminal?.running == true }.flatMap { $0.state?.terminal?.ports ?? [] }
+        return Dictionary(grouping: all, by: \.port).map { port, items in TerminalStatus.Port(port: port, http: items.contains(where: \.http)) }
+            .sorted { $0.port < $1.port }
+    }
+
+    /// 本工作区运行中终端监听的端口：网页预览只能看这些，其他设备上网页视图打开期间为它们都开转发（见 PortPreview）。
+    var workspacePorts: [Int] { workspacePortStatus.map(\.port) }
+
+    /// 预览看哪一种；不是预览时为 nil。
+    func previewKind(of instance: RemotePluginInstance) -> PreviewKind? {
+        instance.definitionId == AppModel.previewDefinition ? instance.config?.preview?.kind ?? .web : nil
+    }
+
+    /// 新预览的名字：网页 N、模拟器 N，同工作机的起名规则。
+    func previewTitle(_ spec: PreviewSpec) -> String {
+        Self.numbered(spec.kind == .simulator ? "模拟器" : "网页", among: Set(instances.map(\.title)))
+    }
+
+    /// 「名字 N」里还没用过的最小编号，同工作机的 numberedTitle。
+    private static func numbered(_ name: String, among titles: Set<String>) -> String {
+        var number = 1
+        while titles.contains("\(name) \(number)") { number += 1 }
+        return "\(name) \(number)"
     }
 
     /// 关掉窗口后实例还在：独立存续的，或者进程还在跑的终端。
@@ -177,9 +203,10 @@ final class WorkArea: Identifiable {
         return definition(of: instance)?.views.first { $0.id == target.viewId }
     }
 
-    /// 插件实例的外观：一个实例一个窗口，窗口和它在停靠栏的小头像同一个样子，不随视图换。
+    /// 插件实例的外观：一个实例一个窗口，窗口和它在停靠栏的小头像同一个样子，不随视图换。预览按看的是网页还是模拟器。
     func appearance(of instance: RemotePluginInstance) -> WindowAppearance {
-        definition(of: instance).map(WindowAppearance.definition) ?? .renderer("")
+        if previewKind(of: instance) == .simulator { return .init(name: "模拟器", icon: "iphone") }
+        return definition(of: instance).map(WindowAppearance.definition) ?? .renderer("")
     }
 
     func appearance(of pane: Pane) -> WindowAppearance {
@@ -351,10 +378,7 @@ final class WorkArea: Identifiable {
     func newInstanceTitle(_ definition: RemotePluginDefinition) -> String {
         if definition.agent != nil { return "新代理" }
         guard !definition.views.isEmpty else { return definition.title }
-        let titles = Set(instances.filter { $0.definitionId == definition.id }.map(\.title))
-        var number = 1
-        while titles.contains("\(definition.title) \(number)") { number += 1 }
-        return "\(definition.title) \(number)"
+        return Self.numbered(definition.title, among: Set(instances.filter { $0.definitionId == definition.id }.map(\.title)))
     }
 
     /// 先在本机归档，见 archivingInstances。
@@ -506,7 +530,7 @@ struct WindowAppearance {
         switch id {
         case "files": .init(name: "文件", icon: "folder")
         case "terminal": .init(name: "终端", icon: "terminal")
-        case "preview": .init(name: "网页", icon: "globe")
+        case "preview": .init(name: "预览", icon: "globe")
         case "monitor": .init(name: "监视", icon: "tray")
         default: .init(name: "插件", icon: "puzzlepiece.extension")
         }

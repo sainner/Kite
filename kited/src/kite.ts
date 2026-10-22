@@ -81,6 +81,8 @@ import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
+import { Previews } from './preview/previews.ts';
+import { Simulators } from './preview/simulators.ts';
 import { trustedScripts } from './terminal/scripts.ts';
 import { contentHash } from './harness/context/project.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
@@ -213,6 +215,8 @@ export class Kite {
   /** 代理用 monitor_start 开的 monitor；Line 的那个由 monitor（LineMonitor）负责。 */
   readonly monitors: Monitors;
   readonly terminals: Terminals;
+  readonly previews: Previews;
+  readonly simulators: Simulators;
   /** 最近一条输入是 Line 自己说明的线程；只在内存里，重启后按用户的工作对待。 */
   private lineWork = new Set<string>();
   /** 服务起来后才知道本机监听地址与组网，Line 调本机和别的工作机时用。 */
@@ -399,7 +403,10 @@ export class Kite {
       changed: (workspaceId) => this.changed(workspaceId),
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
+    const toolEnv = commandEnvironment(process.env) as Record<string, string>;
+    this.simulators = new Simulators({ store, env: toolEnv });
     this.terminals = new Terminals({ store, home, env: process.env,
+      prepareScript: (workspaceId, script) => this.simulators.prepareScript(workspaceId, script.content),
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       collect: (instance) => this.instances.collect(instance),
@@ -409,6 +416,12 @@ export class Kite {
       forward: (ports) => this.serving?.network?.forward(ports),
       ...(options.terminalShell ? { shell: options.terminalShell } : {}),
       ...(options.terminalPortScanMs !== undefined ? { portScanMs: options.terminalPortScanMs } : {}) });
+    this.previews = new Previews({ store, env: toolEnv, simulators: this.simulators,
+      run: (workspaceId, action) => this.control(workspaceId, action),
+      changed: (workspaceId) => this.changed(workspaceId),
+      collect: (instance) => this.instances.collect(instance),
+      ports: (workspaceId) => this.terminals.workspacePorts(workspaceId),
+      ...(options.previewSettle ? { settle: options.previewSettle } : {}) });
     this.tokenCounts = new TokenCounter({ apiKeys: () => this.credentials.apiKeys() });
     this.voice = new VoiceSessions({
       keys: () => this.credentials.speechKeys(),
@@ -441,6 +454,7 @@ export class Kite {
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
     this.terminals.recover();
+    this.previews.recover();
   }
 
   machine(): Machine { return this.store.machine; }
@@ -572,6 +586,7 @@ export class Kite {
           const release = await this.closeExtensions(w.id);
           try {
             if (existsSync(w.cwd)) await removeWorktree(checkout.path, w.cwd, w.branch);
+            await this.simulators.remove(w.id);
             this.store.deleteWorkspaceRows(w.id);
           } finally { release(); }
           for (const path of [...threads.map((t) => join(this.home, 'sessions', t.id)), join(this.home, 'diffs', w.id), attachmentStore(this.home, w.id),
@@ -2050,6 +2065,7 @@ export class Kite {
         if (current.status === 'archived') return;
         await this.stopThread(current);
         await this.terminals.stopOwned(member, '启动它的代理已归档');
+        await this.previews.closeOwned(member);
         this.asks.clear(member);
         this.store.archiveInstance(member);
         this.threadChanged({ ...current, status: 'archived' });
@@ -2125,6 +2141,7 @@ export class Kite {
     const releasePlugins = await this.closeExtensions(id);
     try {
       await removeWorktree(checkout.path, w.cwd, w.branch);
+      await this.simulators.remove(id);
       this.store.archiveWorkspace(id);
     } finally { releasePlugins(); }
     for (const t of threads) if (t.status !== 'archived') this.threadChanged({ ...t, status: 'archived' });
@@ -2162,6 +2179,8 @@ export class Kite {
   /** 工作区交接、冻结或归档前停下终端、插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始，终端不再拉起。 */
   private async closeExtensions(workspaceId: string): Promise<() => void> {
     await this.terminals.closeWorkspace(workspaceId, '工作区已归档或交出，终端已停止');
+    await this.previews.closeWorkspace(workspaceId);
+    await this.simulators.shutdown(workspaceId);
     await this.monitors.closeWorkspace(workspaceId);
     return this.plugins.closeWorkspace(workspaceId);
   }
@@ -2243,6 +2262,8 @@ export class Kite {
     await this.monitor.stop();
     await this.monitors.close();
     await this.terminals.close();
+    await this.previews.close();
+    await this.simulators.close();
     await this.plugins.close();
     await this.operations.close();
     for (const c of this.preparations.values()) c.abort();

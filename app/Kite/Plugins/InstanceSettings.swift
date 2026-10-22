@@ -396,12 +396,20 @@ struct InstanceAction {
         return actions
     }
 
-    /// 实例本身的：配置；终端在跑时能停止，独立存续的能归档。窗口自己的更多菜单只列这些，打开、关闭由窗口管。
+    /// 实例本身的：配置；终端在跑时能停止，预览能关闭（agent 开的没有窗口，靠它），独立存续的能归档。窗口自己的更多菜单只列这些，打开、关闭由窗口管。
     @MainActor static func managing(_ instance: RemotePluginInstance, in area: WorkArea, model: AppModel) -> [InstanceAction] {
         var actions = [InstanceAction(title: "配置", symbol: "slider.horizontal.3") { area.settingsInstance = instance }]
         if instance.state?.terminal?.running == true {
             actions.append(InstanceAction(title: "停止终端", symbol: "stop.fill", enabled: model.isConnected(area), destructive: true) {
                 model.stopTerminal(instance, in: area)
+            })
+        }
+        if area.previewKind(of: instance) != nil {
+            actions.append(InstanceAction(title: "关闭预览", symbol: "eye.slash", enabled: model.isConnected(area), destructive: true) {
+                Task {
+                    do { try await model.closePreview(instance.id, in: area) }
+                    catch { area.windowError = error.localizedDescription }
+                }
             })
         }
         if area.definition(of: instance)?.lifetime == .persistent {

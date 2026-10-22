@@ -241,10 +241,8 @@ struct ReferenceNavigation: ViewModifier {
             .environment(\.runInTerminal, RunInTerminalAction(model: model, area: area))
             .environment(\.openURL, OpenURLAction { url in
                 if let target = LocalPort(url) {
-                    Task {
-                        do { try await model.openLocalPort(target, in: area) }
-                        catch { self.error = error.localizedDescription }
-                    }
+                    do { try model.openLocalPort(target, in: area) }
+                    catch { self.error = error.localizedDescription }
                     return .handled
                 }
                 guard url.scheme == "kite" else { return .systemAction }

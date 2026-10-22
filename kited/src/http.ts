@@ -18,6 +18,8 @@ import { INTEGRATIONS } from './account-data/registry.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { requestedSize, type TerminalSocket } from './terminal/terminals.ts';
+import { previewParams, type PreviewSocket } from './preview/previews.ts';
+import { previewSpecSchema } from './preview/state.ts';
 import { listScripts } from './terminal/scripts.ts';
 import { approvalModes } from './execution/grants.ts';
 import { hostDirectory, WorkspaceFiles } from './workspace/files.ts';
@@ -81,7 +83,7 @@ function sourceOf(req: Request): InputVia | undefined {
   return parsed.data;
 }
 
-type SocketData = VoiceSocket | TerminalSocket;
+type SocketData = VoiceSocket | TerminalSocket | PreviewSocket;
 
 /** Git 网络操作和轻任务可能长时间没有响应数据，由各自的生命周期控制结束。 */
 function long<R extends Request>(fn: (req: R) => Promise<Response>) {
@@ -204,32 +206,34 @@ export function serve(kite: Kite, listen: Listen) {
     if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
     return run(req.params.id);
   }));
-  /** 语音输入升级成 WebSocket，检查同 bound；thread 是正在输入的会话，新会话不带。 */
-  const voice = (req: Request, server: Server<SocketData>) => {
+  /** 升级成 WebSocket，检查同 bound；prepare 核对请求、给出连接带的数据，failure 是请求不是 WebSocket 时的说明。 */
+  const socketRoute = <R extends Request>(prepare: (req: R) => SocketData, failure: string) => (req: R, server: Server<SocketData>) => {
     try {
       checkAccess(req);
       checkMachine(req);
-      const thread = new URL(req.url).searchParams.get('thread') ?? undefined;
-      if (thread !== undefined) kite.thread(thread);
-      if (server.upgrade(req, { data: { kind: 'voice', thread } })) return undefined;
-      throw new KiteError('语音输入需要 WebSocket 连接');
+      if (server.upgrade(req, { data: prepare(req) })) return undefined;
+      throw new KiteError(failure);
     } catch (e) {
       return errorResponse(e);
     }
   };
-  /** 终端接入升级成 WebSocket，检查同 bound；协议见 terminal/terminals.ts。 */
-  const terminal = (req: Request & { params: { id: string } }, server: Server<SocketData>) => {
-    try {
-      checkAccess(req);
-      checkMachine(req);
-      kite.terminals.check(req.params.id);
-      const size = requestedSize(new URL(req.url).searchParams);
-      if (server.upgrade(req, { data: { kind: 'terminal', instanceId: req.params.id, ...(size ? { size } : {}) } })) return undefined;
-      throw new KiteError('终端需要 WebSocket 连接');
-    } catch (e) {
-      return errorResponse(e);
-    }
-  };
+  /** 语音输入；thread 是正在输入的会话，新会话不带。 */
+  const voice = socketRoute((req) => {
+    const thread = new URL(req.url).searchParams.get('thread') ?? undefined;
+    if (thread !== undefined) kite.thread(thread);
+    return { kind: 'voice', thread };
+  }, '语音输入需要 WebSocket 连接');
+  /** 终端接入，协议见 terminal/terminals.ts。 */
+  const terminal = socketRoute((req: Request & { params: { id: string } }) => {
+    kite.terminals.check(req.params.id);
+    const size = requestedSize(new URL(req.url).searchParams);
+    return { kind: 'terminal', instanceId: req.params.id, ...(size ? { size } : {}) };
+  }, '终端需要 WebSocket 连接');
+  /** 预览的画面接入，协议见 preview/previews.ts。 */
+  const preview = socketRoute((req: Request & { params: { id: string } }) => {
+    kite.previews.check(req.params.id);
+    return { kind: 'preview', instanceId: req.params.id, ...previewParams(new URL(req.url).searchParams) };
+  }, '预览需要 WebSocket 连接');
   /** 查看器按字节读取工作区文件，边界与文件操作相同；见 workspace/file-content.ts。 */
   const workspaceFile = (req: Request & { params: { id: string } }) => {
     const workspace = kite.store.workspace(req.params.id);
@@ -585,7 +589,7 @@ export function serve(kite: Kite, listen: Listen) {
         const identity = z.string().trim().min(1);
         const parsed = z.object({ id: z.uuid(), content: z.discriminatedUnion('kind', [
           z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional(), title: identity.optional(), command: identity.optional(),
-            script: identity.optional() }).strict(),
+            script: identity.optional(), preview: previewSpecSchema.optional() }).strict(),
           z.object({ kind: z.literal('open'), instanceId: identity, viewId: identity }).strict(),
         ]) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('窗口请求无效');
@@ -679,6 +683,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined)) },
       '/voice': { GET: voice },
       '/instances/:id/terminal': { GET: terminal },
+      '/instances/:id/preview': { GET: preview },
     },
     websocket: {
       // 终端输出很快而设备读得慢时断开，设备重连时从当前画面接上，不在工作机上无限堆积。
@@ -686,14 +691,17 @@ export function serve(kite: Kite, listen: Listen) {
       closeOnBackpressureLimit: true,
       open: (socket: ServerWebSocket<SocketData>) => {
         if (socket.data.kind === 'terminal') kite.terminals.attach(socket as ServerWebSocket<TerminalSocket>);
+        else if (socket.data.kind === 'preview') kite.previews.attach(socket as ServerWebSocket<PreviewSocket>);
         else kite.voice.open(socket as ServerWebSocket<VoiceSocket>);
       },
       message: (socket: ServerWebSocket<SocketData>, message: string | Buffer) => {
         if (socket.data.kind === 'terminal') kite.terminals.receive(socket as ServerWebSocket<TerminalSocket>, message);
+        else if (socket.data.kind === 'preview') kite.previews.receive(socket as ServerWebSocket<PreviewSocket>, message);
         else kite.voice.message(socket as ServerWebSocket<VoiceSocket>, message);
       },
       close: (socket: ServerWebSocket<SocketData>) => {
         if (socket.data.kind === 'terminal') kite.terminals.detach(socket as ServerWebSocket<TerminalSocket>);
+        else if (socket.data.kind === 'preview') kite.previews.detach(socket as ServerWebSocket<PreviewSocket>);
         else kite.voice.close(socket as ServerWebSocket<VoiceSocket>);
       },
     },

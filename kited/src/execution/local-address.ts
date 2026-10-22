@@ -34,3 +34,14 @@ export function localEndpoint(domain: string, own = true): boolean {
   const host = domain.startsWith('[') ? domain.slice(1, domain.indexOf(']')) : isIP(domain) === 6 ? domain : domain.split(':')[0]!;
   return localHost(host, own);
 }
+
+const privateRanges = new BlockList();
+for (const [network, prefix] of [['10.0.0.0', 8], ['172.16.0.0', 12], ['192.168.0.0', 16], ['100.64.0.0', 10]] as const) privateRanges.addSubnet(network, prefix, 'ipv4');
+privateRanges.addSubnet('fc00::', 7, 'ipv6');
+
+/** 局域网、组网（100.64.0.0/10；Tailscale 的 fd7a:115c:a1e0::/48 在 fc00::/7 里）的 IP 地址，或 localHost 认的本机地址。 */
+export function privateAddress(address: string): boolean {
+  if (localHost(address)) return true;
+  const family = isIP(address);
+  return family !== 0 && privateRanges.check(address, family === 4 ? 'ipv4' : 'ipv6');
+}

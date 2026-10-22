@@ -12,8 +12,6 @@ export const stateSchema = z.object({
   endedAt: z.number().optional(),
   /** 运行中进程树正在监听的 TCP 端口，按端口号排；http 是能不能用 HTTP 打开。结束后没有。 */
   ports: z.array(z.object({ port: z.number().int(), http: z.boolean() }).strict()).optional(),
-  /** 网页视图选的端口，跨设备共享；没选或不再监听时界面用第一个能响应 HTTP 的。 */
-  port: z.number().int().optional(),
 }).strict();
 export type TerminalState = z.infer<typeof stateSchema>;
 export const terminalState = (instance: Pick<PluginInstance, 'state'>): TerminalState | undefined =>

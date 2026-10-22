@@ -5,6 +5,7 @@ import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { MAX_MESSAGE_ATTACHMENTS } from '../workspace/attachments.ts';
 import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
 import { stateSchema as terminalStateSchema } from '../terminal/state.ts';
+import { previewBrowsers, previewKinds, workstationBrowsers } from '../preview/state.ts';
 
 /**
  * Line 的管理动作与对应工具。停止、归档、创建、流转是必问动作，每次执行前等用户批准，见 line/tools.ts。
@@ -34,6 +35,13 @@ const fileEntry = z.object({ name: id, path: id, kind: z.enum(['file', 'director
  */
 const listed = { instanceId: id, title: z.string(), createdBy: id.nullable(), createdAt: z.number(), window: z.boolean(), operations: z.array(id),
   workspace: z.object({ id, name: z.string() }).strict().optional() };
+/** 预览的一项：网页另带端口和在哪看（device 是用户设备上的网页视图）。 */
+const preview = { instanceId: id, title: z.string(), kind: z.enum(previewKinds), port: z.number().int().nullable().optional(), browser: z.enum(previewBrowsers).optional() };
+/** 给模型看的一帧：坐标照 width、height（网页是 CSS 像素，模拟器是点）；settled 是等到了画面稳定，没等到是动画还在动。图片只在首次调用时返回，收据里不存。 */
+/** 截图不在结果里，单独交给模型（见 operations.ts 的 takeImages）。 */
+const previewFrame = z.object({ ...preview, url: z.string().optional(), pageTitle: z.string().optional(), width: z.number(), height: z.number(),
+  settled: z.boolean() }).strict();
+const coordinate = z.array(z.number().min(0)).length(2);
 const summary = z.object({
   ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
@@ -134,7 +142,7 @@ export const operationContracts = {
     ].join(''),
     tool: 'terminal_run', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, script: z.string().trim().min(1).max(255), restart: z.boolean().optional() }).strict(),
-    output: terminalStateSchema.omit({ port: true }).extend({ instanceId: id, title: z.string(), script: z.string(),
+    output: terminalStateSchema.extend({ instanceId: id, title: z.string(), script: z.string(),
       /** 已经在跑、返回的是那个。 */
       reused: z.boolean(),
       /** 分给脚本的端口段的第一个，脚本里是 PORT。 */
@@ -156,11 +164,55 @@ export const operationContracts = {
     title: '停止终端', description: '停下后台终端里的进程，等到进程结束才返回。你自己停下的不再发结束通知。',
     tool: 'terminal_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
   },
-  'terminal.select': {
-    title: '选择网页端口', description: '选终端网页视图打开的端口，所有设备共用；只能选正在监听的端口，null 换回默认（第一个能响应 HTTP 的）。',
+  'preview.open': {
+    title: '打开预览', description: [
+      '打开一个预览给自己看并操作：kind 为 web 时是网页，port 写本工作区运行中终端监听的端口（预置脚本的端口见 terminal_run 的结果），path 是要打开的路径，',
+      'browser 选工作机上的 chromium（默认）或 firefox；kind 为 simulator 时是宿主为本工作区开的 iOS 模拟器，预置脚本经环境变量 KITE_SIMULATOR 拿到它的编号，装好 App 再看。',
+      '返回实例 ID、画面尺寸与画面稳定后的一帧截图；之后用 preview_action 操作，用完 preview_close。预览会出现在用户的停靠栏里，用户能打开看你在做什么。',
+      '截图会发给模型厂商，不要在预览里登录真实账号。',
+    ].join(''),
+    tool: 'preview_open', effect: 'create', retry: 'receipt',
+    input: z.object({ operationId: id, kind: z.enum(previewKinds).default('web'), port: z.number().int().min(1).max(65535).optional(),
+      path: z.string().max(4096).optional(), browser: z.enum(workstationBrowsers).optional() }).strict(),
+    output: previewFrame,
+  },
+  'preview.action': {
+    title: '操作预览', description: [
+      '操作预览，做完等画面稳定（约 0.3 秒不变，画面一直没变的等 1 秒，最多 3 秒）再返回新的一帧截图；App 冷启动这类更慢的，用 wait 再看。coordinate 是截图里的位置 [x, y]，单位同返回的 width、height，以最近一次截图为准。',
+      'action：screenshot 只截图；left_click、double_click、right_click、long_press（duration 秒）点 coordinate；left_click_drag 从 start_coordinate 拖到 coordinate，模拟器上就是滑动；',
+      'scroll 在 coordinate 处按 scroll_direction（up、down、left、right）滚 scroll_amount 格（默认 3）；type 输入 text（模拟器上先点要输入的框，中文也能输入）；key 按一个键或组合键，text 写键名，如 Enter、Escape、Backspace、Tab、ArrowDown、Control+A；',
+      'wait 等 duration 秒（默认 1）再截图；网页另有 navigate（text 写本端口上的路径）、back、forward、reload，模拟器另有 home（回主屏幕）。',
+      '用户开的预览也能操作，用 preview_list 找；在用户设备上看的网页（browser 为 device），你操作的是宿主在工作机 Chromium 里另开的同一个地址，用户看不到。',
+    ].join(''),
+    tool: 'preview_action', effect: 'write', retry: 'receipt',
+    input: target.extend({
+      action: z.enum(['screenshot', 'left_click', 'double_click', 'right_click', 'long_press', 'left_click_drag', 'scroll', 'type', 'key', 'wait',
+        'navigate', 'back', 'forward', 'reload', 'home']),
+      coordinate: coordinate.optional(), start_coordinate: coordinate.optional(), text: z.string().min(1).max(10_000).optional(),
+      scroll_direction: z.enum(['up', 'down', 'left', 'right']).optional(), scroll_amount: z.number().int().min(1).max(50).optional(),
+      duration: z.number().min(0.1).max(10).optional(),
+    }).strict(),
+    output: previewFrame,
+  },
+  'preview.inspect': {
+    title: '读取界面结构', description: '读预览的界面结构：网页是无障碍树（角色、名称与文字），模拟器是控件、文字与位置。找按钮、读文字比看截图准，也更省上下文。',
+    tool: 'preview_inspect', effect: 'read', retry: 'read',
+    input: z.object({ instanceId: id }).strict(), output: z.object({ text: z.string() }).strict(),
+  },
+  'preview.list': {
+    title: '列出预览', description: '列出本工作区开着的预览：网页的端口与在哪看（device 是用户设备上的网页视图，其余是工作机上的浏览器），模拟器；谁开的（createdBy 为空是用户）、有没有窗口。',
+    tool: 'preview_list', effect: 'read', retry: 'read', input: z.object({}).strict(),
+    output: z.object({ previews: z.array(z.object({ ...preview, createdBy: id.nullable(), window: z.boolean() }).strict()) }).strict(),
+  },
+  'preview.close': {
+    title: '关闭预览', description: '关闭你用 preview_open 开的预览，连同用户为它开的窗口。',
+    tool: 'preview_close', effect: 'write', retry: 'receipt', input: target, output: ok,
+  },
+  'preview.select': {
+    title: '设置网页预览', description: '改网页预览看的端口（须是本工作区运行中终端监听的，null 是不选）或在哪看（device 是设备自己的网页视图，其余是工作机上的浏览器），所有设备共用。',
     tool: null, effect: 'write', retry: 'receipt',
-    input: target.extend({ port: z.number().int().min(1).max(65535).nullable() }).strict(),
-    output: z.object({ port: z.number().int().nullable() }).strict(),
+    input: target.extend({ port: z.number().int().min(1).max(65535).nullable().optional(), browser: z.enum(previewBrowsers).optional() }).strict(),
+    output: z.object({ port: z.number().int().optional(), browser: z.enum(workstationBrowsers).optional() }).strict(),
   },
   'monitor.start': {
     title: '开始监视', description: [
@@ -212,6 +264,8 @@ export type OperationCaller = { kind: 'ui'; via?: z.infer<typeof inputVia>; rela
   kind: 'model' | 'plugin'; instanceId: string; turnId?: string; callId?: string;
 };
 
+const previewOperations = ['preview.open', 'preview.list', 'preview.action', 'preview.inspect', 'preview.close'] as const;
+
 /**
  * 授权的目标：created 是调用方直接创建的，instances 是显式列出的；descendants（仅后代）按创建来源逐层往下算，
  * workspace（同工作区）是所属工作区的全部。list 只取后两种，决定列出哪些。
@@ -231,6 +285,8 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   ...(['agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   z.object({ operation: z.literal('terminal.run') }).strict(),
+  /** 预览的操作不分目标：本工作区的预览都能看、能操作，关闭只限自己开的。 */
+  ...previewOperations.map((operation) => z.object({ operation: z.literal(operation) }).strict()),
   ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
@@ -245,10 +301,11 @@ export function grantTools(grant: OperationGrant): string[] {
   return tool ? [tool] : [];
 }
 
-/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、起预置脚本，协作范围默认仅后代。自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、起预置脚本、用预览，协作范围默认仅后代。自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
   if (definitionId !== 'kite.agent') return [];
   return [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' }, { operation: 'terminal.run' },
+    ...previewOperations.map((operation) => ({ operation })),
     ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'descendants' } }) as OperationGrant)];
 }
 
@@ -276,7 +333,7 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
 }
 
 export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop',
-  'terminal_run', 'terminal_list', 'terminal_read', 'terminal_stop'] as const;
+  'terminal_run', 'terminal_list', 'terminal_read', 'terminal_stop', 'preview_open', 'preview_action', 'preview_inspect', 'preview_list', 'preview_close'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
 
 export function operationCatalog() {

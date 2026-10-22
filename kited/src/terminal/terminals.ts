@@ -4,11 +4,12 @@
  * 进程有三种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录，
  * 新建时可以带一条命令（对话里代码块的「在终端中执行」），shell 起好后像粘贴那样打进去执行；
  * 代理的 shell 命令超时、用户插话或模型要求时转到后台，由这里接管，仍在代理的沙箱里、只有输出没有输入，结束时通知那个代理；
- * 项目的预置脚本（见 scripts.ts）同用户开的终端一样跑在 PTY 里、不加沙箱，环境变量 PORT 是分给它的端口段，同一工作区的同一脚本只跑一份。
+ * 项目的预置脚本（见 scripts.ts）同用户开的终端一样跑在 PTY 里、不加沙箱，环境变量 PORT 是分给它的端口段，工作区有模拟器时 KITE_SIMULATOR 是它的编号，
+ * 同一工作区的同一脚本只跑一份。
  * 无头终端（@xterm/headless）跟着输出维护一份画面，设备接入时先发当前画面再推后续输出；PTY 的尺寸跟最近输入的那台设备。
  * 进程归 kited：kited 退出时终端随之结束，重启后不再拉起，只把上次留下的进程组停掉。
  * 运行中的终端定时从自己的进程树探测正在监听的端口，写进实例状态，本机全部运行中终端的端口合起来交给组网转发，
- * 供各设备的网页视图打开（docs/成果查看与位置.md「运行中的网页」）。
+ * 供各设备的网页预览打开（docs/成果查看与位置.md「运行中的网页」）。
  * WebSocket 协议：接入地址可带 cols、rows，先按这台设备的尺寸调整再出画面；服务端先发 {type:'snapshot', data, cols, rows, phase, ...}，
  * 之后二进制帧是输出，{type:'size'} 是尺寸换了，{type:'exit'} 是进程结束；客户端二进制帧是输入，{type:'resize', cols, rows} 报自己放得下的尺寸。
  */
@@ -97,6 +98,8 @@ export interface TerminalsHost {
   variables(threadId: string): ContextValues;
   /** 本机全部运行中终端监听的端口，整组替换给组网转发；组网没开时什么也不做。 */
   forward(ports: number[]): void;
+  /** 预置脚本起之前的准备：用到工作区模拟器的先建好（见 preview/simulators.ts）。 */
+  prepareScript(workspaceId: string, script: Script): Promise<void>;
   /** 起 shell 的命令，测试换成 /bin/sh；默认是用户的登录 shell。 */
   shell?: string[];
   /** 探测监听端口的间隔，测试里缩短；默认 PORT_SCAN_MS。 */
@@ -165,7 +168,8 @@ class Session {
   /** 进程树里各作业所在的进程组（交互 shell 开着作业控制，每个作业各在一组），端口扫描和停止时更新；shell 退出后它们就脱离了进程树。 */
   groups = new Set<number>();
 
-  constructor() {
+  /** 所在的工作区，按工作区找端口时不必查库。 */
+  constructor(readonly workspaceId: string) {
     this.mirror = new Mirror({ ...this.size, scrollback: SCROLLBACK, allowProposedApi: true });
     this.mirror.loadAddon(this.serializer);
   }
@@ -321,18 +325,21 @@ export class Terminals {
 
   /**
    * 新实例刚入库就起 shell；起不来记为结束，窗口里看得到原因。带命令的等 shell 起好再打进去。
-   * 以预置脚本起的（配置见 scriptConfig）经登录 shell 直接运行脚本，PORT 是分给它的端口段的第一个，脚本退出终端就结束。
+   * 以预置脚本起的（配置见 scriptConfig）经登录 shell 直接运行脚本，PORT 是分给它的端口段的第一个，KITE_SIMULATOR 是工作区模拟器的编号，
+   * 脚本退出终端就结束。
    */
   start(instance: PluginInstance, command?: string): void {
     if (this.closed) throw new KiteError('kited 正在关闭', 503);
     const workspace = this.host.store.workspace(instance.workspaceId);
     if (!workspace || workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-    const session = new Session();
+    const session = new Session(instance.workspaceId);
     const shell = this.host.shell ?? loginShell();
     const script = scriptName(instance);
+    const simulator = script && this.host.store.workspaceSimulator(instance.workspaceId);
     const env = { ...commandEnvironment(this.host.env), SHELL: shell[0], TERM: 'xterm-256color', COLORTERM: 'truecolor',
       TERM_PROGRAM: 'Kite', LANG: this.host.env.LANG ?? 'en_US.UTF-8',
-      ...(script ? { PORT: String(this.host.store.scriptPort(instance.workspaceId, script)) } : {}) };
+      ...(script ? { PORT: String(this.host.store.scriptPort(instance.workspaceId, script)) } : {}),
+      ...(simulator ? { KITE_SIMULATOR: simulator } : {}) };
     const eof = Promise.withResolvers<void>();
     let child;
     try {
@@ -362,10 +369,11 @@ export class Terminals {
     if (command) void session.type(command, BRACKETED_SHELLS.has(basename(shell[0]!)));
   }
 
-  /** 以预置脚本起的终端的实例配置；先给工作区的这个脚本分好端口段，start 时经 PORT 交给脚本。 */
-  async scriptConfig(workspaceId: string, name: string): Promise<PluginInstance['config']> {
-    await allocateScriptPorts(this.host.store, workspaceId, name);
-    return { terminal: { script: name } };
+  /** 以预置脚本起的终端的实例配置；先给工作区的这个脚本分好端口段、建好要用的模拟器，start 时经环境变量交给脚本。 */
+  async scriptConfig(workspaceId: string, script: Script): Promise<PluginInstance['config']> {
+    await allocateScriptPorts(this.host.store, workspaceId, script.name);
+    await this.host.prepareScript(workspaceId, script);
+    return { terminal: { script: script.name } };
   }
 
   /** 工作区里这个预置脚本正在跑的终端。 */
@@ -387,7 +395,7 @@ export class Terminals {
       const running = this.scriptInstance(workspaceId, script.name);
       if (running && !options.restart) return { instance: this.host.store.instance(running)!, reused: true };
       if (running) await this.stop(running, '预置脚本重新运行', true);
-      const config = await this.scriptConfig(workspaceId, script.name);
+      const config = await this.scriptConfig(workspaceId, script);
       if (readFileSync(script.path, 'utf8') !== script.content) throw new KiteError(`预置脚本「${script.name}」刚刚又改了，重新运行一次`, 409);
       const instance: PluginInstance = { id: randomUUID(), workspaceId, definitionId: terminalDefinitionId, title: script.name, config, state: {},
         presentation: 'background', status: 'open', createdAt: Date.now(), origin: options.origin };
@@ -410,7 +418,7 @@ export class Terminals {
     }
     // 没有窗口的终端退出后随即回收，库里可能已经没有它了，状态取会话里的。
     const current = this.host.store.instance(instance.id) ?? instance;
-    const { port: _selected, ...state } = session?.ended ?? terminalState(current) ?? { phase: 'exited' as const };
+    const state = session?.ended ?? terminalState(current) ?? { phase: 'exited' as const };
     return { instanceId: instance.id, title: current.title, script: script.name, reused,
       assignedPort: this.host.store.scriptPort(workspaceId, script.name)!, ...state, text: session ? await session.tail() : '' };
   }
@@ -433,7 +441,7 @@ export class Terminals {
       state: { terminal: { phase: 'running' } }, presentation: 'background', status: 'open', createdAt: Date.now(),
       origin: { instanceId: ownerId, operationId: `${info.turnId ?? ''}:${info.callId ?? randomUUID()}`,
         ...(info.turnId ? { turnId: info.turnId } : {}), ...(info.callId ? { callId: info.callId } : {}) } };
-    const session = new Session();
+    const session = new Session(owner.workspaceId);
     const feed = (text: string) => {
       session.recent = (session.recent + text).slice(-TAIL_CHARS);
       session.output(terminalText(text));
@@ -587,13 +595,10 @@ export class Terminals {
     this.host.forward([...this.sessions].filter(([id]) => this.running(id)).flatMap(([, session]) => [...session.ports.keys()]));
   }
 
-  /** 网页视图选端口，跨设备共享；只能选正在监听的端口，null 换回默认。 */
-  selectPort(id: string, port: number | null): { port: number | null } {
-    const session = this.sessions.get(id);
-    if (!session || !this.running(id)) throw new KiteError('终端已经结束', 409);
-    if (port !== null && !session.ports.has(port)) throw new KiteError(`终端没有在监听端口 ${port}`, 409);
-    this.update(id, ({ port: _previous, ...state }) => ({ ...state, ...(port === null ? {} : { port }) }));
-    return { port };
+  /** 工作区里运行中终端此刻监听的端口：网页预览只能看这些，工作机上的浏览器也只放行到这些端口。 */
+  workspacePorts(workspaceId: string): number[] {
+    return [...new Set([...this.sessions].filter(([id, session]) => session.workspaceId === workspaceId && this.running(id))
+      .flatMap(([, session]) => [...session.ports.keys()]))].sort((a, b) => a - b);
   }
 
   /** 这个代理转到后台、还在跑的命令；它起的预置脚本不在沙箱里，属于工作区，不算。 */

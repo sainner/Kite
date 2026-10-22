@@ -1,3 +1,5 @@
+import type { PreviewSpec } from './preview/state.ts';
+
 /** 项目以远程仓库为身份；检出是某台机器上 Kite 自己的裸仓库；工作区拥有文件和快照；线程拥有对话及执行。 */
 /**
  * handing_off：已进入可交接状态，材料已经或正要推到远程，拒绝新的执行，目标接管前可以撤回。
@@ -118,8 +120,10 @@ export interface OpenWindowRequest {
   /**
    * create 的 instanceId 是新实例的 ID，App 给的话按它建（App 先按它在本机打开窗口）；title 省略时按插件名编号。
    * command 和 script 只用于终端，二选一：command 等 shell 起好后打进去执行，script 是要运行的预置脚本名，已经在跑时打开那个终端。
+   * preview 只用于预览，必带：看网页还是模拟器，网页可带端口与在哪看。
    */
-  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string; title?: string; command?: string; script?: string };
+  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string; title?: string; command?: string; script?: string;
+    preview?: PreviewSpec };
 }
 
 export interface WorkspaceModel {

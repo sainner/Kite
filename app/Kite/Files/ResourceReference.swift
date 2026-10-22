@@ -105,7 +105,7 @@ struct FileReference: Equatable, Hashable, Sendable {
     }
 }
 
-/// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内解析到那个终端，打开到链接的路径（AppModel.openLocalPort）。
+/// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内打开看这个端口的网页预览，到链接的路径（AppModel.openLocalPort）。
 struct LocalPort: Equatable {
     private static let hosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
     let port: Int
@@ -121,6 +121,20 @@ struct LocalPort: Equatable {
             + (components.percentEncodedQuery.map { "?\($0)" } ?? "") + (components.percentEncodedFragment.map { "#\($0)" } ?? "")
     }
 
+    /// 地址栏里输入的路径：不以 /、?、# 开头的补上 /。
+    init?(path: String, port: Int) {
+        let path = path.trimmingCharacters(in: .whitespaces)
+        let rooted = ["/", "?", "#"].contains(where: path.hasPrefix) ? path : "/" + path
+        guard let url = URL(string: "http://localhost:\(port)" + rooted) else { return nil }
+        self.init(url)
+    }
+
+    /// 地址栏里显示的路径：页面当前的路径、查询和锚点，首页是 /。
+    static func displayPath(of url: URL?) -> String {
+        guard let path = url.flatMap(LocalPort.init)?.path, !path.isEmpty else { return "/" }
+        return path.removingPercentEncoding ?? path
+    }
+
     /// 正文里裸写的 localhost:端口，可以带路径，当作 http 链接。
     static func bare(_ text: String) -> URL? {
         guard let colon = text.firstIndex(of: ":"), hosts.contains(text[..<colon].lowercased()),
@@ -129,7 +143,7 @@ struct LocalPort: Equatable {
     }
 }
 
-/// 点一次本机网页链接或在网页地址栏里回车：终端的网页视图打开到它的路径。每次是新的一个，同一个链接再点也回到那里（见 PortPreview）。
+/// 点一次本机网页链接或在网页地址栏里回车：网页预览打开到它的路径。每次是新的一个，同一个链接再点也回到那里（见 PortPreview）。
 struct WebLink: Equatable {
     let target: LocalPort
     let id = UUID()

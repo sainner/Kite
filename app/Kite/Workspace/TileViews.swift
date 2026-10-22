@@ -583,12 +583,12 @@ struct NewWindowChooser: View {
                     if !builtins.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             CardLabel("内置插件")
+                            let tiles = builtins.flatMap(tiles(of:))
                             Grid(horizontalSpacing: 12, verticalSpacing: 12) {
-                                ForEach(Array(stride(from: 0, to: builtins.count, by: 2)), id: \.self) { start in
+                                ForEach(Array(stride(from: 0, to: tiles.count, by: 2)), id: \.self) { start in
                                     GridRow {
-                                        ForEach(builtins[start..<min(start + 2, builtins.count)]) { definition in
-                                            CardTile(title: definition.title, detail: definition.description ?? views(of: definition),
-                                                     systemImage: WindowAppearance.definition(definition).icon) { model.choose(definition, in: area) }
+                                        ForEach(tiles[start..<min(start + 2, tiles.count)], id: \.title) { tile in
+                                            CardTile(title: tile.title, detail: tile.detail, systemImage: tile.icon, action: tile.action)
                                         }
                                     }
                                 }
@@ -646,6 +646,23 @@ struct NewWindowChooser: View {
     private var actions: PaneHeaderActions {
         guard !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty else { return PaneHeaderActions() }
         return PaneHeaderActions(groups: [[PaneHeaderAction(title: "重试创建", systemImage: "arrow.clockwise") { model.retryRequests(in: area) }]])
+    }
+
+    private struct Tile {
+        let title: String
+        let detail: String
+        let icon: String
+        let action: () -> Void
+    }
+
+    /// 内置插件的格子：预览分成网页和模拟器两格，其余一个定义一格。
+    private func tiles(of definition: RemotePluginDefinition) -> [Tile] {
+        guard definition.id == AppModel.previewDefinition else {
+            return [Tile(title: definition.title, detail: definition.description ?? views(of: definition),
+                         icon: WindowAppearance.definition(definition).icon) { model.choose(definition, in: area) }]
+        }
+        return [Tile(title: "网页", detail: "看工作区里运行的网页", icon: "globe") { model.choosePreview(.web(), in: area) },
+                Tile(title: "模拟器", detail: "看工作区的 iOS 模拟器", icon: "iphone") { model.choosePreview(.simulator, in: area) }]
     }
 
     private func views(of definition: RemotePluginDefinition) -> String {

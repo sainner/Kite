@@ -1,9 +1,9 @@
 /**
  * 终端插件 kite.terminal，分四段：
- * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收、一个实例一个窗口的视图切换、带命令新建（命令像粘贴那样打进 shell），
+ * 一、PTY 会话、设备接入的画面镜像与尺寸归属、实例随进程的回收、带命令新建（命令像粘贴那样打进 shell），
  *    以及跨两次 kited 启动的恢复；
  * 二、运行中的网页：终端从自己的进程树探测监听端口并试 HTTP，写进实例状态；本机全部终端的端口整组交给组网转发；
- *    terminal.select 选网页视图打开的端口；terminal.stop 停下带后台任务的终端；
+ *    terminal.stop 停下带后台任务的终端；
  * 三、代理的长命令转到后台终端：shell 到时限、用户插话或要求时不停进程，交给接管方接着跑；
  * 四、预置脚本（terminal.run）：在终端里经 shell 起项目 .kite/scripts/ 下的脚本，PORT 是分给它的端口段，同一脚本只跑一份；
  *    代理起的脚本与主线比对，不一致的经审批（docs/实例操作.md「预置脚本」）。
@@ -244,37 +244,6 @@ test('运行中关掉最后一个窗口实例照跑，之后进程退出就回�
   }
 }, 5_000);
 
-// 配合：打开视图的请求经 HTTP 进工作区控制队列，按实例找已有的窗口（实例上的部分唯一索引）换视图，请求 id 记进收据；
-// 重试按收据认出是同一个请求，返回那个窗口而不再换视图。以前同一实例按视图各开一个窗口。
-test('已有窗口的终端打开 web 视图时不另开窗口，原窗口换到 web；同一请求 id 在切回 terminal 后重试，返回原窗口且不再切换', async () => {
-  const { k } = await start();
-  try {
-    const workspaceId = await workspaceOf(k);
-    const { windowId, instanceId } = await openTerminal(k, workspaceId);
-    const open = (id: string, viewId: string) => k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id, content: { kind: 'open', instanceId, viewId },
-    });
-    const windowsOf = async () => (await aggregate(k, workspaceId)).windows.filter((w) => w.target.instanceId === instanceId);
-
-    const webRequest = crypto.randomUUID();
-    const web = await open(webRequest, 'web');
-    expect(web.status).toBe(200);
-    expect(web.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'web' }, state: 'open' });
-    expect(await windowsOf()).toEqual([expect.objectContaining({ id: windowId, target: { instanceId, viewId: 'web' }, state: 'open' })]);
-
-    const back = await open(crypto.randomUUID(), 'terminal');
-    expect(back.status).toBe(200);
-    expect(back.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
-
-    const retried = await open(webRequest, 'web');
-    expect(retried.status).toBe(200);
-    expect(retried.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
-    expect(await windowsOf()).toEqual([expect.objectContaining({ id: windowId, target: { instanceId, viewId: 'terminal' }, state: 'open' })]);
-  } finally {
-    await k.stop();
-  }
-}, 5_000);
-
 /** 设备接入后看到的全部画面：接入时 snapshot 里的，加上之后的输出。shown 等画面里出现 text，times 数 text 出现了几次。 */
 async function screenOf(device: Device) {
   const { data } = await device.snapshot();
@@ -496,9 +465,9 @@ class Forwards {
  * 交互式 sh 的后台任务开了作业控制，不在 shell 的进程组里，要按父子关系找；`sh -c '…; :'` 不 exec，bun 是终端 shell 的孙进程。
  * lsof 把 IPv6 的监听写成 `[::1]:端口`，只监听 ::1 的服务连 127.0.0.1 不通，要再试 ::1 才认得出 HTTP。
  * 测试进程自己（kited 的接口端口）在监听，但不在任何终端的进程树里，不算也不转发。
- * 配合：两个终端各自的扫描、实例状态、本机整组转发与 terminal.select 几处共用端口集合；一个终端结束只去掉它自己的端口。
+ * 配合：两个终端各自的扫描、实例状态与本机整组转发几处共用端口集合；一个终端结束只去掉它自己的端口。
  */
-test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转发；terminal.select 只认这个终端正在监听的端口；terminal.stop 返回时终端已结束、记为在界面上停止，端口从状态和转发里去掉', async () => {
+test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转发；terminal.stop 返回时终端已结束、记为在界面上停止，端口从状态和转发里去掉', async () => {
   const k = startKited(undefined, false, { terminalShell, terminalPortScanMs: 50 });
   const devices: Device[] = [];
   const pids: number[] = [];
@@ -527,9 +496,6 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
       await device.snapshot();
       return { instanceId, device };
     };
-    const select = (instanceId: string, port: number | null) => k.call('POST', `/workspaces/${workspaceId}/operations/terminal.select`, {
-      operationId: crypto.randomUUID(), instanceId, port,
-    });
     const stop = async (instanceId: string) => {
       const stopped = await k.call('POST', `/workspaces/${workspaceId}/operations/terminal.stop`, { operationId: crypto.randomUUID(), instanceId });
       expect(stopped.status).toBe(200);
@@ -562,20 +528,6 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
     await forwards.exactly([rawPort, v4Port, v6Port], 0);
     expect(forwards.values.some((ports) => ports.includes(ownPort))).toBe(false);
 
-    // 选正在监听的端口写进状态；kited 自己的端口、别的终端的端口都不是这个终端在监听的
-    const chosen = await select(first.instanceId, v4Port);
-    expect(chosen.status).toBe(200);
-    expect(chosen.body).toEqual({ port: v4Port });
-    expect(stateIn(await aggregate(k, workspaceId), first.instanceId)).toMatchObject({ phase: 'running', port: v4Port });
-    expect((await select(first.instanceId, ownPort)).status).toBe(409);
-    expect((await select(first.instanceId, v6Port)).status).toBe(409);
-    const cleared = await select(first.instanceId, null);
-    expect(cleared.status).toBe(200);
-    expect(cleared.body).toEqual({ port: null });
-    const reset = stateIn(await aggregate(k, workspaceId), first.instanceId);
-    expect(reset?.ports).toEqual(firstPorts);
-    expect(reset).not.toHaveProperty('port');
-
     // 一个终端停下只去掉它自己的端口，另一个的照常转发
     // 运行时与配合：停止给进程组发 SIGHUP，交互式 sh 收到就退出；操作要等进程退出、状态记好才返回。
     let since = forwards.mark();
@@ -593,7 +545,6 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
     const firstEnded = stateIn(await aggregate(k, workspaceId), first.instanceId);
     expect(firstEnded).toMatchObject({ phase: 'exited' });
     expect(firstEnded).not.toHaveProperty('ports');
-    expect((await select(first.instanceId, v4Port)).status).toBe(409);
   } finally {
     for (const device of devices) device.close();
     // 测试中途失败时终端可能没停，后台任务留着，按 pid 清掉。

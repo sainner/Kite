@@ -1,12 +1,12 @@
 /** read 的非文本分支：按文件头识别图片与 PDF，图片缩放后附给模型，PDF 由 macOS Vision 转 Markdown 后按页读取。 */
-import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync } from 'node:fs';
-import { release, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
+import { release } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import type { ToolImage } from '../harness/types.ts';
+import { compiledHelper } from '../system-command.ts';
 
 export type FileKind = 'text' | 'image' | 'pdf';
 
@@ -51,10 +51,11 @@ function readLimited(path: string, max: number, label: string): Buffer {
 
 export interface ModelImage { image: ToolImage; width: number; height: number; source: { width: number; height: number; format: string } }
 
-/** 尺寸与格式已合适时原样附上，否则缩放并重新编码；有损格式只在 PNG 等仍超限时才用。 */
-export async function modelImage(bytes: Uint8Array, maxBytes = MAX_IMAGE_BYTES): Promise<ModelImage> {
+/** 尺寸与格式已合适时原样附上，否则缩放并重新编码；有损格式只在 PNG 等仍超限时才用。limits 可以把长边、总像素收得更紧。 */
+export async function modelImage(bytes: Uint8Array, maxBytes = MAX_IMAGE_BYTES, limits: { edge?: number; pixels?: number } = {}): Promise<ModelImage> {
   const source = await new Bun.Image(bytes).metadata();
-  const scale = Math.min(1, MAX_EDGE / Math.max(source.width, source.height));
+  const scale = Math.min(1, (limits.edge ?? MAX_EDGE) / Math.max(source.width, source.height),
+    Math.sqrt((limits.pixels ?? Infinity) / (source.width * source.height)));
   const width = Math.max(1, Math.round(source.width * scale));
   const height = Math.max(1, Math.round(source.height * scale));
   const result = (data: Uint8Array, format: 'png' | 'jpeg' | 'webp'): ModelImage =>
@@ -83,37 +84,15 @@ export async function readImage(path: string, maxBytes = MAX_IMAGE_BYTES): Promi
 }
 
 const HELPER_SOURCE = fileURLToPath(new URL('./kite-pdf.swift', import.meta.url));
-const builds = new Map<string, Promise<string>>();
 
-/** 转换程序按源码哈希编译到用户临时目录，首次读取 PDF 时构建；程序名固定为 kite-pdf，Vision 的模型缓存跨版本复用。 */
+/** 转换程序首次读取 PDF 时编译（见 compiledHelper）；程序名固定为 kite-pdf，Vision 的模型缓存跨版本复用。 */
 function helper(env: NodeJS.ProcessEnv): Promise<string> {
   // macOS 26 对应 Darwin 25；更早的系统没有 Vision 的文档识别。
   if (process.platform !== 'darwin' || Number(release().split('.')[0]) < 25) {
     return Promise.reject(new KiteError('读取 PDF 需要 macOS 26 或更新版本'));
   }
-  const hash = createHash('sha256').update(readFileSync(HELPER_SOURCE)).digest('hex').slice(0, 16);
-  let build = builds.get(hash);
-  if (!build) {
-    build = (async () => {
-      const directory = join(tmpdir(), `kite-pdf-${hash}`);
-      const binary = join(directory, 'kite-pdf');
-      if (existsSync(binary)) return binary;
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      const output = join(directory, `.build-${randomUUID()}`);
-      const child = Bun.spawn(['/usr/bin/swiftc', '-O', '-module-name', 'KitePDF', HELPER_SOURCE, '-o', output],
-        { env, stdout: 'ignore', stderr: 'pipe' });
-      const [log, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-      if (code !== 0) {
-        rmSync(output, { force: true });
-        throw new KiteError(`PDF 转换程序编译失败，需要 Xcode 命令行工具：${log.trim().split('\n').slice(-3).join('\n')}`);
-      }
-      renameSync(output, binary);
-      return binary;
-    })();
-    builds.set(hash, build);
-    build.catch(() => builds.delete(hash));
-  }
-  return build;
+  return compiledHelper({ source: HELPER_SOURCE, name: 'kite-pdf', env, failure: 'PDF 转换程序编译失败，需要 Xcode 命令行工具',
+    compile: (output) => ['/usr/bin/swiftc', '-O', '-module-name', 'KitePDF', HELPER_SOURCE, '-o', output] });
 }
 
 const headerLine = z.object({ pages: z.number().int().nonnegative() });

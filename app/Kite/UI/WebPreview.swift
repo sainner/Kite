@@ -28,7 +28,7 @@ enum WebSource: Equatable {
     }
 }
 
-/// 网页类成果共用的视图，文件插件的静态 HTML 与终端的网页视图都用它。页面是不可信内容，与 App 隔离：
+/// 网页类成果共用的视图，文件插件的静态 HTML 与网页预览都用它。页面是不可信内容，与 App 隔离：
 /// 没有原生桥，网站数据与 App 的其他网页分开；主框架只停在自己的目标上，去别处的链接交给系统浏览器，下载一律拒绝。
 /// 内容只经工作机的文件接口或本机地址取得，页面拿不到组网身份。
 struct WebPreview: View {
@@ -37,14 +37,12 @@ struct WebPreview: View {
     var report: (String?) -> Void = { _ in }
     /// 窗口里的浏览控件经它操作这个页面；不给就只是看。
     var browser: WebBrowser?
-    /// 藏起来时页面留着、网页视图摘下：不在窗口里的页面由 WebKit 节流，再显示时接着原来的页面。
-    var visible = true
     @State private var page: WebPage?
     @Environment(\.openURL) private var openURL
 
     var body: some View {
         Group {
-            if let page, visible {
+            if let page {
                 #if os(macOS)
                 // Mac 窗口底部没有系统安全区，页面直接铺到控制区后面，控制区浮在页面上，不为它让边。
                 WebView(page).ignoresSafeArea(.container, edges: .bottom)
@@ -293,7 +291,7 @@ nonisolated private struct WorkspaceFileScheme: URLSchemeHandler {
     }
 }
 
-/// 工作机上某个端口的网页，给终端的网页视图用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开转发
+/// 工作机上某个端口的网页，给网页预览用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开转发
 /// （PortRelays），经组网连到工作机为这个端口开的转发。本工作区其他运行中终端的端口也开着同号转发，页面里嵌着或调用的
 /// 另一个端口上的服务照工作机上的地址打开。store 是这个目标在本设备的网站数据，见 WebSource.address。
 struct PortPreview: View {
@@ -307,8 +305,6 @@ struct PortPreview: View {
     /// 其他设备上页面的地址是本机转发的地址，端口不是工作机上的端口，只看路径。
     let browser: WebBrowser
     var report: (String?) -> Void = { _ in }
-    /// 见 WebPreview.visible。
-    var visible = true
     /// 网站根地址：本机的 localhost，或本机转发的地址。
     @State private var url: URL?
     /// 第一次打开到哪里：带上转发好时的链接路径；之后的链接在同一个页面里打开，前进后退接得上。
@@ -317,7 +313,7 @@ struct PortPreview: View {
     var body: some View {
         Group {
             if let start {
-                WebPreview(source: .address(start, store: store), report: report, browser: browser, visible: visible)
+                WebPreview(source: .address(start, store: store), report: report, browser: browser)
             } else { Color.clear }
         }
         .onChange(of: link) { _, link in

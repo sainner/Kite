@@ -11,22 +11,19 @@ import UIKit
 /// 进程在工作机上，窗口只是接上去看；断线后自动重连，重连时工作机先发当前画面，从那里接着显示。
 @Observable
 final class TerminalSession {
-    enum Link: Equatable { case waiting, connecting, connected, failed(String) }
+    typealias Size = (cols: Int, rows: Int)
 
     let instanceID: String
-    private(set) var link = Link.waiting
+    /// 窗口放得下的行列，排好版之前连接要等它。
+    private let connection = SocketLink<Size>()
+    var link: SocketLink<Size>.State { connection.state }
     /// 这次连接里收到的进程状态：比工作区推送的实例状态早一步，窗口先用它。
     private(set) var status: TerminalStatus?
     @ObservationIgnored private(set) var view: KiteTerminalView?
     /// 上次给视图设的外观。
     @ObservationIgnored private var appliedDark: Bool?
-    @ObservationIgnored private var socket: URLSessionWebSocketTask?
-    @ObservationIgnored private var urlSession: URLSession?
-    /// 窗口放得下的行列；排好版之前没有，连接要等它。
-    @ObservationIgnored private var size: (cols: Int, rows: Int)?
     /// 这次连接时报给工作机的尺寸；连上之前窗口又变了，连上后补发。
-    @ObservationIgnored private var connectedSize: (cols: Int, rows: Int)?
-    @ObservationIgnored private var sizeWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    @ObservationIgnored private var connectedSize: Size?
 
     init(instanceID: String) {
         self.instanceID = instanceID
@@ -44,16 +41,6 @@ final class TerminalSession {
         view.laidOut = { [weak self] cols, rows in self?.laidOut(cols: cols, rows: rows) }
         self.view = view
         return view
-    }
-
-    /// 窗口切到别的视图时交出键盘焦点，藏起来的终端不再收按键。
-    func resignFocus() {
-        guard let view else { return }
-        #if os(macOS)
-        if view.window?.firstResponder === view { view.window?.makeFirstResponder(nil) }
-        #else
-        if view.isFirstResponder { view.resignFirstResponder() }
-        #endif
     }
 
     /// 前景色跟着浅色、深色外观换；底色透明，露出窗口本身的底。SwiftTerm 每次设色都整屏重画，外观没变就不设。
@@ -74,38 +61,12 @@ final class TerminalSession {
         #endif
     }
 
-    /// 窗口在就一直连着：断了等一会儿重连，进程结束后不再重连。由窗口的 task 驱动，窗口消失或换了连接时取消。
+    /// 窗口在就一直连着（见 SocketLink），进程结束后不再重连。
     func run(client: KitedClient) async {
-        var backoff = 1.0
-        while !Task.isCancelled {
-            await sizeKnown()
-            guard let size, !Task.isCancelled else { return }
-            link = .connecting
-            do {
-                let (urlSession, socket) = try await client.terminalSocket(instance: instanceID, cols: size.cols, rows: size.rows)
-                connectedSize = size
-                self.urlSession = urlSession
-                self.socket = socket
-                socket.resume()
-                // receive 不理会任务取消，窗口关掉时由这里断开连接让它返回。
-                try await withTaskCancellationHandler { try await receive(socket) } onCancel: { socket.cancel(with: .goingAway, reason: nil) }
-            } catch {
-                if Task.isCancelled { break }
-                link = .failed("和工作机的终端连接断开：\(error.localizedDescription)")
-            }
-            disconnect()
-            if status?.running == false { return }
-            try? await Task.sleep(for: .seconds(backoff))
-            backoff = min(backoff * 2, 10)
-        }
-        disconnect()
-    }
-
-    private func disconnect() {
-        socket?.cancel(with: .goingAway, reason: nil)
-        urlSession?.invalidateAndCancel()
-        socket = nil
-        urlSession = nil
+        await connection.run(failure: "和工作机的终端连接断开", connect: { size in
+            connectedSize = size
+            return try await client.terminalSocket(instance: instanceID, cols: size.cols, rows: size.rows)
+        }, receive: receive, reconnects: { status?.running != false })
     }
 
     private struct Message: Decodable {
@@ -134,8 +95,8 @@ final class TerminalSession {
                     view?.getTerminal().resetToInitialState()
                     view?.feed(text: message.data ?? "")
                     status = message.status
-                    link = .connected
-                    if let size, size.cols != connectedSize?.cols || size.rows != connectedSize?.rows { sendResize(size) }
+                    connection.state = .connected
+                    if let size = connection.size, size.cols != connectedSize?.cols || size.rows != connectedSize?.rows { sendResize(size) }
                 case "exit":
                     status = message.status
                 default:
@@ -149,35 +110,22 @@ final class TerminalSession {
     }
 
     private func laidOut(cols: Int, rows: Int) {
-        guard size?.cols != cols || size?.rows != rows else { return }
-        size = (cols, rows)
-        for waiter in sizeWaiters.values { waiter.resume() }
-        sizeWaiters = [:]
+        guard connection.size?.cols != cols || connection.size?.rows != rows else { return }
+        connection.laidOut((cols, rows))
         guard link == .connected else { return }
         sendResize((cols, rows))
     }
 
-    private func sendResize(_ size: (cols: Int, rows: Int)) {
-        socket?.send(.string(#"{"type":"resize","cols":\#(size.cols),"rows":\#(size.rows)}"#)) { _ in }
+    private func sendResize(_ size: Size) {
+        connection.socket?.send(.string(#"{"type":"resize","cols":\#(size.cols),"rows":\#(size.rows)}"#)) { _ in }
     }
 
-    private func sizeKnown() async {
-        if size != nil { return }
-        let id = UUID()
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                if size != nil || Task.isCancelled { continuation.resume() } else { sizeWaiters[id] = continuation }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in self?.sizeWaiters.removeValue(forKey: id)?.resume() }
-        }
-    }
 }
 
 extension TerminalSession: @preconcurrency TerminalViewDelegate {
     /// 按键和粘贴原样发给工作机。用带完成回调的 send：按调用顺序发出，不会像各开一个 Task 那样乱序。
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        guard let socket, link == .connected, status?.running != false else { return }
+        guard let socket = connection.socket, link == .connected, status?.running != false else { return }
         socket.send(.data(Data(data))) { _ in }
     }
 

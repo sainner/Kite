@@ -74,10 +74,15 @@ nonisolated struct InstanceAgentConfig: Decodable, Sendable {
     struct Terminal: Decodable, Sendable {
         var script: String?
     }
+    /// 预览实例看哪一种。
+    struct Preview: Decodable, Sendable {
+        let kind: PreviewKind
+    }
     var agent: AgentConfiguration?
     var role: Role?
     var monitor: Monitor?
     var terminal: Terminal?
+    var preview: Preview?
     /// 审批模式：工作机建代理时写入解析好的（草稿、角色、工作机的默认依次取）；monitor 等不是代理的实例没有。
     var approval: ApprovalMode?
 }

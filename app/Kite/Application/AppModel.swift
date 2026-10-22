@@ -231,6 +231,7 @@ final class AppModel {
 
     /// 和工作机一样的毫秒时间戳，本机先建的对象用。
     private static var now: Int { Int(Date().timeIntervalSince1970 * 1000) }
+    static let previewDefinition = "kite.preview"
 
     #if os(macOS)
     static var deviceName: String { Host.current().localizedName ?? "Mac" }
@@ -668,11 +669,11 @@ final class AppModel {
             } else {
                 local = target
             }
-        case .create(let definitionId, let instanceId, let title, _, _):
+        case .create(let definitionId, let instanceId, let title, _, _, let preview):
             if let definition = area.definitions.first(where: { $0.id == definitionId }) {
                 area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
                                                         title: title ?? area.newInstanceTitle(definition), status: .open, presentation: .window,
-                                                        createdAt: Self.now))
+                                                        createdAt: Self.now, config: preview.map { InstanceAgentConfig(preview: .init(kind: $0.kind)) }))
                 created = instanceId
                 local = WindowTarget(instanceId: instanceId, viewId: definition.defaultView)
             }
@@ -706,24 +707,48 @@ final class AppModel {
         }
     }
 
-    /// 消息里的 localhost:端口 链接在所属工作区内解析：端口属于本工作区运行中的终端时，选中这个端口、打开那个终端的网页视图
+    /// 消息里的 localhost:端口 链接在所属工作区内解析：端口属于本工作区运行中的终端时，打开看这个端口的网页预览（没有就新建，有窗口的优先）
     /// 并到链接的路径，否则报错（docs/成果查看与位置.md「运行中的网页」）。打开到哪里只在本机，见 WorkArea.webLinks。
-    func openLocalPort(_ target: LocalPort, in area: WorkArea) async throws {
-        guard let instance = area.instances.first(where: { instance in
-            instance.status == .open && instance.state?.terminal?.running == true
-                && instance.state?.terminal?.ports?.contains(where: { $0.port == target.port }) == true
-        }) else { throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端在监听的端口") }
-        // 先记下再选端口：网页视图换到这个端口时直接打开到链接的路径，不先开一次首页；选不成就放回原来的，免得之后选到这个端口时跳到这条链接
-        let previous = area.webLinks[instance.id]
-        area.webLinks[instance.id] = WebLink(target: target)
-        if instance.state?.terminal?.webPort != target.port {
-            do { try await selectTerminalPort(target.port, of: instance.id, in: area) }
-            catch {
-                area.webLinks[instance.id] = previous
-                throw error
-            }
+    func openLocalPort(_ target: LocalPort, in area: WorkArea) throws {
+        guard area.workspacePorts.contains(target.port) else {
+            throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端在监听的端口")
         }
-        openWindow(.open(.init(instanceId: instance.id, viewId: "web")), in: area)
+        let previews = area.instances.filter { $0.status == .open && area.previewKind(of: $0) == .web && $0.state?.preview?.port == target.port }
+        if let existing = previews.first(where: { area.window(of: $0.id) != nil }) ?? previews.first {
+            area.webLinks[existing.id] = WebLink(target: target)
+            openWindow(.open(.init(instanceId: existing.id, viewId: "preview")), in: area)
+            return
+        }
+        let id = UUID().uuidString.lowercased()
+        area.webLinks[id] = WebLink(target: target)
+        openWindow(.create(Self.previewDefinition, instance: id, title: area.previewTitle(.web()), preview: .web(port: target.port)), in: area)
+    }
+
+    /// 新建窗口里选了网页预览或模拟器：这个窗口原地变成那个预览。
+    func choosePreview(_ spec: PreviewSpec, in area: WorkArea) {
+        guard let window = area.chooserWindow else { return }
+        send(OpenWindowRequest(id: window, content: .create(Self.previewDefinition, instance: UUID().uuidString.lowercased(),
+                                                            title: area.previewTitle(spec), preview: spec)), in: area)
+    }
+
+    /// 改网页预览看的端口或在哪看，各设备共用。
+    func selectPreview(_ instance: String, port: Int? = nil, browser: PreviewBrowser? = nil, in area: WorkArea) async throws {
+        struct Select: Encodable { let operationId: String; let instanceId: String; let port: Int?; let browser: String? }
+        struct Selected: Decodable { var port: Int? = nil; var browser: String? = nil }
+        let client = try activeClient(in: area)
+        _ = try await client.request("/workspaces/\(area.id)/operations/preview.select", method: "POST",
+                                     body: Select(operationId: UUID().uuidString, instanceId: instance, port: port, browser: browser?.rawValue), as: Selected.self)
+        try await refresh(client)
+    }
+
+    /// 关闭预览：连同窗口回收，agent 开的、没有窗口的也一样。
+    func closePreview(_ instance: String, in area: WorkArea) async throws {
+        struct Close: Encodable { let operationId: String; let instanceId: String }
+        struct Closed: Decodable { let ok: Bool }
+        let client = try activeClient(in: area)
+        _ = try await client.request("/workspaces/\(area.id)/operations/preview.close", method: "POST",
+                                     body: Close(operationId: UUID().uuidString, instanceId: instance), as: Closed.self)
+        try await refresh(client)
     }
 
     /// 停终端：先挂断 shell，等不到退出再停整个进程组；工作机确认进程结束才返回。
@@ -766,16 +791,6 @@ final class AppModel {
             do { try await stopTerminal(instance.id, in: area) }
             catch { area.windowError = error.localizedDescription }
         }
-    }
-
-    /// 选终端网页视图打开的端口，各设备共用；nil 换回默认。
-    func selectTerminalPort(_ port: Int?, of instance: String, in area: WorkArea) async throws {
-        struct Select: Encodable { let operationId: String; let instanceId: String; let port: Int? }
-        struct Selected: Decodable { let port: Int? }
-        let client = try activeClient(in: area)
-        _ = try await client.request("/workspaces/\(area.id)/operations/terminal.select", method: "POST",
-                                     body: Select(operationId: UUID().uuidString, instanceId: instance, port: port), as: Selected.self)
-        try await refresh(client)
     }
 
     /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
