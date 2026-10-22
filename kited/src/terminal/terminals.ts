@@ -630,7 +630,7 @@ export class Terminals {
     this.host.forward([...this.sessions].filter(([id]) => this.running(id)).flatMap(([, session]) => [...session.ports.keys()]));
   }
 
-  /** 工作区里运行中终端与预览此刻监听的端口：浏览只能看这些。 */
+  /** 工作区里运行中终端与预览此刻监听的端口：浏览只能开这些本机网页。 */
   workspacePorts(workspaceId: string): number[] {
     return [...new Set([...this.sessions].filter(([id, session]) => session.workspaceId === workspaceId && this.running(id))
       .flatMap(([, session]) => [...session.ports.keys()]))].sort((a, b) => a - b);

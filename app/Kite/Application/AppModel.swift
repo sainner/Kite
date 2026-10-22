@@ -232,7 +232,8 @@ final class AppModel {
     /// 和工作机一样的毫秒时间戳，本机先建的对象用。
     private static var now: Int { Int(Date().timeIntervalSince1970 * 1000) }
     static let previewDefinition = "kite.preview"
-    static let browserDefinition = "kite.browser"
+    /// 浏览：看工作区的文件、本工作区运行中的网页和互联网，id 沿用文件插件的。
+    static let filesDefinition = "kite.files"
 
     #if os(macOS)
     static var deviceName: String { Host.current().localizedName ?? "Mac" }
@@ -670,11 +671,11 @@ final class AppModel {
             } else {
                 local = target
             }
-        case .create(let definitionId, let instanceId, let title, _, let preview, let browser):
+        case .create(let definitionId, let instanceId, let title, _, let preview, let page):
             if let definition = area.definitions.first(where: { $0.id == definitionId }) {
                 area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
                                                         title: title ?? area.newInstanceTitle(definition), status: .open, presentation: .window,
-                                                        createdAt: Self.now, state: browser.map { .init(path: nil, revision: nil, browser: $0) },
+                                                        createdAt: Self.now, state: page.map(RemotePluginInstance.State.init(page:)),
                                                         config: preview.map { InstanceAgentConfig(preview: $0) }))
                 created = instanceId
                 local = WindowTarget(instanceId: instanceId, viewId: definition.defaultView)
@@ -710,7 +711,7 @@ final class AppModel {
     }
 
     /// 消息里的 localhost:端口 链接在所属工作区内解析（docs/成果查看与位置.md「运行中的网页」）：端口是本工作区运行中预览的网页画面时，
-    /// 打开那个预览；属于终端（或预览进程另起的服务）时，打开看这个端口的浏览窗口（没有就新建，有窗口的优先）；都到链接的路径，否则报错。
+    /// 打开那个预览；属于终端（或预览进程另起的服务）时，打开看着这个端口的浏览窗口（没有就新建，有窗口的优先）；都到链接的路径，否则报错。
     /// 在设备自己的网页视图里看的，打开到哪里只在本机，见 WorkArea.webLinks；工作机上的浏览器里看的预览，在那个共用的页面里打开。
     func openLocalPort(_ target: LocalPort, in area: WorkArea) throws {
         guard area.workspacePorts.contains(target.port) else {
@@ -718,17 +719,32 @@ final class AppModel {
         }
         let previews = area.instances.filter { $0.status == .open && area.previewStatus(of: $0)?.screen == .web
             && $0.state?.preview?.port == target.port && $0.state?.terminal?.running == true }
-        let browsers = area.instances.filter { $0.status == .open && $0.definitionId == Self.browserDefinition && $0.state?.browser?.port == target.port }
+        let browsers = area.instances.filter { $0.status == .open && $0.definitionId == Self.filesDefinition && $0.state?.port == target.port }
         for candidates in [previews, browsers] {
             guard let existing = candidates.first(where: { area.window(of: $0.id) != nil }) ?? candidates.first else { continue }
             area.webLinks[existing.id] = WebLink(target: target)
-            let view = existing.definitionId == Self.previewDefinition ? "screen" : "browser"
+            let view = existing.definitionId == Self.previewDefinition ? "screen" : "files"
             openWindow(.open(.init(instanceId: existing.id, viewId: view)), in: area)
             return
         }
         let id = UUID().uuidString.lowercased()
         area.webLinks[id] = WebLink(target: target)
-        openWindow(.create(Self.browserDefinition, instance: id, browser: BrowserStatus(port: target.port)), in: area)
+        openWindow(.create(Self.filesDefinition, instance: id, page: .port(target.port)), in: area)
+    }
+
+    /// 消息里的外网链接在浏览里打开（docs/成果查看与位置.md「运行中的网页」）：已有在看外网的浏览窗口就在它里面打开（开着窗口的优先），
+    /// 没有就新建一个。
+    func openWebAddress(_ url: URL, in area: WorkArea) {
+        let browsing = area.instances.filter { $0.status == .open && $0.definitionId == Self.filesDefinition && $0.state?.url != nil }
+        guard let existing = browsing.first(where: { area.window(of: $0.id) != nil }) ?? browsing.first, let browser = area.files[existing.id] else {
+            openWindow(.create(Self.filesDefinition, instance: UUID().uuidString.lowercased(), page: .url(url)), in: area)
+            return
+        }
+        openWindow(.open(.init(instanceId: existing.id, viewId: "files")), in: area)
+        Task {
+            do { try await browser.openPage(.url(url)) }
+            catch { area.windowError = error.localizedDescription }
+        }
     }
 
     #if os(macOS)
@@ -777,16 +793,6 @@ final class AppModel {
         openWindow(.create(Self.previewDefinition, instance: UUID().uuidString.lowercased(), title: instance.title, preview: spec), in: area)
     }
 
-    /// 改浏览窗口看的端口，各设备共用；nil 是不选。
-    func selectBrowser(_ instance: String, port: Int?, in area: WorkArea) async throws {
-        struct Select: Encodable { let operationId: String; let instanceId: String; let port: Int? }
-        struct Selected: Decodable { var port: Int? = nil }
-        let client = try activeClient(in: area)
-        _ = try await client.request("/workspaces/\(area.id)/operations/browser.select", method: "POST",
-                                     body: Select(operationId: UUID().uuidString, instanceId: instance, port: port), as: Selected.self)
-        try await refresh(client)
-    }
-
     /// 停终端或预览的进程：先挂断，等不到退出再停整个进程组；工作机确认进程结束才返回，没有窗口的随之回收。
     func stopProcess(_ instance: RemotePluginInstance, in area: WorkArea) async throws {
         struct Stop: Encodable { let operationId: String; let instanceId: String }
@@ -830,18 +836,20 @@ final class AppModel {
         }
     }
 
-    /// 引用只选择资源；窗口身份仍按现有实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
+    /// 引用只选择资源；窗口身份仍按现有浏览实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
     /// 还没有文件实例的，等工作机建好实例才能选。
     /// 窗口不在台面上时目录先收起、不带动画，窗口打开出来就是文件：等选好文件再收（见 navigate），目录会在窗口展开时划走。
     /// 可能是目录的引用不收，读得出目录就展开到它。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
-        let browsing = area.windows.first { area.files[$0.target.instanceId] != nil }?.target.instanceId
-            ?? area.instances.first { $0.status == .open && area.files[$0.id] != nil }?.id
+        // 正在看网页的浏览窗口不拿来开文件
+        let viewsFiles = { (id: String) in area.files[id].map { !$0.displayingWeb } ?? false }
+        let browsing = area.windows.first { viewsFiles($0.target.instanceId) }?.target.instanceId
+            ?? area.instances.first { $0.status == .open && viewsFiles($0.id) }?.id
         guard let instanceID = browsing else {
             let instanceID = UUID().uuidString.lowercased()
             if !reference.mayBeDirectory { area.referencedFiles.insert(instanceID) }
             defer { area.referencedFiles.remove(instanceID) }
-            let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create("kite.files", instance: instanceID))
+            let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create(Self.filesDefinition, instance: instanceID))
             let window = try await sendWindowRequest(request, in: area).value
             guard let browser = area.files[window.target.instanceId] else { throw KitedError(message: "文件窗口尚未就绪") }
             try await browser.open(reference)

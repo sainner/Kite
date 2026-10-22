@@ -11,15 +11,15 @@ import { instanceAgent } from './agents/definition.ts';
 import { monitorDefinitionId } from './monitor/monitors.ts';
 import { terminalDefinitionId } from './terminal/terminals.ts';
 import { previewDefinitionId } from './preview/state.ts';
+import { filesDefinitionId } from './workspace/files.ts';
 import type { Launch } from './preview/previews.ts';
-import { browserDefinitionId } from './browser/browser.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
   role?: { id: string; revision?: string };
 }
 
-type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals' | 'previews' | 'browse'>;
+type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals' | 'previews' | 'pageSelection'>;
 
 interface InstanceControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -77,7 +77,7 @@ export class InstanceLifecycle {
         if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
         if (content.command !== undefined && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令新建');
         if ((content.preview !== undefined) !== (definition.id === previewDefinitionId)) throw new KiteError('预览要带 preview 新建，别的插件不带');
-        if (content.browser !== undefined && definition.id !== browserDefinitionId) throw new KiteError('只有浏览能带 browser 新建');
+        if (content.page !== undefined && definition.id !== filesDefinitionId) throw new KiteError('只有浏览能带网页新建');
         if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
           throw new KiteError('实例 ID 已使用', 409);
         }
@@ -90,7 +90,7 @@ export class InstanceLifecycle {
           created = { ...this.newInstance(workspaceId, definition.id, content.title
             ?? (launch ? launch.launch.title : definition.agent ? '新代理'
               : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
-            ...(content.instanceId ? { id: content.instanceId } : {}), ...(content.browser ? this.kite.browse.initial(workspaceId, content.browser) : {}),
+            ...(content.instanceId ? { id: content.instanceId } : {}), ...(content.page ? { state: this.kite.pageSelection(workspaceId, content.page) } : {}),
             ...(launch ? { config: { preview: launch.launch.spec } } : {}) };
           if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         }

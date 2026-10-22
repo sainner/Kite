@@ -10,7 +10,22 @@ import { diffID } from './file-diffs.ts';
 import { gitTry } from './git.ts';
 
 export const readFileArgs = z.object({ path: z.string().min(1), offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(2000).optional() }).strict();
-export const fileSelectionSchema = z.object({ path: z.string().nullable(), diffId: diffID.optional(), revision: z.string() }).strict();
+/** 浏览插件（docs/实例操作.md「浏览」）：看工作区的文件、本工作区运行中的网页和互联网；id 沿用文件插件的。 */
+export const filesDefinitionId = 'kite.files';
+
+const portSchema = z.number().int().min(1).max(65535);
+/**
+ * 浏览看的网页（docs/成果查看与位置.md「浏览」）：本工作区运行中终端或预览监听的端口，路径、前进后退只在各设备上；或互联网上的一个网址。
+ * 本机地址只按端口看，网址里写本机（localhost、回环地址）的不收，免得绕开「只开本工作区的端口」。
+ */
+export const pageSchema = z.union([
+  z.object({ port: portSchema }).strict(),
+  z.object({ url: z.url({ protocol: /^https?$/ }).max(8192)
+    .refine((url) => !/^(localhost|.+\.localhost|127(\.\d+){3}|0\.0\.0\.0|\[[0:]*:1?\])$/i.test(new URL(url).hostname), '本机的网页按端口打开') }).strict(),
+]);
+export type Page = z.infer<typeof pageSchema>;
+/** 浏览实例共用的选择：一个文件（可带历史差异），或一个网页（port、url 二选一），都没有时 path 为 null。 */
+export const fileSelectionSchema = z.object({ path: z.string().nullable(), diffId: diffID.optional(), port: portSchema.optional(), url: z.string().optional(), revision: z.string() }).strict();
 export type FileSelection = z.infer<typeof fileSelectionSchema>;
 export const fileSelection = (state: Record<string, unknown>): FileSelection => fileSelectionSchema.parse({ path: null, revision: 'initial', ...state });
 

@@ -23,7 +23,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveTarget' | 'approveDevice' | 'previews' | 'browse'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveTarget' | 'approveDevice' | 'previews'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -435,11 +435,6 @@ export class InstanceOperations {
         check();
         const input = args as OperationInput<'preview.select'>;
         return this.kite.previews.select(input.instanceId, input.browser);
-      }
-      case 'browser.select': {
-        check();
-        const input = args as OperationInput<'browser.select'>;
-        return this.kite.browse.select(input.instanceId, input.port);
       }
       case 'terminal.stop':
       case 'preview.stop': {

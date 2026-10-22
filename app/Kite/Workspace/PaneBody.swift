@@ -83,8 +83,6 @@ private struct WorkspacePaneBody: View {
                 TerminalPane(instance: instance, client: client, connection: area.pluginConnection).id(pane.id)
             } else if renderer == "preview", let instance, let client = area.pluginClient {
                 PreviewPane(instance: instance, client: client, connection: area.pluginConnection, renderer: area.view(in: pane)?.renderer).id(pane.id)
-            } else if renderer == "browser", let instance, let client = area.pluginClient {
-                BrowserPane(instance: instance, client: client).id(pane.id)
             } else if renderer == "web", let target, let instance, let client = area.pluginClient {
                 // 换了视图是另一份插件页面，重新加载
                 PluginPane(target: target, title: area.appearance(of: pane).name, client: client,

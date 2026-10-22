@@ -21,9 +21,8 @@ import { requestedSize, type TerminalSocket } from './terminal/terminals.ts';
 import { openBundle } from './preview/app-bundles.ts';
 import { previewParams, type PreviewSocket } from './preview/previews.ts';
 import { previewSpecSchema } from './preview/state.ts';
-import { browserSpecSchema } from './browser/browser.ts';
 import { approvalModes } from './execution/grants.ts';
-import { hostDirectory, WorkspaceFiles } from './workspace/files.ts';
+import { hostDirectory, pageSchema, WorkspaceFiles } from './workspace/files.ts';
 import { fileContent } from './workspace/file-content.ts';
 import { HANDOVER_NEEDS } from './environment.ts';
 import type { Payload } from './update/updates.ts';
@@ -592,7 +591,7 @@ export function serve(kite: Kite, listen: Listen) {
         const identity = z.string().trim().min(1);
         const parsed = z.object({ id: z.uuid(), content: z.discriminatedUnion('kind', [
           z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional(), title: identity.optional(), command: identity.optional(),
-            preview: previewSpecSchema.optional(), browser: browserSpecSchema.optional() }).strict(),
+            preview: previewSpecSchema.optional(), page: pageSchema.optional() }).strict(),
           z.object({ kind: z.literal('open'), instanceId: identity, viewId: identity }).strict(),
         ]) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('窗口请求无效');

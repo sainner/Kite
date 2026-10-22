@@ -131,13 +131,14 @@ export const operationContracts = {
     input: z.object({ instanceId: id, diffId: diffID }).strict(), output: fileDiffSchema,
   },
   'files.state': {
-    title: '读取所选文件', description: '读取文件实例共享且持久的选中文件。',
+    title: '读取所选内容', description: '读取浏览实例共享且持久的选中文件或网页。',
     tool: null, effect: 'read', retry: 'read', input: z.object({ instanceId: id }).strict(), output: fileSelectionSchema,
   },
   'files.select': {
-    title: '选择预览文件', description: '选择工作区内的文件，供这个实例的所有预览窗口使用；不修改文件内容。',
+    title: '选择浏览内容', description: '选择工作区内的文件，或一个网页（本工作区运行中终端或预览监听的端口 port，或互联网网址 url，这时 path 为 null），各设备共用；不修改文件内容。',
     tool: null, effect: 'write', retry: 'receipt',
-    input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional() }).strict(), output: fileSelectionSchema,
+    input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional(), port: z.number().optional(), url: z.string().optional() }).strict(),
+    output: fileSelectionSchema,
   },
   'terminal.read': {
     title: '读取终端输出', description: '按行读取后台终端的输出：转到后台的命令读完整输出，交互终端读屏幕和回滚里的文字。不给 offset 时读最后 limit 行（默认 200）；结果带进程状态，结束了有退出码或原因。',
@@ -215,12 +216,6 @@ export const operationContracts = {
     tool: null, effect: 'write', retry: 'receipt',
     input: target.extend({ browser: z.enum(previewBrowsers) }).strict(),
     output: z.object({ browser: z.enum(workstationBrowsers).optional() }).strict(),
-  },
-  'browser.select': {
-    title: '选择端口', description: '改浏览窗口看的端口，须是本工作区运行中终端或预览监听的，null 是不选，所有设备共用。',
-    tool: null, effect: 'write', retry: 'receipt',
-    input: target.extend({ port: z.number().int().min(1).max(65535).nullable() }).strict(),
-    output: z.object({ port: z.number().int().optional() }).strict(),
   },
   'monitor.start': {
     title: '开始监视', description: [

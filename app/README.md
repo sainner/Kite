@@ -13,7 +13,7 @@ Mac、iPhone 和 iPad 共用一个 SwiftUI 工程、一个多平台 target。使
 | `Kite/Application/` | App 启动、连接、远端数据与应用状态；`AppModel.swift` 管理工作区目录 |
 | `Kite/Workspace/` | 工作区状态、窗口、侧栏、布局和拖动；`WorkArea.swift` 保存单个工作区状态 |
 | `Kite/Conversation/` | 线程状态、消息、输入区、工具展示和会话配置；`WorkThread.swift` 保存单个线程状态 |
-| `Kite/Files/` | 文件浏览、内容预览与资源引用 |
+| `Kite/Files/` | 浏览窗口（文件与网页）、内容预览与资源引用 |
 | `Kite/Plugins/` | 插件管理、实例设置、插件窗口与原生 Web 桥 |
 | `Kite/Context/` | 角色与上下文模板的模型、资源库页面与编辑器 |
 | `Kite/UI/` | 主题、公共控件、点阵视觉语言、文本渲染与 Metal 动效 |

@@ -123,12 +123,13 @@ final class WorkArea: Identifiable {
         updateFiles(client: client)
     }
 
-    /// 文件浏览要读工作机上的实例，本机先建、还没建好的不算。
+    /// 浏览要读工作机上的实例，本机先建、还没建好的不算。
     func updateFiles(client: KitedClient? = nil) {
-        let confirmed = instances.filter { $0.definitionId == "kite.files" && $0.status == .open && !isOpening(instance: $0.id) }
+        let confirmed = instances.filter { $0.definitionId == AppModel.filesDefinition && $0.status == .open && !isOpening(instance: $0.id) }
         files = Dictionary(uniqueKeysWithValues: confirmed.map { instance in
+            // 为引用或网页打开的窗口一出来就是内容，目录收着
             let browser = files[instance.id] ?? FileBrowser(instanceID: instance.id, workspaceID: id, client: client,
-                                                            showDirectory: !referencedFiles.contains(instance.id))
+                                                            showDirectory: !referencedFiles.contains(instance.id) && instance.state?.port == nil && instance.state?.url == nil)
             browser.update(instance, client: client)
             return (instance.id, browser)
         })
@@ -163,7 +164,7 @@ final class WorkArea: Identifiable {
             .sorted { $0.port < $1.port }
     }
 
-    /// 本工作区运行中终端与预览监听的端口：浏览只能看这些；设备打开着这个工作区期间都开着转发（见 PortForwarding）。
+    /// 本工作区运行中终端与预览监听的端口：浏览只能开这些本机网页；设备打开着这个工作区期间都开着转发（见 PortForwarding）。
     var workspacePorts: [Int] { workspacePortStatus.map(\.port) }
 
     /// 预览实例的画面；不是预览时为 nil。
@@ -541,11 +542,10 @@ struct WindowAppearance {
 
     static func renderer(_ id: String) -> Self {
         switch id {
-        case "files": .init(name: "文件", icon: "folder")
+        case "files": .init(name: "浏览", icon: "globe")
         case "terminal": .init(name: "终端", icon: "terminal")
         case "preview": .init(name: "预览", icon: "play.rectangle")
         case "preview-grid": .init(name: "并排", icon: "square.grid.2x2")
-        case "browser": .init(name: "浏览", icon: "globe")
         case "monitor": .init(name: "监视", icon: "tray")
         default: .init(name: "插件", icon: "puzzlepiece.extension")
         }

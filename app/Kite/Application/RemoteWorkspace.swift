@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 13
+    static let version = 14
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -134,7 +134,9 @@ struct RemotePluginInstance: Decodable, Identifiable {
         var plugin: JSON? = nil
         var terminal: TerminalStatus? = nil
         var preview: PreviewStatus? = nil
-        var browser: BrowserStatus? = nil
+        /// 浏览选的网页：本工作区的端口或互联网网址，见 FileSelection。
+        var port: Int? = nil
+        var url: String? = nil
     }
     let id: String
     let workspaceId: String
@@ -149,6 +151,17 @@ struct RemotePluginInstance: Decodable, Identifiable {
     var origin: Origin? = nil
 
     struct Origin: Decodable { let instanceId: String }
+}
+
+extension RemotePluginInstance.State {
+    /// 本机先建的浏览实例：打开到这个网页。
+    init(page: BrowsePage) {
+        self.init(path: nil, revision: nil)
+        switch page {
+        case .port(let port): self.port = port
+        case .url(let url): self.url = url.absoluteString
+        }
+    }
 }
 
 /// 终端与预览实例的进程状态，kited 的 terminal/terminals.ts 写在实例状态里；结束时带退出码或信号，不是自己退出的带原因。
@@ -192,11 +205,6 @@ enum PreviewScreen: String, Decodable {
     init(from decoder: Decoder) throws { self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .none }
 }
 
-/// 浏览窗口看的端口，各设备共用。
-struct BrowserStatus: Decodable, Equatable {
-    var port: Int? = nil
-}
-
 /// 网页在哪看：设备自己的网页视图，或工作机上的浏览器（画面传过来）。
 enum PreviewBrowser: String, CaseIterable, Identifiable, Codable {
     case device, webkit, chromium, firefox, safari
@@ -212,10 +220,24 @@ enum PreviewBrowser: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// 浏览实例共用的选择：一个文件（可带历史差异），或一个网页（port、url 二选一），都没有时 path 为 nil。
 struct FileSelection: Decodable, Equatable {
     let path: String?
     let revision: String
     var diffId: String? = nil
+    var port: Int? = nil
+    var url: String? = nil
+
+    var page: BrowsePage? {
+        if let port { return .port(port) }
+        return url.flatMap(URL.init(string:)).map(BrowsePage.url)
+    }
+}
+
+/// 浏览看的网页：本工作区运行中终端或预览监听的端口（路径、前进后退只在本设备），或互联网上的一个网址。
+enum BrowsePage: Equatable {
+    case port(Int)
+    case url(URL)
 }
 
 struct FileDirectory: Decodable {
@@ -342,23 +364,27 @@ struct OpenWindowRequest: Encodable {
 
     /// 新建实例的 ID 也由本机定：本机先按它建好实例和窗口（见 AppModel.sendWindowRequest）。
     /// title 省略时按插件名编号；command 只用于终端，等 shell 起好后打进去执行。preview 只用于预览，必带：
-    /// 同一目标与设备已经在跑时工作机打开那个实例。browser 只用于浏览，可带端口。
+    /// 同一目标与设备已经在跑时工作机打开那个实例。page 只用于浏览，打开到一个网页。
     enum Content: Encodable {
-        case create(String, instance: String, title: String? = nil, command: String? = nil, preview: PreviewSpec? = nil, browser: BrowserStatus? = nil)
+        case create(String, instance: String, title: String? = nil, command: String? = nil, preview: PreviewSpec? = nil, page: BrowsePage? = nil)
         case open(WindowTarget)
-        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, preview, browser, viewId }
-        private struct Browser: Encodable { let port: Int? }
+        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, preview, page, viewId }
+        private struct Page: Encodable { var port: Int? = nil; var url: URL? = nil }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
-            case .create(let definitionId, let instanceId, let title, let command, let preview, let browser):
+            case .create(let definitionId, let instanceId, let title, let command, let preview, let page):
                 try c.encode("create", forKey: .kind)
                 try c.encode(definitionId, forKey: .definitionId)
                 try c.encode(instanceId, forKey: .instanceId)
                 try c.encodeIfPresent(title, forKey: .title)
                 try c.encodeIfPresent(command, forKey: .command)
                 try c.encodeIfPresent(preview, forKey: .preview)
-                try c.encodeIfPresent(browser.map { Browser(port: $0.port) }, forKey: .browser)
+                switch page {
+                case .port(let port): try c.encode(Page(port: port), forKey: .page)
+                case .url(let url): try c.encode(Page(url: url), forKey: .page)
+                case nil: break
+                }
             case .open(let target):
                 try c.encode("open", forKey: .kind)
                 try c.encode(target.instanceId, forKey: .instanceId)

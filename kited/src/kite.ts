@@ -61,7 +61,7 @@ import { LINE_AGENTS } from './line/project.ts';
 import { Attention } from './line/attention.ts';
 import { setupLogPath, worktreePath } from './paths.ts';
 import type { Network } from './network.ts';
-import { WorkspaceFiles, fileSelection } from './workspace/files.ts';
+import { WorkspaceFiles, fileSelection, type Page, pageSchema } from './workspace/files.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
 import { TranscriptHistory } from './transcript/history.ts';
 import type { DisplayState, History, ThreadActivity } from './transcript/protocol.ts';
@@ -86,7 +86,6 @@ import { Previews } from './preview/previews.ts';
 import { Simulators } from './preview/simulators.ts';
 import { previewDefinitionId } from './preview/state.ts';
 import { trustedTargets } from './preview/targets.ts';
-import { Browsing } from './browser/browser.ts';
 import { contentHash } from './harness/context/project.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
@@ -220,7 +219,6 @@ export class Kite {
   readonly terminals: Terminals;
   readonly previews: Previews;
   readonly simulators: Simulators;
-  readonly browse: Browsing;
   /** 最近一条输入是 Line 自己说明的线程；只在内存里，重启后按用户的工作对待。 */
   private lineWork = new Set<string>();
   /** 服务起来后才知道本机监听地址与组网，Line 调本机和别的工作机时用。 */
@@ -428,7 +426,6 @@ export class Kite {
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       ...(options.previewSettle ? { settle: options.previewSettle } : {}) });
-    this.browse = new Browsing({ store, changed: (workspaceId) => this.changed(workspaceId), ports: (workspaceId) => this.terminals.workspacePorts(workspaceId) });
     this.tokenCounts = new TokenCounter({ apiKeys: () => this.credentials.apiKeys() });
     this.voice = new VoiceSessions({
       keys: () => this.credentials.speechKeys(),
@@ -1346,7 +1343,16 @@ export class Kite {
       const current = this.store.instance(instance.id)!;
       const { workspace } = this.workspace(current.workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
-      if (fileSelection(current.state).revision !== input.expectedRevision) throw new KiteError('所选文件已变化，请刷新后重试', 409);
+      if (fileSelection(current.state).revision !== input.expectedRevision) throw new KiteError('所选内容已变化，请刷新后重试', 409);
+      if (input.port !== undefined || input.url !== undefined) {
+        if (input.path !== null || input.diffId) throw new KiteError('文件和网页只能选一个');
+        const parsed = pageSchema.safeParse(input.port !== undefined && input.url === undefined ? { port: input.port } : { url: input.url });
+        if (!parsed.success) throw new KiteError(`网页无效：${parsed.error.issues[0]?.message ?? '端口和网址只能选一个'}`);
+        const state = this.pageSelection(current.workspaceId, parsed.data);
+        this.store.setInstanceState(current.id, state);
+        this.changed(current.workspaceId);
+        return state;
+      }
       let path: string | null = null;
       if (input.path !== null) {
         try {
@@ -1368,6 +1374,14 @@ export class Kite {
       this.changed(current.workspaceId);
       return state;
     });
+  }
+
+  /** 浏览选一个网页时的状态：端口须是本工作区运行中终端或预览此刻监听的；服务停了选择保留，同一端口再被监听时接着显示。 */
+  pageSelection(workspaceId: string, page: Page) {
+    if ('port' in page && !this.terminals.workspacePorts(workspaceId).includes(page.port)) {
+      throw new KiteError(`localhost:${page.port} 不是这个工作区里运行中的终端或预览在监听的端口`, 409);
+    }
+    return { path: null, revision: randomUUID(), ...page };
   }
 
   configureOperationGrants(id: string, expectedRevision: string, value: unknown) {

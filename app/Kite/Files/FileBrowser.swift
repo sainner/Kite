@@ -6,7 +6,7 @@ import AppKit
 import UIKit
 #endif
 
-/// 一个文件实例共用选择；目录位置和文本页码只属于当前设备。
+/// 一个浏览实例共用选择（文件或网页）；目录位置、文本页码和网页里点到哪只属于当前设备。
 @Observable
 final class FileBrowser {
     let instanceID: String
@@ -53,11 +53,12 @@ final class FileBrowser {
     /// Markdown、HTML 显示渲染结果还是原文。
     var rendered = true
     var displayingFile: Bool { selection.path != nil }
+    var displayingWeb: Bool { selection.page != nil }
     var root: FileDirectory? { listings["."] }
     var loadingDirectory: Bool { loadingPaths.contains(".") }
     var isLocal: Bool { client?.isLocal == true }
     var connection: KitedClient? { client }
-    /// 渲染 HTML 时网页报的错。
+    /// 渲染 HTML、打开网页时网页报的错。
     var pageError: String?
     var requestKey: String { connectionRevision.uuidString + selection.revision + focusID.uuidString + String(rendered) }
     var locationMessage: String? {
@@ -99,7 +100,8 @@ final class FileBrowser {
             resetContent()
             loadingText = false
         }
-        receive(FileSelection(path: instance.state?.path, revision: instance.state?.revision ?? "initial", diffId: instance.state?.diffId))
+        receive(FileSelection(path: instance.state?.path, revision: instance.state?.revision ?? "initial", diffId: instance.state?.diffId,
+                              port: instance.state?.port, url: instance.state?.url))
     }
 
     private func receive(_ value: FileSelection) {
@@ -439,6 +441,46 @@ final class FileBrowser {
     }
 
     func select(_ path: String, diffID: String? = nil) async -> Bool {
+        await choose { Select(instanceId: instanceID, expectedRevision: $0, path: path, diffId: diffID) }
+    }
+
+    /// 打开一个网页，各设备共用；本工作区网页的路径由窗口另在页面里打开（见 WorkArea.webLinks）。
+    func openPage(_ page: BrowsePage) async throws {
+        if selection.page != page {
+            let chosen = await choose { revision in
+                switch page {
+                case .port(let port): Select(instanceId: instanceID, expectedRevision: revision, path: nil, port: port)
+                case .url(let url): Select(instanceId: instanceID, expectedRevision: revision, path: nil, url: url.absoluteString)
+                }
+            }
+            guard chosen else { throw KitedError(message: directoryError ?? "无法打开网页") }
+        }
+        showDirectory = false
+    }
+
+    private struct Select: Encodable {
+        let instanceId: String
+        let expectedRevision: String
+        let path: String?
+        var diffId: String? = nil
+        var port: Int? = nil
+        var url: String? = nil
+
+        private enum Keys: String, CodingKey { case instanceId, operationId, expectedRevision, path, diffId, port, url }
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: Keys.self)
+            try c.encode(instanceId, forKey: .instanceId)
+            try c.encode(UUID().uuidString, forKey: .operationId)
+            try c.encode(expectedRevision, forKey: .expectedRevision)
+            // 选网页时 path 明写 null
+            try c.encode(path, forKey: .path)
+            try c.encodeIfPresent(diffId, forKey: .diffId)
+            try c.encodeIfPresent(port, forKey: .port)
+            try c.encodeIfPresent(url, forKey: .url)
+        }
+    }
+
+    private func choose(_ request: (String) -> Select) async -> Bool {
         guard !selecting else { return false }
         selecting = true
         directoryError = nil
@@ -446,13 +488,13 @@ final class FileBrowser {
         let before = selection.revision
         let connection = connectionRevision
         do {
-            var body = ["instanceId": instanceID, "operationId": UUID().uuidString, "expectedRevision": before, "path": path]
-            if let diffID { body["diffId"] = diffID }
-            let value = try await operation("select", body: body, as: FileSelection.self)
+            let value = try await operation("select", body: request(before), as: FileSelection.self)
             guard connectionRevision == connection, !Task.isCancelled else { return false }
             // 工作区通知可能已经带来另一端的新选择，迟到的操作响应不能覆盖它。
             if selection.revision == before { receive(value) }
-            guard selection.path == value.path, selection.diffId == value.diffId else { throw KitedError(message: "另一端已选择其他文件，请重新打开引用") }
+            guard selection.path == value.path, selection.diffId == value.diffId, selection.page == value.page else {
+                throw KitedError(message: "另一端已选择其他内容，请重新打开")
+            }
             return true
         } catch {
             directoryError = error.localizedDescription

@@ -1,12 +1,13 @@
 import SwiftUI
 import WebKit
 
-/// 网页视图看哪里：工作区里的静态 HTML，或者本机能直接打开的网址（工作机上的开发服务器，或设备上转发到它的端口）。
+/// 网页视图看哪里：工作区里的静态 HTML，或者本机能直接打开的网址（工作机上的开发服务器、设备上转发到它的端口，浏览里还有互联网）。
 enum WebSource: Equatable {
     /// 相对资源从同一工作区读取；version 变了就重新加载。
     case workspaceFile(client: KitedClient, workspace: String, path: String, version: String)
     /// store 是这个目标在本设备的网站数据（Cookie、本地存储），同一目标下次打开仍是登录状态。
-    case address(URL, store: UUID)
+    /// 有 roaming 时主框架可以去任何网址（浏览）；没有时只停在自己的来源上（预览的网页画面）。
+    case address(URL, store: UUID, roaming: WebRoaming? = nil)
 
     fileprivate static let fileScheme = "kite-file"
 
@@ -18,8 +19,13 @@ enum WebSource: Equatable {
             components.host = "workspace"
             components.path = "/" + path
             return components.url!
-        case .address(let url, _): return url
+        case .address(let url, _, _): return url
         }
+    }
+
+    fileprivate var roaming: WebRoaming? {
+        if case .address(_, _, let roaming) = self { return roaming }
+        return nil
     }
 
     /// 主框架只能停在同一个来源上。
@@ -28,9 +34,9 @@ enum WebSource: Equatable {
     }
 }
 
-/// 网页类成果共用的视图，文件插件的静态 HTML 与网页预览都用它。页面是不可信内容，与 App 隔离：
-/// 没有原生桥，网站数据与 App 的其他网页分开；主框架只停在自己的目标上，去别处的链接交给系统浏览器，下载一律拒绝。
-/// 内容只经工作机的文件接口或本机地址取得，页面拿不到组网身份。
+/// 网页类成果共用的视图，浏览里的静态 HTML、网页与预览的网页画面都用它。页面是不可信内容，与 App 隔离：
+/// 没有原生桥，网站数据与 App 的其他网页分开；下载一律拒绝。静态 HTML 和预览的主框架只停在自己的目标上，去别处的链接交给 openURL（工作区里在浏览里打开）；
+/// 浏览里的网页可以去任何网址，只是进不了工作机服务自己的地址（见 WebRoaming）。页面不经组网，拿不到组网身份。
 struct WebPreview: View {
     let source: WebSource
     /// 加载失败时报给所在窗口的信息区，成功后报 nil。
@@ -81,10 +87,12 @@ struct WebPreview: View {
             configuration.urlSchemeHandlers[URLScheme(WebSource.fileScheme)!] = WorkspaceFileScheme { path in
                 try await FileContentCache.shared.file(client: client, workspace: workspace, path: path)
             }
-        case .address(_, let store):
+        case .address(_, let store, _):
             configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
         }
-        let page = WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }))
+        // 浏览里新窗口打开的链接在同一个页面里打开
+        let follow: @MainActor (URL) -> Void = { [browser, openURL] url in if let browser { browser.open(url) } else { openURL(url) } }
+        let page = WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }, follow: follow))
         // Safari 的网页检查器连得上：iPhone、iPad 没有自带的检查器，接上 Mac 后从 Safari 的「开发」菜单里选设备名下的这个页面；
         // Mac 上在 Kite 里直接打开（见 WebBrowser.inspect）。检查器由用户打开，页面碰不到它，隔离不变。
         page.isInspectable = true
@@ -111,6 +119,8 @@ struct WebPreview: View {
     @ObservationIgnored private var navigation: Task<Void, Never>?
 
     var url: URL? { page?.url }
+    /// 页面的标题，还没有时是 nil。
+    var title: String? { page.flatMap { $0.title.isEmpty ? nil : $0.title } }
     var canGoBack: Bool { page?.backForwardList.backList.isEmpty == false }
     var canGoForward: Bool { page?.backForwardList.forwardList.isEmpty == false }
 
@@ -203,15 +213,40 @@ struct WebPreview: View {
     }
 }
 
+/// 浏览里的网页可以去任何网址，只是不进工作机服务（kited）自己的地址：页面开在那里就与接口同源，能调用接口
+/// （docs/成果查看与位置.md「运行中的网页」）。地址按本机回环和工作机的主机名，配 kited 在本机和组网上的端口。
+struct WebRoaming: Equatable {
+    let service: Set<String>
+
+    func allows(_ url: URL) -> Bool {
+        guard let host = url.host(percentEncoded: false)?.lowercased() else { return true }
+        let port = url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)
+        return !service.contains("\(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))):\(port)")
+    }
+}
+
 private struct WebNavigation: WebPage.NavigationDeciding {
     let source: WebSource
     let openURL: (URL) -> Void
+    /// 浏览里新窗口打开的链接：在同一个页面里打开。
+    let follow: @MainActor (URL) -> Void
 
     func decidePolicy(for action: WebPage.NavigationAction, preferences: inout WebPage.NavigationPreferences) async -> WKNavigationActionPolicy {
         guard let url = action.request.url, !action.shouldPerformDownload else { return .cancel }
         let web = ["http", "https"].contains(url.scheme?.lowercased())
+        if let roaming = source.roaming {
+            if web, !roaming.allows(url) { return .cancel }
+            if action.target == nil {
+                if web { follow(url) } else { openURL(url) }
+                return .cancel
+            }
+            if web || ["about", "data", "blob"].contains(url.scheme?.lowercased()) { return .allow }
+            // mailto、tel 这类交给系统
+            if action.target?.isMainFrame == true, action.navigationType == .linkActivated { openURL(url) }
+            return .cancel
+        }
         guard let target = action.target, target.isMainFrame else {
-            // 新窗口打开的链接交给系统浏览器；框架里的内容照常加载
+            // 新窗口打开的链接交给 openURL；框架里的内容照常加载
             if action.target == nil {
                 if web && !source.contains(url) { openURL(url) }
                 return .cancel
@@ -291,13 +326,14 @@ nonisolated private struct WorkspaceFileScheme: URLSchemeHandler {
     }
 }
 
-/// 工作机上某个端口的网页，给浏览窗口和预览的网页画面用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开转发
+/// 工作机上某个端口的网页，给浏览和预览的网页画面用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开转发
 /// （PortRelays），经组网连到工作机为这个端口开的转发。本工作区其他运行中终端与预览的端口也开着同号转发（见 PortForwarding），页面里嵌着或调用的
-/// 另一个端口上的服务照工作机上的地址打开。store 是这个目标在本设备的网站数据，见 WebSource.address。
+/// 另一个端口上的服务照工作机上的地址打开。store 是这个目标在本设备的网站数据，roaming 见 WebSource.address。
 struct PortPreview: View {
     let client: KitedClient
     let port: Int
     let store: UUID
+    var roaming: WebRoaming?
     /// 消息里点的链接或地址栏里输入的路径：在页面里打开到它，每次都打开一回；没有时是首页。
     var link: WebLink?
     /// 其他设备上页面的地址是本机转发的地址，端口不是工作机上的端口，只看路径。
@@ -311,7 +347,7 @@ struct PortPreview: View {
     var body: some View {
         Group {
             if let start {
-                WebPreview(source: .address(start, store: store), report: report, browser: browser)
+                WebPreview(source: .address(start, store: store, roaming: roaming), report: report, browser: browser)
             } else { Color.clear }
         }
         .onChange(of: link) { _, link in
@@ -385,5 +421,139 @@ extension KitedClient {
     /// kited 自己的端口在本机和组网上都开着，页面开在它上面就和接口同源，能带上请求头调用接口：不为它开网页视图、不转发。
     func servable(_ port: Int) -> Bool {
         port != URL(string: address)?.port && port != URL(string: KitedClient.local)?.port
+    }
+    /// 浏览里的网页不能进的地址：kited 在本机回环和工作机主机名上的端口。
+    var roaming: WebRoaming {
+        let ports = [address, KitedClient.local].compactMap { URL(string: $0)?.port }
+        let hosts = ["localhost", "127.0.0.1", "::1", "0.0.0.0"] + [workerHost?.lowercased()].compactMap(\.self)
+        return WebRoaming(service: Set(hosts.flatMap { host in ports.map { "\(host):\($0)" } }))
+    }
+}
+
+/// 宽屏卡片里的网页控制区：指针在卡片上、或正在地址栏里打字时才有，同窗口按钮（见 PaneHeaderControls）；触屏一直有。
+/// 藏起来时控制区是空的，不接点击，后面的页面照常可点（见 PaneControlsBar）。不在卡片里（紧凑布局）时一直有。
+/// 悬停只在这一层读，窗口不跟着重算。
+struct WebControls<Content: View>: View {
+    let typing: Bool
+    @ViewBuilder let content: Content
+    @Environment(\.paneHeaderControlsSpace) private var card
+
+    var body: some View {
+        if typing || card.map({ InputMode.current.revealsControls(hovered: $0.hovered) }) ?? true {
+            content
+        }
+    }
+}
+
+/// 地址栏里的路径（浏览里是整个地址）：平时跟着页面显示当前路径，打字时不被页面的跳转改掉；回车打开，没打开就离开（Mac 上按 Esc 也是）回到当前路径。
+/// reset 变了（清除输入）也回到当前路径，接着打字。
+struct WebPathField: View {
+    let path: String
+    let typing: FocusState<Bool>.Binding
+    var reset = 0
+    var prompt = "/"
+    let open: (String) -> Void
+    @State private var text = ""
+    /// 刚按回车打开：留着输入的路径等页面跳过去，不先退回旧路径。
+    @State private var submitted = false
+
+    var body: some View {
+        TextField("网页地址", text: $text, prompt: Text(prompt))
+            .textFieldStyle(.plain)
+            .font(Theme.body)
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity)
+            .frame(height: Metrics.paneHeaderButton)
+            .autocorrectionDisabled()
+            #if os(iOS)
+            .textInputAutocapitalization(.never)
+            .keyboardType(.URL)
+            #endif
+            .focused(typing)
+            .onSubmit {
+                submitted = true
+                open(text)
+                typing.wrappedValue = false
+            }
+            #if os(macOS)
+            .onExitCommand { typing.wrappedValue = false }
+            #endif
+            .onChange(of: path, initial: true) {
+                if !typing.wrappedValue { text = path }
+            }
+            .onChange(of: reset) { text = path }
+            .onChange(of: typing.wrappedValue) { _, editing in
+                if editing { submitted = false } else if !submitted { text = path }
+            }
+    }
+}
+
+/// 设备自己的网页视图的控制区，预览的网页画面与浏览共用：左边后退、前进、首页，中间地址栏（由窗口给），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
+/// 紧凑布局里左边只有后退，有下一页时才出现前进，首页挪到地址栏最右边（由地址栏放）；键盘升起时收起键盘顶替左边这组，
+/// 在地址栏里打字时清除输入顶替重新加载，点了地址回到打字前的样子、接着打字。
+struct WebPageControls<Address: View>: View {
+    let browser: WebBrowser
+    let compact: Bool
+    let typing: Bool
+    let home: () -> Void
+    let reload: () -> Void
+    let clear: () -> Void
+    @ViewBuilder let address: Address
+
+    var body: some View {
+        HStack(spacing: Metrics.paneButtonGap) {
+            KeyboardSwap {
+                PaneHeaderButtonGroup {
+                    ActionButton("后退", icon: "chevron.left", action: browser.back)
+                        .disabled(!browser.canGoBack)
+                    if !compact || browser.canGoForward {
+                        ActionButton("前进", icon: "chevron.right", action: browser.forward)
+                            .disabled(!browser.canGoForward)
+                    }
+                    if !compact {
+                        ActionButton("首页", icon: "house", action: home)
+                    }
+                }
+            } shown: {
+                KeyboardDismissButton()
+            }
+            address
+            KeyboardSwap(active: typing) {
+                PaneHeaderButtonGroup {
+                    ActionButton("重新加载", icon: "arrow.clockwise", action: reload)
+                    #if os(macOS)
+                    // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
+                    ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
+                    // 不走环境里的 openURL：本机地址会被它接回 Kite 的窗口（见 ReferenceNavigation）。
+                    ActionButton("在浏览器中打开", icon: "arrow.up.right.square") {
+                        if let url = browser.url { NSWorkspace.shared.open(url) }
+                    }
+                    .disabled(browser.url == nil)
+                    #endif
+                }
+            } shown: {
+                PaneHeaderButtonGroup {
+                    ActionButton("清除输入", icon: "xmark", action: clear)
+                }
+            }
+        }
+        .containerValue(\.placesKeyboardButton, true)
+    }
+}
+
+/// 地址栏最前面的站点图标，没有时是地球。
+struct WebSiteIcon: View {
+    let icon: Image?
+
+    var body: some View {
+        Group {
+            if let icon {
+                icon.resizable().interpolation(.high).scaledToFit()
+            } else {
+                Image(systemName: "globe").resizable().scaledToFit().foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
+        .accessibilityHidden(true)
     }
 }

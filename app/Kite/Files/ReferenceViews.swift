@@ -228,7 +228,8 @@ struct RunInTerminalAction: Equatable {
     static func == (a: Self, b: Self) -> Bool { a.model === b.model && a.area === b.area }
 }
 
-/// 宿主处理链接和代码块的「在终端中执行」，消息与 JSON 组件不持有窗口、文件或终端服务。
+/// 宿主处理链接和代码块的「在终端中执行」，消息与 JSON 组件不持有窗口、文件或终端服务。本机端口与外网的网页在 Kite 里看（预览或浏览），
+/// 文件引用开浏览，别的（mailto 这类）交给系统。
 struct ReferenceNavigation: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -243,6 +244,10 @@ struct ReferenceNavigation: ViewModifier {
                 if let target = LocalPort(url) {
                     do { try model.openLocalPort(target, in: area) }
                     catch { self.error = error.localizedDescription }
+                    return .handled
+                }
+                if ["http", "https"].contains(url.scheme?.lowercased()) {
+                    model.openWebAddress(url, in: area)
                     return .handled
                 }
                 guard url.scheme == "kite" else { return .systemAction }

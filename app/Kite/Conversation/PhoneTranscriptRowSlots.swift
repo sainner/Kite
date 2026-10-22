@@ -114,7 +114,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         build()
     }
 
-    /// 触摸、读屏接上这一行的环境：链接交给 SwiftUI 的 openURL（文件引用由 ReferenceNavigation 打开，网页交给系统）。
+    /// 触摸、读屏接上这一行的环境：链接交给 SwiftUI 的 openURL（文件引用与网页由 ReferenceNavigation 在 Kite 里打开）。
     private func configure() {
         guard let context, let interaction, let text else { return }
         let id = row.id

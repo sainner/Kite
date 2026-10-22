@@ -7,7 +7,7 @@ import { defaultAgentModel } from '../agents/models.ts';
 import { monitorDefinitionId } from '../monitor/monitors.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
 import { previewDefinitionId } from '../preview/state.ts';
-import { browserDefinitionId } from '../browser/browser.ts';
+import { filesDefinitionId } from '../workspace/files.ts';
 
 export interface PluginDefinition {
   id: string;
@@ -66,8 +66,9 @@ const agent: AgentDefinition = {
 const definitions: PluginDefinition[] = [
   { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
     agent, operations: ['agent.send', 'agent.resume', 'agent.stop', 'agent.merge'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
-  { id: 'kite.files', title: '文件', description: '预览工作区文件', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
-    { id: 'files', title: '文件', renderer: 'files' },
+  /** 看工作区的文件、本工作区运行中的网页和互联网，见 workspace/files.ts 的 pageSchema。 */
+  { id: filesDefinitionId, title: '浏览', description: '查看文件、运行中的网页和互联网', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
+    { id: 'files', title: '浏览', renderer: 'files' },
   ] },
   /** 一个实例一个 PTY 会话，见 terminal/terminals.ts。 */
   { id: terminalDefinitionId, title: '终端', description: '在工作目录执行命令', lifetime: 'process', defaultView: 'terminal',
@@ -77,9 +78,6 @@ const definitions: PluginDefinition[] = [
     operations: ['preview.select', 'preview.action', 'preview.inspect', 'preview.read', 'preview.stop'], views: [
       { id: 'screen', title: '画面', renderer: 'preview' }, { id: 'grid', title: '并排', renderer: 'preview-grid' }, { id: 'output', title: '输出', renderer: 'terminal' },
     ] },
-  /** 设备自己的网页视图看本工作区的一个端口，见 browser/browser.ts。 */
-  { id: browserDefinitionId, title: '浏览', description: '查看工作区里运行的网页', lifetime: 'window', defaultView: 'browser',
-    operations: ['browser.select'], views: [{ id: 'browser', title: '浏览', renderer: 'browser' }] },
   /** 由代理的 monitor_start 或启用 Line 时由宿主创建，界面不能直接新建；Line 的那个视图就是收件箱。 */
   { id: monitorDefinitionId, title: '监视', lifetime: 'persistent', defaultView: 'timeline',
     operations: ['monitor.stop', 'monitor.read', 'monitor.delegate', 'monitor.dismiss', 'monitor.hosting'],

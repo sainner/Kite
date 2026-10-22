@@ -3,7 +3,7 @@ import AppKit
 import SwiftUI
 
 /// Mac 对话正文文本视图（ProseTextView）的协调器，补字、量尺寸、附件重排见 ProseTextCoordinator。
-/// 链接交给 SwiftUI 的 openURL：文件引用由 ReferenceNavigation 打开，网页交给系统。原生对话的行和表格卡片用。
+/// 链接交给 SwiftUI 的 openURL：文件引用与网页由 ReferenceNavigation 在 Kite 里打开。原生对话的行和表格卡片用。
 final class ProseRowCoordinator: ProseTextCoordinator, NSTextViewDelegate {
     var openURL: OpenURLAction?
 

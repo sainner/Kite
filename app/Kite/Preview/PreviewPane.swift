@@ -22,20 +22,10 @@ struct PreviewPane: View {
         default:
             switch status.screen {
             case .none: TerminalPane(instance: instance, client: client, connection: connection, preview: true)
-            case .web where status.choice == .device: DeviceWebPreview(instance: instance, client: client, source: .preview(status))
+            case .web where status.choice == .device: DeviceWebPreview(instance: instance, client: client, status: status)
             default: ScreenPreview(instance: instance, client: client, connection: connection, status: status)
             }
         }
-    }
-}
-
-/// 浏览窗口（docs/成果查看与位置.md「运行中的网页」）：设备自己的网页视图看本工作区的一个端口，端口各设备共用（AppModel.selectBrowser）。
-struct BrowserPane: View {
-    let instance: RemotePluginInstance
-    let client: KitedClient
-
-    var body: some View {
-        DeviceWebPreview(instance: instance, client: client, source: .browser(instance.state?.browser?.port))
     }
 }
 
@@ -96,58 +86,15 @@ private struct PreviewBrowserMenu: View {
     }
 }
 
-/// 浏览窗口看哪个端口：本工作区运行中终端与预览监听的端口。
-private struct BrowserPortMenu: View {
-    let instance: RemotePluginInstance
-    let selected: Int?
-    let report: (String?) -> Void
-    @Environment(AppModel.self) private var model
-    @Environment(WorkArea.self) private var area
-
-    var body: some View {
-        let ports = area.workspacePortStatus
-        Menu {
-            Section("端口") {
-                if ports.isEmpty { Text("还没有监听的端口") }
-                ForEach(ports, id: \.port) { item in
-                    Button { select(item.port) } label: {
-                        let title = item.http ? "\(item.port)" : "\(item.port)（不是网页）"
-                        if item.port == selected { Label(title, systemImage: "checkmark") } else { Text(title) }
-                    }
-                }
-            }
-        } label: { PaneHeaderButtonLabel(selected.map(String.init) ?? "选端口") }
-            .foregroundStyle(Color.primary)
-            .help("选要打开的端口")
-    }
-
-    private func select(_ port: Int) {
-        report(nil)
-        Task {
-            do { try await model.selectBrowser(instance.id, port: port, in: area) }
-            catch { report(error.localizedDescription) }
-        }
-    }
-}
-
 // MARK: - 设备自己的网页视图
 
-/// 在设备自己的网页视图里看网页：浏览窗口，或预览的网页画面在本设备上看。经端口转发打开（PortPreview），页面里的跳转、滚动与登录状态按设备各自保存（store 按实例分开）。
-/// 控制区：左边后退、前进、首页，中间地址栏（站点图标、localhost:、端口菜单（浏览）或在哪看的菜单（预览）、路径），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
-/// 路径跟着页面显示，改了回车打开；都在同一个页面里跳转（WebBrowser），前进后退接得上。
-/// 宽屏卡片里控制区随悬停显隐，同窗口按钮（见 WebControls）。紧凑布局里左边只有后退，有下一页时才出现前进，首页挪到地址栏最右边；
-/// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替重新加载，点了路径回到打字前的样子、接着打字。
+/// 在设备自己的网页视图里看预览的网页画面。经端口转发打开（PortPreview），页面里的跳转、滚动与登录状态按设备各自保存（store 按实例分开）。
+/// 控制区见 WebPageControls，地址栏是站点图标、localhost:、在哪看的菜单（按钮上是主端口）、路径。路径跟着页面显示，改了回车打开；
+/// 都在同一个页面里跳转（WebBrowser），前进后退接得上。主端口没在监听时只有菜单。
 private struct DeviceWebPreview: View {
-    enum Source {
-        /// 浏览窗口选的端口。
-        case browser(Int?)
-        /// 预览的网页画面：主端口由进程定。
-        case preview(PreviewStatus)
-    }
-
     let instance: RemotePluginInstance
     let client: KitedClient
-    let source: Source
+    let status: PreviewStatus
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.workspacePresentation) private var presentation
@@ -159,27 +106,14 @@ private struct DeviceWebPreview: View {
     @State private var pathReset = 0
 
     private var compact: Bool { presentation == .compact }
-    private var selected: Int? {
-        switch source {
-        case .browser(let port): port
-        case .preview(let status): status.port
-        }
-    }
-    /// 端口还在被本工作区监听才打开；浏览窗口的服务停了窗口留着，同一端口再被监听时接着显示。
-    private var port: Int? { selected.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
+    /// 主端口还在被本工作区监听才打开。
+    private var port: Int? { status.port.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
     /// 消息里点的链接，端口对得上才打开到它的路径（见 AppModel.openLocalPort）。
     private var link: WebLink? { area.webLinks[instance.id].flatMap { $0.target.port == port ? $0 : nil } }
     private var notice: PaneNotice? {
         if let error = selectError ?? (port == nil ? nil : webFailure) { return .failure(error) }
-        guard port == nil else { return nil }
-        if let selected { return .info("localhost:\(selected) 现在没有终端或预览在监听，服务起来后接着显示", symbol: "pause.circle") }
-        return .info(area.workspacePorts.isEmpty ? "还没有监听的端口，先在终端里起服务或起一个预览目标" : "选要打开的端口")
-    }
-    private var subtitle: String {
-        switch source {
-        case .browser(let port): port.map { "localhost:\($0)" } ?? "浏览"
-        case .preview(let status): area.previewSubtitle(instance, status: status)
-        }
+        guard port == nil, let selected = status.port else { return nil }
+        return .info("localhost:\(selected) 现在没有在监听，服务起来后接着显示", symbol: "pause.circle")
     }
     private var headerActions: PaneHeaderActions {
         let actions = area.previewActions(instance, model: model) { selectError = $0 }
@@ -187,7 +121,7 @@ private struct DeviceWebPreview: View {
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: instance.title, subtitle: subtitle), notice: notice, actions: headerActions) {
+        PaneWindow(header: PaneHeader(title: instance.title, subtitle: area.previewSubtitle(instance, status: status)), notice: notice, actions: headerActions) {
             if let port, let store = UUID(uuidString: instance.id) {
                 PortPreview(client: client, port: port, store: store, link: link, browser: browser,
                             report: { webFailure = $0 })
@@ -198,53 +132,20 @@ private struct DeviceWebPreview: View {
             }
         } controls: { typing in
             WebControls(typing: typing.wrappedValue) {
-                HStack(spacing: Metrics.paneButtonGap) {
-                    if let port {
-                        KeyboardSwap {
-                            PaneHeaderButtonGroup {
-                                ActionButton("后退", icon: "chevron.left", action: browser.back)
-                                    .disabled(!browser.canGoBack)
-                                if !compact || browser.canGoForward {
-                                    ActionButton("前进", icon: "chevron.right", action: browser.forward)
-                                        .disabled(!browser.canGoForward)
-                                }
-                                if !compact {
-                                    ActionButton("首页", icon: "house") { open("/", on: port) }
-                                }
-                            }
-                        } shown: {
-                            KeyboardDismissButton()
-                        }
+                if let port {
+                    WebPageControls(browser: browser, compact: compact, typing: typing.wrappedValue, home: { open("/", on: port) },
+                                    reload: { webFailure = nil; if !browser.reload() { reload = UUID() } }, clear: { pathReset += 1 }) {
                         address(port: port, typing: typing)
-                        KeyboardSwap(active: typing.wrappedValue) {
-                            PaneHeaderButtonGroup {
-                                ActionButton("重新加载", icon: "arrow.clockwise") {
-                                    webFailure = nil
-                                    if !browser.reload() { reload = UUID() }
-                                }
-                                #if os(macOS)
-                                // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
-                                ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
-                                // 不走环境里的 openURL：本机地址会被它接回 Kite 的窗口（见 ReferenceNavigation）。
-                                ActionButton("在浏览器中打开", icon: "arrow.up.right.square") {
-                                    if let url = browser.url { NSWorkspace.shared.open(url) }
-                                }
-                                .disabled(browser.url == nil)
-                                #endif
-                            }
-                        } shown: {
-                            PaneHeaderButtonGroup {
-                                ActionButton("清除输入", icon: "xmark") { pathReset += 1 }
-                            }
-                        }
-                    } else {
+                    }
+                } else {
+                    HStack(spacing: Metrics.paneButtonGap) {
                         Spacer(minLength: 0)
                         address(port: nil, typing: typing)
                         Spacer(minLength: 0)
                     }
+                    // 没选端口时只有地址栏，收起键盘仍在最左边
+                    .containerValue(\.placesKeyboardButton, false)
                 }
-                // 没选端口时只有地址栏，收起键盘仍在最左边
-                .containerValue(\.placesKeyboardButton, port != nil)
             }
         }
         .onChange(of: port) {
@@ -259,15 +160,7 @@ private struct DeviceWebPreview: View {
     private func address(port: Int?, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: port != nil) {
             HStack(spacing: Metrics.paneHeaderLogoGap) {
-                Group {
-                    if let icon = browser.icon, port != nil {
-                        icon.resizable().interpolation(.high).scaledToFit()
-                    } else {
-                        Image(systemName: "globe").resizable().scaledToFit().foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
-                .accessibilityHidden(true)
+                WebSiteIcon(icon: port == nil ? nil : browser.icon)
                 if !compact {
                     Text("localhost:")
                         .font(Theme.body)
@@ -275,10 +168,7 @@ private struct DeviceWebPreview: View {
                 }
             }
             .padding(.leading, Metrics.paneHeaderButtonGap / 2)
-            switch source {
-            case .browser(let selected): BrowserPortMenu(instance: instance, selected: selected) { selectError = $0 }
-            case .preview(let status): PreviewBrowserMenu(instance: instance, status: status) { selectError = $0 }
-            }
+            PreviewBrowserMenu(instance: instance, status: status) { selectError = $0 }
             if let port {
                 WebPathField(path: LocalPort.displayPath(of: browser.url), typing: typing, reset: pathReset) { open($0, on: port) }
                     // 路径框压住端口按钮右边那半个按钮间距，端口的悬停高亮仍按整个按钮画
@@ -747,59 +637,3 @@ private struct ScreenView: View {
     }
 }
 
-/// 宽屏卡片里的网页控制区：指针在卡片上、或正在地址栏里打字时才有，同窗口按钮（见 PaneHeaderControls）；触屏一直有。
-/// 藏起来时控制区是空的，不接点击，后面的页面照常可点（见 PaneControlsBar）。不在卡片里（紧凑布局）时一直有。
-/// 悬停只在这一层读，窗口不跟着重算。
-private struct WebControls<Content: View>: View {
-    let typing: Bool
-    @ViewBuilder let content: Content
-    @Environment(\.paneHeaderControlsSpace) private var card
-
-    var body: some View {
-        if typing || card.map({ InputMode.current.revealsControls(hovered: $0.hovered) }) ?? true {
-            content
-        }
-    }
-}
-
-/// 地址栏里的路径：平时跟着页面显示当前路径，打字时不被页面的跳转改掉；回车打开，没打开就离开（Mac 上按 Esc 也是）回到当前路径。
-/// reset 变了（清除输入）也回到当前路径，接着打字。
-private struct WebPathField: View {
-    let path: String
-    let typing: FocusState<Bool>.Binding
-    var reset = 0
-    let open: (String) -> Void
-    @State private var text = ""
-    /// 刚按回车打开：留着输入的路径等页面跳过去，不先退回旧路径。
-    @State private var submitted = false
-
-    var body: some View {
-        TextField("网页路径", text: $text, prompt: Text("/"))
-            .textFieldStyle(.plain)
-            .font(Theme.body)
-            .foregroundStyle(.primary)
-            .frame(maxWidth: .infinity)
-            .frame(height: Metrics.paneHeaderButton)
-            .autocorrectionDisabled()
-            #if os(iOS)
-            .textInputAutocapitalization(.never)
-            .keyboardType(.URL)
-            #endif
-            .focused(typing)
-            .onSubmit {
-                submitted = true
-                open(text)
-                typing.wrappedValue = false
-            }
-            #if os(macOS)
-            .onExitCommand { typing.wrappedValue = false }
-            #endif
-            .onChange(of: path, initial: true) {
-                if !typing.wrappedValue { text = path }
-            }
-            .onChange(of: reset) { text = path }
-            .onChange(of: typing.wrappedValue) { _, editing in
-                if editing { submitted = false } else if !submitted { text = path }
-            }
-    }
-}

@@ -1,5 +1,5 @@
 import type { PreviewSpec } from './preview/state.ts';
-import type { BrowserSpec } from './browser/browser.ts';
+import type { Page } from './workspace/files.ts';
 
 /** 项目以远程仓库为身份；检出是某台机器上 Kite 自己的裸仓库；工作区拥有文件和快照；线程拥有对话及执行。 */
 /**
@@ -121,10 +121,10 @@ export interface OpenWindowRequest {
   /**
    * create 的 instanceId 是新实例的 ID，App 给的话按它建（App 先按它在本机打开窗口）；title 省略时按插件名编号（预览用目标名）。
    * command 只用于终端，等 shell 起好后打进去执行。preview 只用于预览，必带：目标与可选的设备，同一目标与设备已经在跑时打开那个实例。
-   * browser 只用于浏览，可带端口。
+   * page 只用于浏览，打开到一个网页（本工作区的端口或互联网网址）。
    */
   content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string; title?: string; command?: string;
-    preview?: PreviewSpec; browser?: BrowserSpec };
+    preview?: PreviewSpec; page?: Page };
 }
 
 export interface WorkspaceModel {

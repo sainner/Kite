@@ -3,10 +3,20 @@ import SwiftUI
 import AppKit
 #endif
 
-/// 文件目录、原文、渲染与历史差异共用一个窗口；行号定位仅属于当前设备。
+/// 浏览窗口（docs/成果查看与位置.md「浏览」）：工作区的文件（目录、原文、渲染与历史差异），本工作区运行中的网页和互联网共用一个窗口。
+/// 看什么各设备共用（FileBrowser.selection）；行号定位、网页里点到哪仅属于当前设备。侧栏上面是本工作区监听的端口，下面是文件目录。
+/// 网页在设备自己的网页视图里看，控制区同预览的网页画面（WebPageControls），地址栏里能输网址、端口号或 localhost:端口；
+/// 网站数据按工作区分开，同一工作区的浏览窗口共用登录状态。
 struct FilePane: View {
     let browser: FileBrowser
     @Environment(WorkArea.self) private var area
+    @Environment(\.workspacePresentation) private var presentation
+    @State private var web = WebBrowser()
+    @State private var reload = UUID()
+    /// 清除输入：每点一次，地址栏回到打字前的样子。
+    @State private var addressReset = 0
+    /// 看着文件时点了「打开网址」：控制区换成地址栏，打开了或离开地址栏就换回来。
+    @State private var addressing = false
     /// 窗口够宽，文件和目录可以并排。
     @State private var wide = false
     @State private var searching = false
@@ -21,14 +31,31 @@ struct FilePane: View {
     @State private var pdfQuery: String?
 
     private var header: PaneHeader {
-        // 主标题是当前文件的名字，还没选文件时是工作区文件夹的名字
-        PaneHeader(title: browser.selection.path.map { ($0 as NSString).lastPathComponent } ?? rootName,
-                   subtitle: showingDiff ? "历史差异" : "文件")
+        // 网页的主标题是页面标题；文件的是当前文件的名字，还没选时是工作区文件夹的名字
+        if browser.displayingWeb { return PaneHeader(title: web.title ?? pageName, subtitle: "网页") }
+        return PaneHeader(title: browser.selection.path.map { ($0 as NSString).lastPathComponent } ?? rootName,
+                          subtitle: showingDiff ? "历史差异" : "文件")
     }
+
+    private var pageName: String {
+        switch browser.selection.page {
+        case .port(let port): "localhost:\(port)"
+        case .url(let url): url.host() ?? url.absoluteString
+        case nil: rootName
+        }
+    }
+
+    private var compact: Bool { presentation == .compact }
+
+    /// 网页看得见：选了网页，目录没盖着它。
+    private var webVisible: Bool { browser.displayingWeb && (!browser.showDirectory || wide) }
+
+    /// 选的端口还在被本工作区监听；服务停了选择留着，同一端口再被监听时接着显示。
+    private var livePort: Int? { browser.selection.port.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
 
     private var showingDiff: Bool { browser.displayingFile && browser.selection.diffId != nil }
 
-    private var sideBySide: Bool { browser.displayingFile && wide }
+    private var sideBySide: Bool { (browser.displayingFile || browser.displayingWeb) && wide }
 
     /// 文件看得见：选了文件，目录没盖着它。控制区只在这时给文件的操作。
     private var fileVisible: Bool { browser.displayingFile && (!browser.showDirectory || wide) }
@@ -52,14 +79,18 @@ struct FilePane: View {
             if browser.loadingText { return .info("正在读取文件…", symbol: "hourglass") }
             return browser.diff != nil && browser.diffRows.isEmpty ? .info("文件内容为空") : nil
         }
+        if let port = browser.selection.port, livePort == nil, !browser.showDirectory || wide {
+            return .info("localhost:\(port) 现在没有终端或预览在监听，服务起来后接着显示", symbol: "pause.circle")
+        }
         if browser.loadingDirectory { return .info("正在读取目录…", symbol: "hourglass") }
         if browser.showDirectory { return browser.root?.entries.isEmpty == true ? .info("工作区是空的") : nil }
-        return browser.selection.path == nil ? .info("选择文件，或点击消息中的引用") : nil
+        return browser.selection.path == nil && !browser.displayingWeb ? .info("选择文件或网页，或点击消息中的引用") : nil
     }
 
     /// 信息区：失败优先，其次是窗口现在的情况（见 status），再是指定行定位不到这类关于文件的说明。
     private var notice: PaneNotice? {
-        if let error = (browser.displayingFile ? browser.textError ?? browser.pageError : nil) ?? browser.directoryError { return .failure(error) }
+        let contentError = browser.displayingFile ? browser.textError ?? browser.pageError : browser.displayingWeb ? browser.pageError : nil
+        if let error = contentError ?? browser.directoryError { return .failure(error) }
         if let status { return status }
         let unversioned = browser.selection.diffId == nil && ((browser.content?.info ?? browser.info)?.unversioned ?? false)
         guard browser.displayingFile, let message = browser.locationMessage
@@ -71,7 +102,7 @@ struct FilePane: View {
     var body: some View {
         PaneWindow(header: header, notice: notice, actions: PaneHeaderActions(groups: [[
             // 目录开关改的是整个窗口的排布，放在标题栏
-            PaneHeaderAction(title: "文件目录", systemImage: "folder", help: browser.showDirectory ? "隐藏文件目录" : "显示文件目录",
+            PaneHeaderAction(title: "目录", systemImage: "sidebar.right", help: browser.showDirectory ? "隐藏文件与网页" : "显示文件与网页",
                              on: browser.showDirectory) {
                 browser.showDirectory.toggle()
             },
@@ -100,10 +131,12 @@ struct FilePane: View {
             .animation(Self.directoryMotion, value: browser.showDirectory)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onGeometryChange(for: Bool.self) { $0.size.width >= 600 } action: { wide = $0 }
-        } controls: { _ in
-            controls
-                // 目录盖住或露出文件时，按钮组跟着换，玻璃按系统的过渡变形
-                .animation(.snappy, value: fileVisible)
+        } controls: { typing in
+            Group {
+                if webVisible || addressing { webControls(typing: typing) } else { controls }
+            }
+            // 目录盖住或露出文件时，按钮组跟着换，玻璃按系统的过渡变形
+            .animation(.snappy, value: fileVisible)
         }
         .task(id: browser.connectionRevision) { await browser.list() }
         .task(id: browser.requestKey) { await browser.loadSelection() }
@@ -122,6 +155,135 @@ struct FilePane: View {
             query = ""
             withAnimation { searching = false }
         }
+        .onChange(of: browser.selection.port) {
+            // 换到别的端口就从首页看起，回到原来的端口也不再停在之前点的链接上
+            if area.webLinks[browser.instanceID]?.target.port != browser.selection.port { area.webLinks[browser.instanceID] = nil }
+        }
+    }
+
+    // MARK: - 网页
+
+    /// 本工作区的网页经端口转发打开，互联网的直接打开；页面里可以去任何网址，只是进不了工作机服务自己的地址（WebRoaming）。
+    @ViewBuilder
+    private var webPage: some View {
+        if let client = browser.connection, let store = UUID(uuidString: browser.workspaceID) {
+            switch browser.selection.page {
+            case .port(let port) where port == livePort:
+                PortPreview(client: client, port: port, store: store, roaming: client.roaming,
+                            link: area.webLinks[browser.instanceID].flatMap { $0.target.port == port ? $0 : nil },
+                            browser: web, report: { browser.pageError = $0 })
+                    .id("\(port) \(reload)")
+            case .url(let url):
+                WebPreview(source: .address(url, store: store, roaming: client.roaming), report: { browser.pageError = $0 }, browser: web)
+                    .id(reload)
+            default:
+                Color.clear
+            }
+        } else {
+            Color.clear
+        }
+    }
+
+    private func webControls(typing: FocusState<Bool>.Binding) -> some View {
+        WebControls(typing: typing.wrappedValue || addressing) {
+            if webVisible {
+                WebPageControls(browser: web, compact: compact, typing: typing.wrappedValue, home: goHome,
+                                reload: { browser.pageError = nil; if !web.reload() { reload = UUID() } }, clear: { addressReset += 1 }) {
+                    addressField(typing: typing)
+                }
+            } else {
+                // 看着文件时点了「打开网址」：只有地址栏，打开了或离开地址栏就换回文件的控制区
+                HStack(spacing: Metrics.paneButtonGap) {
+                    addressField(typing: typing)
+                    PaneHeaderButtonGroup {
+                        ActionButton("取消", icon: "xmark") { addressing = false }
+                    }
+                }
+                .task { typing.wrappedValue = true }
+                .onChange(of: typing.wrappedValue) { _, editing in if !editing { addressing = false } }
+            }
+        }
+    }
+
+    /// 地址栏：站点图标和地址。紧凑布局里首页放在地址栏最右边。
+    private func addressField(typing: FocusState<Bool>.Binding) -> some View {
+        PaneHeaderButtonGroup(expands: true) {
+            WebSiteIcon(icon: webVisible ? web.icon : nil)
+                .padding(.leading, Metrics.paneHeaderButtonGap / 2)
+            WebPathField(path: webVisible ? address : "", typing: typing, reset: addressReset, prompt: "网址或端口号", open: go)
+            if compact, webVisible {
+                ActionButton("首页", icon: "house", action: goHome)
+            }
+        }
+    }
+
+    /// 地址栏显示的地址：本机的写 localhost:端口 加路径，https 省掉前缀。
+    private var address: String {
+        if let local = web.url.flatMap(LocalPort.init) {
+            let path = LocalPort.displayPath(of: web.url)
+            return "localhost:\(local.port)" + (path == "/" ? "" : path)
+        }
+        if web.url == nil, let port = browser.selection.port { return "localhost:\(port)" }
+        guard let url = web.url ?? browser.selection.url.flatMap(URL.init(string:)) else { return "" }
+        let text = url.absoluteString
+        return text.hasPrefix("https://") ? String(text.dropFirst("https://".count)) : text
+    }
+
+    /// 地址栏里回车：只写端口号、localhost:端口（可带路径）的是本工作区的网页，/ 开头的是当前网站上的路径，其余没写协议的补上 https://。
+    private func go(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        browser.pageError = nil
+        if text.hasPrefix("/"), webVisible, let current = web.url, let target = URL(string: text, relativeTo: current)?.absoluteURL {
+            web.open(target)
+            return
+        }
+        if let local = Int(text).flatMap({ LocalPort(path: "/", port: $0) }) ?? (LocalPort.bare(text) ?? URL(string: text)).flatMap(LocalPort.init) {
+            area.webLinks[browser.instanceID] = WebLink(target: local)
+            if browser.selection.port != local.port { open(.port(local.port)) } else { browser.showDirectory = false }
+            return
+        }
+        guard let url = URL(string: text.contains("://") ? text : "https://" + text), ["http", "https"].contains(url.scheme?.lowercased()),
+              url.host() != nil else {
+            browser.pageError = "「\(text)」不是网址"
+            return
+        }
+        if browser.selection.page == .url(url) { web.open(url) } else { open(.url(url)) }
+    }
+
+    /// 首页：本工作区的网页回到根路径，互联网的回到打开时的网址。
+    private func goHome() {
+        switch browser.selection.page {
+        case .port(let port): if let target = LocalPort(path: "/", port: port) { area.webLinks[browser.instanceID] = WebLink(target: target) }
+        case .url(let url): web.open(url)
+        case nil: break
+        }
+    }
+
+    private func open(_ page: BrowsePage) {
+        Task { try? await browser.openPage(page) }
+    }
+
+    /// 侧栏里本工作区运行中终端与预览监听的一个端口，点了在这个窗口里打开它的网页。
+    private func pageRow(_ item: TerminalStatus.Port) -> some View {
+        let selected = browser.selection.port == item.port
+        return Button { open(.port(item.port)) } label: {
+            HStack(spacing: 8) {
+                Label("localhost:\(item.port)", systemImage: "globe").lineLimit(1)
+                Spacer(minLength: 0)
+                if !item.http { Text("不是网页").foregroundStyle(.tertiary) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
+            .contentShape(.rect)
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.accentColor.opacity(0.12))
+                        .padding(.horizontal, -6)
+                }
+            }
+        }
+        .buttonStyle(.pointingPlain).disabled(browser.selecting)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private static let directoryMotion = Animation.smooth(duration: 0.3)
@@ -272,6 +434,7 @@ struct FilePane: View {
                 }
                 ActionButton("刷新", icon: "arrow.clockwise", action: refresh)
                     .disabled(browser.loadingDirectory || browser.loadingText)
+                ActionButton("打开网址", icon: "globe") { addressing = true }
             }
         }
     }
@@ -312,10 +475,14 @@ struct FilePane: View {
                         }
                     } else {
                         let rows = browser.treeRows
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(rows) { treeRow($0).id($0.id) }
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(area.workspacePortStatus, id: \.port) { pageRow($0) }
+                            if !area.workspacePortStatus.isEmpty { Divider().padding(.vertical, 4) }
+                            LazyVStack(alignment: .leading, spacing: 8) {
+                                ForEach(rows) { treeRow($0).id($0.id) }
+                            }
+                            .animation(.smooth(duration: 0.2), value: rows.map(\.id))
                         }
-                        .animation(.smooth(duration: 0.2), value: rows.map(\.id))
                     }
                 }
                 .font(Theme.secondary).padding(Metrics.padding).frame(maxWidth: .infinity, alignment: .leading)
@@ -418,7 +585,9 @@ struct FilePane: View {
     /// 历史差异和文本在可滚动的正文里；PDF、系统预览自己滚动，不套在外面的滚动视图里。
     @ViewBuilder
     private var preview: some View {
-        if let download = browser.download {
+        if browser.displayingWeb {
+            webPage
+        } else if let download = browser.download {
             ProgressView(download).padding(Metrics.padding).frame(maxWidth: 360).frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if browser.diff != nil || browser.selection.diffId != nil {
             textPreview
