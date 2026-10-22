@@ -7,6 +7,7 @@ import { defaultAgentModel } from '../agents/models.ts';
 import { monitorDefinitionId } from '../monitor/monitors.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
 import { previewDefinitionId } from '../preview/state.ts';
+import { browserDefinitionId } from '../browser/browser.ts';
 
 export interface PluginDefinition {
   id: string;
@@ -33,15 +34,15 @@ export const agentToolCatalog: { name: AgentTool; title: string; group: string }
   { name: 'read', title: '读取文件', group: '文件与命令' },
   { name: 'patch', title: '修改文件', group: '文件与命令' },
   { name: 'shell', title: '运行命令', group: '文件与命令' },
-  { name: 'terminal_run', title: operationTitle('terminal_run'), group: '文件与命令' },
   { name: 'terminal_list', title: operationTitle('terminal_list'), group: '文件与命令' },
   { name: 'terminal_read', title: operationTitle('terminal_read'), group: '文件与命令' },
   { name: 'terminal_stop', title: operationTitle('terminal_stop'), group: '文件与命令' },
   { name: 'preview_open', title: operationTitle('preview_open'), group: '预览' },
   { name: 'preview_action', title: operationTitle('preview_action'), group: '预览' },
   { name: 'preview_inspect', title: operationTitle('preview_inspect'), group: '预览' },
+  { name: 'preview_read', title: operationTitle('preview_read'), group: '预览' },
   { name: 'preview_list', title: operationTitle('preview_list'), group: '预览' },
-  { name: 'preview_close', title: operationTitle('preview_close'), group: '预览' },
+  { name: 'preview_stop', title: operationTitle('preview_stop'), group: '预览' },
   { name: 'credentials', title: '列出密钥引用', group: '凭据' },
   { name: 'question', title: '向用户提问', group: '用户交接' },
   ...operationToolNames.filter((name) => !name.startsWith('terminal_') && !name.startsWith('preview_'))
@@ -71,9 +72,14 @@ const definitions: PluginDefinition[] = [
   /** 一个实例一个 PTY 会话，见 terminal/terminals.ts。 */
   { id: terminalDefinitionId, title: '终端', description: '在工作目录执行命令', lifetime: 'process', defaultView: 'terminal',
     operations: ['terminal.read', 'terminal.stop'], views: [{ id: 'terminal', title: '终端', renderer: 'terminal' }] },
-  /** 网页与模拟器的预览，见 preview/previews.ts。 */
-  { id: previewDefinitionId, title: '预览', description: '查看网页与模拟器', lifetime: 'window', defaultView: 'preview',
-    operations: ['preview.select', 'preview.action', 'preview.inspect', 'preview.close'], views: [{ id: 'preview', title: '预览', renderer: 'preview' }] },
+  /** 一个实例是一种目标跑起来的全部进程加画面，见 preview/previews.ts；输出视图就是终端画面。 */
+  { id: previewDefinitionId, title: '预览', description: '运行项目的预览目标并查看', lifetime: 'process', defaultView: 'screen',
+    operations: ['preview.select', 'preview.action', 'preview.inspect', 'preview.read', 'preview.stop'], views: [
+      { id: 'screen', title: '画面', renderer: 'preview' }, { id: 'grid', title: '并排', renderer: 'preview-grid' }, { id: 'output', title: '输出', renderer: 'terminal' },
+    ] },
+  /** 设备自己的网页视图看本工作区的一个端口，见 browser/browser.ts。 */
+  { id: browserDefinitionId, title: '浏览', description: '查看工作区里运行的网页', lifetime: 'window', defaultView: 'browser',
+    operations: ['browser.select'], views: [{ id: 'browser', title: '浏览', renderer: 'browser' }] },
   /** 由代理的 monitor_start 或启用 Line 时由宿主创建，界面不能直接新建；Line 的那个视图就是收件箱。 */
   { id: monitorDefinitionId, title: '监视', lifetime: 'persistent', defaultView: 'timeline',
     operations: ['monitor.stop', 'monitor.read', 'monitor.delegate', 'monitor.dismiss', 'monitor.hosting'],

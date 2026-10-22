@@ -3,8 +3,17 @@ import Foundation
 import ImageIO
 import Observation
 
-/// 一个预览窗口和工作机上那块画面（工作机浏览器里的页面或模拟器屏幕）之间的连接，协议见 kited 的 preview/previews.ts。
+/// 并排视图的一格：工作机上的哪个浏览器、视口多大（CSS 像素）。哪几格由各设备自己定，记在本机。
+struct PreviewCell: Codable, Hashable, Identifiable {
+    let browser: PreviewBrowser
+    let width: Int
+    let height: Int
+    var id: String { "\(browser.rawValue) \(width)x\(height)" }
+}
+
+/// 一个预览窗口和工作机上那块画面（工作机浏览器里的页面、模拟器屏幕或 App 窗口）之间的连接，协议见 kited 的 preview/previews.ts。
 /// 工作机发画面的状态和一帧帧 JPEG，这里发动作、窗口尺寸和实时还是逐帧；断线后自动重连，重连时工作机先发当前画面。
+/// 并排视图的每一格各一条连接，带着格子的浏览器与视口尺寸。
 @Observable
 final class PreviewSession {
     /// 画面上的一点，单位是画面的逻辑尺寸（网页是 CSS 像素，模拟器是点）。
@@ -14,10 +23,12 @@ final class PreviewSession {
     }
 
     let instanceID: String
+    /// 并排的一格；画面视图没有。
+    let cell: PreviewCell?
     /// 窗口放得下的逻辑尺寸，排好版之前连接要等它。
     private let connection = SocketLink<CGSize>()
     var link: SocketLink<CGSize>.State { connection.state }
-    /// waiting 没选端口、starting 正在开（可能在下载浏览器）、ready、failed。
+    /// waiting 进程还没产生画面、starting 正在开（可能在下载浏览器）、ready、failed。
     private(set) var phase = "starting"
     private(set) var error: String?
     /// 网页的地址与标题。
@@ -39,15 +50,16 @@ final class PreviewSession {
     /// 下一条二进制消息是哪一帧。
     @ObservationIgnored private var pending: (size: CGSize, point: Point?, settled: Bool?)?
 
-    init(instanceID: String, live: Bool) {
+    init(instanceID: String, live: Bool, cell: PreviewCell? = nil) {
         self.instanceID = instanceID
         self.live = live
+        self.cell = cell
     }
 
     /// 窗口在就一直连着，见 SocketLink。
     func run(client: KitedClient) async {
         await connection.run(failure: "和工作机的预览连接断开", connect: { size in
-            try await client.previewSocket(instance: instanceID, width: Int(size.width), height: Int(size.height), live: live)
+            try await client.previewSocket(instance: instanceID, width: Int(size.width), height: Int(size.height), live: live, cell: cell)
         }, receive: receive, reconnects: {
             settling = false
             return true
@@ -140,10 +152,11 @@ final class PreviewSession {
     }
 
     /// 窗口排好版、尺寸变了时报给工作机：网页的视口跟着最近操作的那台设备。拖缝、窗口动画时尺寸每帧都变，
-    /// 停下来 0.2 秒再报，工作机不必每帧重排页面、截一帧。
+    /// 停下来 0.2 秒再报，工作机不必每帧重排页面、截一帧。并排的格子视口固定，只在第一次排好版时报一次，好接上。
     func laidOut(_ size: CGSize) {
         let rounded = CGSize(width: max(200, size.width.rounded()), height: max(200, size.height.rounded()))
         guard rounded != connection.size else { return }
+        if cell != nil, connection.size != nil { return }
         connection.laidOut(rounded)
         resizing?.cancel()
         resizing = Task { [weak self] in

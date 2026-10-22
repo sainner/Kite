@@ -108,12 +108,12 @@ create table if not exists usage_hours (
   account text not null, day text not null, hour integer not null, tokens integer not null,
   cost real not null, unpriced integer not null, primary key(account, day, hour)
 );
--- 预置脚本的端口段：每个工作区的每个脚本一段，port 是段的第一个；工作区归档或删掉时一起删。
-create table if not exists script_ports (
-  workspace_id text not null, script text not null, port integer not null unique, primary key(workspace_id, script)
+-- 预览目标的端口段：每个工作区的每个目标一段，port 是段的第一个；工作区归档或删掉时一起删。
+create table if not exists target_ports (
+  workspace_id text not null, target text not null, port integer not null unique, primary key(workspace_id, target)
 );
--- 宿主为工作区开的模拟器，是本机的外部资源：只由 preview/simulators.ts 增删，工作区的通用删除与流转换记录都不碰。
-create table if not exists workspace_simulators (workspace_id text primary key, udid text not null);
+-- 宿主为工作区开的模拟器，每个型号一台，是本机的外部资源：只由 preview/simulators.ts 增删，工作区的通用删除与流转换记录都不碰。
+create table if not exists workspace_simulators (workspace_id text not null, model text not null, udid text not null, primary key(workspace_id, model));
 `;
 const projectOf = (r: any): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.created_at });
 const checkoutOf = (r: any): Checkout => ({
@@ -153,6 +153,8 @@ export class Store implements UsageStore {
     this.dropBareContextTemplates();
     this.relaxRemotes();
     this.oneWindowPerInstance();
+    this.dropScriptPorts();
+    this.keySimulatorsByModel();
     this.db.exec(SCHEMA);
     this.addWorkspaceNameMode();
     this.addWorkspaceParent();
@@ -245,6 +247,22 @@ export class Store implements UsageStore {
     const columns = this.db.query("select name from pragma_table_info('workspaces')").all() as Array<{ name: string }>;
     if (!columns.some((c) => c.name === 'parent_id')) this.db.exec('alter table workspaces add column parent_id text');
     this.db.exec('create index if not exists workspace_parent on workspaces(parent_id)');
+  }
+
+  /** 预置脚本改成预览目标之前，端口段按脚本记。在研期间不迁移：直接删掉，目标起的时候重新分。 */
+  private dropScriptPorts(): void {
+    this.db.exec('drop table if exists script_ports');
+  }
+
+  /**
+   * 模拟器按型号分之前，每个工作区只有一台、没有 model 列：换成新表，旧的那台记成型号为空，只在工作区归档时随其他的一起删掉，不再拿来用。
+   */
+  private keySimulatorsByModel(): void {
+    const columns = this.db.query("select name from pragma_table_info('workspace_simulators')").all() as Array<{ name: string }>;
+    if (!columns.length || columns.some((c) => c.name === 'model')) return;
+    this.rebuild('模拟器按型号分', `create table workspace_simulators_next (workspace_id text not null, model text not null, udid text not null, primary key(workspace_id, model));
+      insert into workspace_simulators_next select workspace_id, '', udid from workspace_simulators;
+      drop table workspace_simulators; alter table workspace_simulators_next rename to workspace_simulators;`);
   }
 
   /** 照 SQLite 改表的步骤换表：关外键，在事务里执行，核对外键再打开。 */
@@ -682,7 +700,7 @@ export class Store implements UsageStore {
       this.db.query('delete from window_requests where workspace_id = ?').run(id);
       this.db.query('delete from workspace_windows where workspace_id = ?').run(id);
       this.db.query('delete from plugin_instances where workspace_id = ?').run(id);
-      this.db.query('delete from script_ports where workspace_id = ?').run(id);
+      this.db.query('delete from target_ports where workspace_id = ?').run(id);
       this.db.query('delete from workspaces where id = ?').run(id);
     });
   }
@@ -691,32 +709,36 @@ export class Store implements UsageStore {
       this.setWorkspaceStatus(id, 'archived');
       this.db.query("update plugin_instances set status = 'archived' where workspace_id = ?").run(id);
       this.db.query("update workspace_windows set state = 'closed' where workspace_id = ?").run(id);
-      this.db.query('delete from script_ports where workspace_id = ?').run(id);
+      this.db.query('delete from target_ports where workspace_id = ?').run(id);
     })();
   }
-  /** 宿主为工作区开的模拟器的编号；还没开过时为 undefined。 */
-  workspaceSimulator(workspaceId: string): string | undefined {
-    return (this.db.query('select udid from workspace_simulators where workspace_id = ?').get(workspaceId) as { udid: string } | null)?.udid;
+  /** 宿主为工作区开的这个型号的模拟器的编号；还没开过时为 undefined。 */
+  workspaceSimulator(workspaceId: string, model: string): string | undefined {
+    return (this.db.query('select udid from workspace_simulators where workspace_id = ? and model = ?').get(workspaceId, model) as { udid: string } | null)?.udid;
   }
-  setWorkspaceSimulator(workspaceId: string, udid: string): void {
-    this.db.query(`insert into workspace_simulators (workspace_id, udid) values (?, ?)
-      on conflict(workspace_id) do update set udid = excluded.udid`).run(workspaceId, udid);
+  /** 工作区的全部模拟器，含按型号分之前留下的那台（型号为空）。 */
+  workspaceSimulators(workspaceId: string): Array<{ model: string; udid: string }> {
+    return this.db.query('select model, udid from workspace_simulators where workspace_id = ? order by model').all(workspaceId) as Array<{ model: string; udid: string }>;
   }
-  deleteWorkspaceSimulator(workspaceId: string): void {
-    this.db.query('delete from workspace_simulators where workspace_id = ?').run(workspaceId);
+  setWorkspaceSimulator(workspaceId: string, model: string, udid: string): void {
+    this.db.query(`insert into workspace_simulators (workspace_id, model, udid) values (?, ?, ?)
+      on conflict(workspace_id, model) do update set udid = excluded.udid`).run(workspaceId, model, udid);
   }
-  /** 工作区的这个预置脚本分到的端口段的第一个端口；没分过时为 undefined。 */
-  scriptPort(workspaceId: string, script: string): number | undefined {
-    const row = this.db.query('select port from script_ports where workspace_id = ? and script = ?').get(workspaceId, script) as { port: number } | null;
+  deleteWorkspaceSimulator(workspaceId: string, udid: string): void {
+    this.db.query('delete from workspace_simulators where workspace_id = ? and udid = ?').run(workspaceId, udid);
+  }
+  /** 工作区的这个目标分到的端口段的第一个端口；没分过时为 undefined。 */
+  targetPort(workspaceId: string, target: string): number | undefined {
+    const row = this.db.query('select port from target_ports where workspace_id = ? and target = ?').get(workspaceId, target) as { port: number } | null;
     return row?.port;
   }
-  /** 各工作区的预置脚本已经分走的端口段。 */
-  scriptPorts(): number[] {
-    return (this.db.query('select port from script_ports').all() as Array<{ port: number }>).map((row) => row.port);
+  /** 各工作区的目标已经分走的端口段。 */
+  targetPorts(): number[] {
+    return (this.db.query('select port from target_ports').all() as Array<{ port: number }>).map((row) => row.port);
   }
-  setScriptPort(workspaceId: string, script: string, port: number): void {
-    this.db.query(`insert into script_ports (workspace_id, script, port) values (?, ?, ?)
-      on conflict(workspace_id, script) do update set port = excluded.port`).run(workspaceId, script, port);
+  setTargetPort(workspaceId: string, target: string, port: number): void {
+    this.db.query(`insert into target_ports (workspace_id, target, port) values (?, ?, ?)
+      on conflict(workspace_id, target) do update set port = excluded.port`).run(workspaceId, target, port);
   }
   instances(workspaceId: string): PluginInstance[] {
     return this.db.query('select * from plugin_instances where workspace_id = ? order by created_at, id').all(workspaceId).map(instanceOf);

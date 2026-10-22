@@ -3,9 +3,8 @@
  * 项目自己的工具链以 setup 的结果为准；凭据引用的可领取性要等 setup 能声明所需引用后再检查。
  * 自动换机挑目标时还看项目声明的环境需求与有没有电池，见 docs/分布式架构.md「执行权」。
  */
-import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, rmSync, statfsSync } from 'node:fs';
-import { arch, release, tmpdir } from 'node:os';
+import { existsSync, readdirSync, statfsSync } from 'node:fs';
+import { arch, release } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type { ApiKey } from './account-data/credentials.ts';
@@ -16,6 +15,7 @@ import { userHome } from './paths.ts';
 import { readClaudeLogin } from './model-accounts.ts';
 import type { Checkout, Machine } from './model.ts';
 import { systemCommand } from './system-command.ts';
+import { pairedDevices } from './preview/devices.ts';
 
 export type LoginStatus = { status: 'ready' } | { status: 'missing' | 'invalid'; message: string };
 
@@ -77,8 +77,8 @@ async function readBattery(): Promise<boolean> {
 }
 
 /** xcode-select、xcrun 按 HOME 与 DEVELOPER_DIR 找选中的开发者目录。 */
-const xcode = (command: string[], timeoutMs: number) => systemCommand(command, { timeoutMs,
-  env: { PATH: '/usr/bin:/bin', HOME: userHome(), ...(process.env.DEVELOPER_DIR ? { DEVELOPER_DIR: process.env.DEVELOPER_DIR } : {}) } });
+const xcodeEnv = () => ({ PATH: '/usr/bin:/bin', HOME: userHome(), ...(process.env.DEVELOPER_DIR ? { DEVELOPER_DIR: process.env.DEVELOPER_DIR } : {}) });
+const xcode = (command: string[], timeoutMs: number) => systemCommand(command, { timeoutMs, env: xcodeEnv() });
 
 /** 选中的开发者目录是完整的 Xcode：只装了命令行工具时没有 xcodebuild。 */
 async function xcodeReady(): Promise<boolean> {
@@ -87,24 +87,10 @@ async function xcodeReady(): Promise<boolean> {
   return code === 0 && !!stdout.trim() && existsSync(join(stdout.trim(), 'usr', 'bin', 'xcodebuild'));
 }
 
-/**
- * devicectl 列出的设备里有已配对、此刻连得上（USB 或同一网络）的 iPhone 或 iPad 真机。
- * 连不上的设备没有 transportType；JSON 的字段不是公开约定，对不上时按没有处理。
- */
+/** 有已配对、此刻连得上（USB 或同一网络）的 iPhone 或 iPad 真机，见 preview/devices.ts。 */
 async function iosDeviceReady(): Promise<boolean> {
   if (process.platform !== 'darwin' || !await xcodeReady()) return false;
-  const file = join(tmpdir(), `kite-devices-${randomUUID()}.json`);
-  try {
-    if ((await xcode(['/usr/bin/xcrun', 'devicectl', 'list', 'devices', '--quiet', '--json-output', file], 10_000)).code !== 0) return false;
-    const devices = (JSON.parse(readFileSync(file, 'utf8')) as { result?: { devices?: Array<{
-      hardwareProperties?: { platform?: string; reality?: string };
-      connectionProperties?: { pairingState?: string; transportType?: string; tunnelState?: string };
-    }> } }).result?.devices ?? [];
-    return devices.some(({ hardwareProperties: hardware, connectionProperties: connection }) =>
-      hardware?.reality === 'physical' && (hardware.platform === 'iOS' || hardware.platform === 'iPadOS')
-      && connection?.pairingState === 'paired' && !!connection.transportType && connection.tunnelState !== 'unavailable');
-  } catch { return false; }
-  finally { rmSync(file, { force: true }); }
+  return (await pairedDevices(xcodeEnv())).some((device) => device.connected);
 }
 
 const needChecks: Record<HandoverNeed, () => Promise<boolean>> = { xcode: xcodeReady, iosDevice: iosDeviceReady };

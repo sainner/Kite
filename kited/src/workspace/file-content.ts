@@ -1,6 +1,7 @@
 /**
  * 按字节读取工作区文件，给查看器下载图片、PDF、音视频这类成果。ETag 是文件版本，设备按它缓存和重新校验；
- * 只支持单段 Range，多段时整份返回。太大没进快照的文件在整份响应（含 HEAD）上带 X-Kite-Snapshot: skipped，查看器据此标明没有历史版本。
+ * 只支持单段 Range，多段时整份返回。太大没进快照的文件在整份响应（含 HEAD）与从头开始的分段上带 X-Kite-Snapshot: skipped，
+ * 查看器据此标明没有历史版本；组网上的 App 按段取，从第一段读到它。
  */
 import { relative } from 'node:path';
 import { KiteError } from '../errors.ts';
@@ -29,14 +30,14 @@ export async function fileContent(req: Request, files: WorkspaceFiles, path: str
   if (range === 'unsatisfiable') {
     return Response.json({ error: '请求的范围超出文件大小' }, { status: 416, headers: { 'Content-Range': `bytes */${file.size}` } });
   }
+  if ((!range || range[0] === 0) && file.size > SNAPSHOT_FILE_LIMIT
+    && (await gitTry(files.root, ['cat-file', '-e', `HEAD:${relative(files.root, file.target)}`])).code !== 0) headers.set('X-Kite-Snapshot', 'skipped');
   if (range) {
     const [start, end] = range;
     headers.set('Content-Range', `bytes ${start}-${end}/${file.size}`);
     headers.set('Content-Length', String(end - start + 1));
     return new Response(head ? null : body.slice(start, end + 1), { status: 206, headers });
   }
-  if (file.size > SNAPSHOT_FILE_LIMIT
-    && (await gitTry(files.root, ['cat-file', '-e', `HEAD:${relative(files.root, file.target)}`])).code !== 0) headers.set('X-Kite-Snapshot', 'skipped');
   headers.set('Content-Length', String(file.size));
   return new Response(head ? null : body, { headers });
 }

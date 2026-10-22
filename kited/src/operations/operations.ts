@@ -10,7 +10,8 @@ import { grantTools, operationContracts, operationGrantsSchema, scopedOperations
   type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
-import { findScript, mainlineScript } from '../terminal/scripts.ts';
+import { mainlineTarget } from '../preview/targets.ts';
+import { deviceLabel } from '../preview/devices.ts';
 import type { InputOrigin, JsonObject, Tool, ToolImage, ToolResult } from '../harness/types.ts';
 import type { Previews } from '../preview/previews.ts';
 import { playwrightKey } from '../preview/screen.ts';
@@ -22,7 +23,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveScript' | 'previews'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveTarget' | 'approveDevice' | 'previews' | 'browse'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -377,65 +378,76 @@ export class InstanceOperations {
           instanceId: caller.instanceId, operationId: input.operationId, ...(caller.kind === 'model' ? { turnId: caller.turnId, callId: caller.callId } : {}),
         }, { title: input.title, ...(input.command !== undefined ? { command: input.command } : { at: at!, ...(input.repeat ? { repeat: input.repeat } : {}) }) });
       }
-      case 'terminal.run': {
-        const input = args as OperationInput<'terminal.run'>;
-        const { workspace, checkout } = this.kite.workspace(workspaceId);
-        if (workspace.status !== 'open') throw new OperationError('工作区尚未打开', 'denied', 409);
-        const script = findScript(workspace.cwd, input.script);
-        // 用户起的直接运行；代理和插件起的与这台工作机检出主线上的同名文件一致才直接运行，不一致时代理的经审批，插件的拒绝。
-        if (caller.kind !== 'ui') {
-          const main = await mainlineScript(checkout, script.name);
-          if (main !== script.content) {
-            if (caller.kind !== 'model') throw new OperationError('插件只能起与主线一致的预置脚本', 'denied', 403);
-            const approved = await this.kite.approveScript(caller.instanceId, { name: script.name, content: script.content,
-              reason: main === null ? '主线上没有这个脚本，批准后在沙箱外运行' : '脚本与主线上的不一致，批准后在沙箱外运行' }, signal ?? new AbortController().signal);
-            if (!approved) throw new OperationError('没有获准运行这个预置脚本', 'denied', 403);
-          }
-        }
-        check();
-        return this.kite.terminals.runScript(workspaceId, script, { restart: input.restart, origin: caller.kind === 'ui' ? undefined
-          : { instanceId: caller.instanceId, operationId: input.operationId, turnId: caller.turnId, callId: caller.callId } }, signal);
-      }
       case 'terminal.read': {
         const input = args as OperationInput<'terminal.read'>;
         return this.kite.terminals.read(input.instanceId, input.offset, input.limit);
       }
       case 'preview.open': {
-        if (caller.kind === 'ui') throw new OperationError('界面用新建窗口打开预览', 'denied', 403);
+        if (caller.kind === 'ui') throw new OperationError('界面用新建窗口起预览', 'denied', 403);
         const input = args as OperationInput<'preview.open'>;
+        const { checkout } = this.kite.workspace(workspaceId);
+        const resolved = await this.kite.previews.resolve(workspaceId, { target: input.target, ...(input.device ? { device: input.device } : {}) });
+        const running = this.kite.previews.find(workspaceId, resolved.spec);
+        // 已经在跑、不重起的直接返回那个，不再审批；要起的：与这台工作机检出主线上的同名文件一致才直接运行，不一致时代理的经审批，插件的拒绝。
+        // 没核对就交下去的，到了控制队列里发现已经结束、要起的，不起（见 previews.open 的 checked）。
+        const checked = !running || !this.kite.terminals.running(running.id) || !!input.restart;
+        if (checked) {
+          const main = await mainlineTarget(checkout, resolved.target.name);
+          if (main !== resolved.target.content) {
+            if (caller.kind !== 'model') throw new OperationError('插件只能起与主线一致的目标', 'denied', 403);
+            const approved = await this.kite.approveTarget(caller.instanceId, { name: resolved.target.name, content: resolved.target.content,
+              reason: main === null ? '主线上没有这个目标，批准后在沙箱外运行' : '目标与主线上的不一致，批准后在沙箱外运行' }, signal ?? new AbortController().signal);
+            if (!approved) throw new OperationError('没有获准运行这个目标', 'denied', 403);
+          }
+          // 装到真机会覆盖设备上正在用的版本：每次都问，与审批模式无关，不记住
+          if (resolved.device?.kind === 'physical') {
+            if (caller.kind !== 'model') throw new OperationError('插件不能装到真机', 'denied', 403);
+            const approved = await this.kite.approveDevice(caller.instanceId, { target: resolved.target.name, device: deviceLabel(resolved.device) },
+              signal ?? new AbortController().signal);
+            if (!approved) throw new OperationError('没有获准装到这台设备', 'denied', 403);
+          }
+        }
         check();
-        return this.kite.previews.open(workspaceId, { kind: input.kind, port: input.port, path: input.path, browser: input.browser },
+        return this.kite.previews.open(workspaceId, resolved, { restart: input.restart, checked },
           { instanceId: caller.instanceId, operationId: input.operationId, turnId: caller.turnId, callId: caller.callId }, signal);
       }
       case 'preview.action': {
         const input = args as OperationInput<'preview.action'>;
         const action = previewAction(input);
         check();
-        return this.kite.previews.act(input.instanceId, action, signal);
+        return this.kite.previews.act(input.instanceId, action, { browser: input.browser, width: input.width, height: input.height }, signal);
       }
-      case 'preview.inspect': return this.kite.previews.inspect(args.instanceId as string);
+      case 'preview.inspect': {
+        const input = args as OperationInput<'preview.inspect'>;
+        return this.kite.previews.inspect(input.instanceId, { browser: input.browser, width: input.width, height: input.height });
+      }
+      case 'preview.read': {
+        // 预览的进程由终端插件托管，读法相同；预览没有转到后台的命令，结果里没有 command
+        const input = args as OperationInput<'preview.read'>;
+        return this.kite.terminals.read(input.instanceId, input.offset, input.limit);
+      }
       case 'preview.list': {
-        const windows = new Set(this.kite.store.windows(workspaceId).map((window) => window.target.instanceId));
+        const windows = new Set(this.kite.store.windows(workspaceId).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
         return { previews: this.kite.store.instances(workspaceId).filter((instance) => instance.definitionId === previewDefinitionId && instance.status === 'open')
           .map((instance) => ({ ...this.kite.previews.describe(instance), createdBy: instance.origin?.instanceId ?? null, window: windows.has(instance.id) })) };
-      }
-      case 'preview.close': {
-        check();
-        const target = this.kite.store.instance(args.instanceId as string)!;
-        if (caller.kind !== 'ui' && target.origin?.instanceId !== caller.instanceId) throw new OperationError('只能关闭你自己用 preview_open 开的预览', 'denied', 403);
-        await this.kite.previews.closePreview(target.id);
-        return { ok: true };
       }
       case 'preview.select': {
         check();
         const input = args as OperationInput<'preview.select'>;
-        return this.kite.previews.select(input.instanceId, { port: input.port, browser: input.browser });
+        return this.kite.previews.select(input.instanceId, input.browser);
       }
-      case 'terminal.stop': {
+      case 'browser.select': {
+        check();
+        const input = args as OperationInput<'browser.select'>;
+        return this.kite.browse.select(input.instanceId, input.port);
+      }
+      case 'terminal.stop':
+      case 'preview.stop': {
         check();
         const target = this.kite.store.instance(args.instanceId as string)!;
         const owner = caller.kind !== 'ui' && target.origin?.instanceId === caller.instanceId;
-        await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? '代理自己停下了这个命令' : '另一个代理停下了这个终端', owner);
+        const what = name === 'preview.stop' ? '预览' : owner ? '命令' : '终端';
+        await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? `代理自己停下了这个${what}` : `另一个代理停下了这个${what}`, owner);
         return { ok: true };
       }
       case 'monitor.list': {

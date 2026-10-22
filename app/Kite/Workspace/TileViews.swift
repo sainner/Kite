@@ -562,18 +562,21 @@ struct WindowSurfaceDots: View {
     }
 }
 
-/// 新建窗口的正文（见 WorkArea.chooserWindow），由停靠栏的加号打开：内置插件两列卡片，项目的预置脚本和自定义插件列在下面；
-/// 点一项，这个窗口原地变成它，预置脚本变成以它起的终端。打开时重新读一次定义和预置脚本，别处新装的插件、工作区里新加的脚本也能列出。
-/// 上次创建没成功时标题栏有重试。
+/// 新建窗口的正文（见 WorkArea.chooserWindow），由停靠栏的加号打开：内置插件两列卡片，项目的预览目标和自定义插件列在下面；
+/// 点一项，这个窗口原地变成它，目标变成以它起的预览，装到「设备」里选的那台。打开时重新读一次定义、目标与设备候选，
+/// 别处新装的插件、工作区里新加的目标、刚配对的设备也能列出。上次创建没成功时标题栏有重试。
 struct NewWindowChooser: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var error: String?
-    @State private var scripts: [String] = []
+    @State private var targets: [String] = []
+    @State private var devices: [DeviceCandidate] = []
+    /// 目标装到哪台设备；没选时由目标自己定（用到模拟器的用默认型号）。
+    @State private var device: DeviceCandidate?
 
     var body: some View {
-        // 监视只由代理或 Line 开启，工作机不接受从界面新建
-        let definitions = area.definitions.filter { $0.id != AppModel.monitorDefinition }
+        // 监视只由代理或 Line 开启，工作机不接受从界面新建；预览按目标起，列在下面
+        let definitions = area.definitions.filter { $0.id != AppModel.monitorDefinition && $0.id != AppModel.previewDefinition }
         // 工作机自带的定义没有 runtime，插件包是 bun
         let builtins = definitions.filter { $0.runtime == nil }, custom = definitions.filter { $0.runtime != nil }
         let canAdd = area.canAddWindows(connected: model.isConnected(area))
@@ -596,11 +599,20 @@ struct NewWindowChooser: View {
                         }
                         .disabled(!canAdd)
                     }
-                    if !scripts.isEmpty {
-                        CardSection("预置脚本") {
-                            ForEach(scripts, id: \.self) { name in
-                                row(name, detail: area.runningScript(name) != nil ? "运行中，打开它的终端" : "在终端里运行",
-                                    systemImage: "play.fill") { model.runScript(name, in: area) }
+                    if !targets.isEmpty {
+                        CardSection("预览目标") {
+                            Menu { deviceMenu } label: {
+                                rowLabel("设备", detail: device.map(deviceDetail) ?? "目标自己定：用到模拟器的装到默认型号", systemImage: "chevron.up.chevron.down")
+                                    .contentShape(Rectangle())
+                            }
+                            .menuIndicator(.hidden)
+                            .buttonStyle(.pointingPlain)
+                            ForEach(targets, id: \.self) { name in
+                                let spec = PreviewSpec(target: name, device: device?.device)
+                                let running = area.preview(for: spec)?.state?.terminal?.running == true
+                                row(name, detail: running ? "运行中，打开它的预览" : "运行并预览", systemImage: "play.fill") {
+                                    model.choosePreview(spec, deviceTitle: device?.title, in: area)
+                                }
                             }
                         }
                         .disabled(!canAdd)
@@ -620,27 +632,70 @@ struct NewWindowChooser: View {
             EmptyView()
         }
         .task {
-            // 定义和预置脚本同时取，哪个没取到都报在提示里
-            async let listed = model.scripts(in: area)
+            // 定义和目标同时取，哪个没取到都报在提示里
+            async let listed = model.previewTargets(in: area)
             do { try await model.refreshDefinitions(model.activeClient(in: area)); error = nil }
             catch { self.error = error.localizedDescription }
-            do { scripts = try await listed }
+            do {
+                let result = try await listed
+                targets = result.targets
+                devices = result.devices
+                // 在 iPhone、iPad 上默认选中手上这台：按硬件型号对配对过、够得着的真机，同型号不止一台时不猜
+                if device == nil, let model = AppModel.deviceModel {
+                    let matches = devices.filter { $0.kind == .physical && $0.model == model && $0.connected == true }
+                    if matches.count == 1 { device = matches[0] }
+                }
+            }
             catch { self.error = error.localizedDescription }
         }
     }
 
-    /// 下面两节的一行：名字、一行说明，右边是点了做什么的图标。
+    /// 下面几节的一行：名字、一行说明，右边是点了做什么的图标。
     private func row(_ title: String, detail: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).foregroundStyle(.primary)
-                    Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+        Button(action: action) { rowLabel(title, detail: detail, systemImage: systemImage) }
+    }
+
+    private func rowLabel(_ title: String, detail: String, systemImage: String) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).foregroundStyle(.primary)
+                Text(detail).font(Theme.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: systemImage).font(Theme.caption.weight(.semibold))
+        }
+    }
+
+    /// 设备候选：目标自己定，或模拟器型号（按 iPhone、iPad 分组）、配对过的真机；够不着的真机选不了。
+    @ViewBuilder private var deviceMenu: some View {
+        Button { device = nil } label: { checked("目标自己定", device == nil) }
+        let physical = devices.filter { $0.kind == .physical }
+        if !physical.isEmpty {
+            Section("真机（只装包）") {
+                ForEach(physical) { candidate in
+                    Button { device = candidate } label: { checked("\(candidate.title)（\(candidate.marketingName ?? candidate.model)）", device == candidate) }
+                        .disabled(candidate.connected != true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Image(systemName: systemImage).font(Theme.caption.weight(.semibold))
             }
         }
+        ForEach(["iPhone", "iPad"], id: \.self) { family in
+            let simulators = devices.filter { $0.kind == .simulator && $0.family == family }
+            if !simulators.isEmpty {
+                Menu("\(family) 模拟器") {
+                    ForEach(simulators) { candidate in
+                        Button { device = candidate } label: { checked(candidate.model, device == candidate) }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func checked(_ title: String, _ on: Bool) -> some View {
+        if on { Label(title, systemImage: "checkmark") } else { Text(title) }
+    }
+
+    private func deviceDetail(_ candidate: DeviceCandidate) -> String {
+        candidate.kind == .physical ? "装到真机 \(candidate.title)，没有画面，装好后拿起来用" : "装到 \(candidate.model) 模拟器"
     }
 
     private var actions: PaneHeaderActions {
@@ -655,14 +710,10 @@ struct NewWindowChooser: View {
         let action: () -> Void
     }
 
-    /// 内置插件的格子：预览分成网页和模拟器两格，其余一个定义一格。
+    /// 内置插件的格子：一个定义一格（预览按目标起，不在这里）。
     private func tiles(of definition: RemotePluginDefinition) -> [Tile] {
-        guard definition.id == AppModel.previewDefinition else {
-            return [Tile(title: definition.title, detail: definition.description ?? views(of: definition),
-                         icon: WindowAppearance.definition(definition).icon) { model.choose(definition, in: area) }]
-        }
-        return [Tile(title: "网页", detail: "看工作区里运行的网页", icon: "globe") { model.choosePreview(.web(), in: area) },
-                Tile(title: "模拟器", detail: "看工作区的 iOS 模拟器", icon: "iphone") { model.choosePreview(.simulator, in: area) }]
+        [Tile(title: definition.title, detail: definition.description ?? views(of: definition),
+              icon: WindowAppearance.definition(definition).icon) { model.choose(definition, in: area) }]
     }
 
     private func views(of definition: RemotePluginDefinition) -> String {

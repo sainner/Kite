@@ -5,10 +5,10 @@ import Foundation
 /// 工具开放范围见 docs/kited.md「会话后端与宿主边界」；未识别的工具按名字、参数和结果通用显示。
 enum ToolKind: Hashable {
     case read, edit, notebookEdit, write, command, check, webSearch, webFetch, agent, skill, tools
-    case cronCreate, cronDelete, cronList, monitor, taskStop, terminalRun, terminalRead, terminalList, listAgents, sendMessage
+    case cronCreate, cronDelete, cronList, monitor, taskStop, terminalRead, terminalList, listAgents, sendMessage
     /// Kite 自己的工具：提问、密钥引用、代理协作、监视和个人 agent（Line）的工具，见 kited 的 agentToolCatalog。
     case question, credentials, agentStart, agentResume, agentStop, agentMerge, monitorStart, monitorList, monitorStop
-    case previewOpen, previewAction, previewInspect, previewList, previewClose
+    case previewOpen, previewAction, previewInspect, previewRead, previewList, previewStop
     case lineStatus, lineHandle, lineRelay, lineControl, lineWorkspace
     /// 插件实例的工具。
     case plugin
@@ -31,7 +31,6 @@ enum ToolKind: Hashable {
         case .cronCreate, .cronDelete, .cronList: "clock"
         case .monitor: "waveform.path.ecg"
         case .taskStop: "stop.circle"
-        case .terminalRun: "play.rectangle"
         case .terminalRead, .terminalList: "terminal"
         case .listAgents, .sendMessage: "paperplane"
         case .question: "questionmark.bubble"
@@ -44,7 +43,8 @@ enum ToolKind: Hashable {
         case .previewOpen, .previewList: "eye"
         case .previewAction: "hand.tap"
         case .previewInspect: "list.bullet.indent"
-        case .previewClose: "eye.slash"
+        case .previewRead: "text.alignleft"
+        case .previewStop: "stop.circle"
         case .lineStatus: "square.grid.2x2"
         case .lineHandle: "tray"
         case .lineRelay: "arrowshape.turn.up.right"
@@ -76,7 +76,6 @@ enum ToolKind: Hashable {
         case .cronList: "查看了定时任务"
         case .monitor: "开始盯 \(count) 个后台输出"
         case .taskStop: "停了 \(count) 个后台任务"
-        case .terminalRun: "运行了 \(count) 次预置脚本"
         case .terminalRead: "看了 \(count) 次后台输出"
         case .terminalList: "查看了终端"
         case .listAgents: "查看了能联系的 agent"
@@ -94,7 +93,8 @@ enum ToolKind: Hashable {
         case .previewAction: "操作了 \(count) 次预览"
         case .previewInspect: "读了 \(count) 次界面结构"
         case .previewList: "查看了预览"
-        case .previewClose: "关了 \(count) 个预览"
+        case .previewRead: "读了 \(count) 次预览输出"
+        case .previewStop: "停了 \(count) 个预览"
         case .lineStatus: "查看了 \(count) 次工作区"
         case .lineHandle: "代处理了 \(count) 项收件箱事项"
         case .lineRelay: "转达了 \(count) 次用户的话"
@@ -126,7 +126,6 @@ extension ToolUse {
         case "CronList": .cronList
         case "Monitor": .monitor
         case "TaskStop", "terminal_stop": .taskStop
-        case "terminal_run": .terminalRun
         case "terminal_read": .terminalRead
         case "terminal_list": .terminalList
         case "ListAgents", "agent_list": .listAgents
@@ -142,7 +141,8 @@ extension ToolUse {
         case "preview_action": .previewAction
         case "preview_inspect": .previewInspect
         case "preview_list": .previewList
-        case "preview_close": .previewClose
+        case "preview_read": .previewRead
+        case "preview_stop": .previewStop
         case "monitor_list": .monitorList
         case "monitor_stop": .monitorStop
         case "line_status": .lineStatus
@@ -201,7 +201,6 @@ extension ToolUse {
         case .cronList: "定时任务"
         case .monitor: "监视"
         case .taskStop: "停止任务"
-        case .terminalRun: "预置脚本"
         case .terminalRead: "后台输出"
         case .terminalList: "终端列表"
         case .listAgents: "agent 列表"
@@ -219,7 +218,8 @@ extension ToolUse {
         case .previewAction: "操作预览"
         case .previewInspect: "界面结构"
         case .previewList: "预览列表"
-        case .previewClose: "关闭预览"
+        case .previewRead: "预览输出"
+        case .previewStop: "停止预览"
         case .lineStatus: "工作区概况"
         case .lineHandle: "代处理"
         case .lineRelay: "转达"
@@ -256,8 +256,6 @@ extension ToolUse {
             return input["title"]?.string ?? firstLine(input["prompt"]?.string)
         case .monitorStart:
             return input["title"]?.string ?? ""
-        case .terminalRun:
-            return input["script"]?.string ?? ""
         case .previewOpen:
             return previewTarget
         case .previewAction:
@@ -284,11 +282,10 @@ extension ToolUse {
         }
     }
 
-    /// preview_open 看的是什么：localhost:端口/路径 与浏览器，或模拟器。
+    /// preview_open 起的是什么：目标与设备。
     private var previewTarget: String {
-        guard input["kind"]?.string != "simulator" else { return "模拟器" }
-        let port = input["port"].flatMap { value -> String? in if case .number(let number) = value { return "localhost:\(Int(number))" } else { return nil } }
-        return [port.map { $0 + (input["path"]?.string ?? "") }, input["browser"]?.string].compactMap { $0 }.joined(separator: " · ")
+        let device = input["device"]?["simulator"]?.string ?? input["device"]?["physical"]?.string
+        return [input["target"]?.string, device].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// preview_action 这次做什么。
@@ -373,7 +370,6 @@ extension ToolUse {
         case .cronList: return "查看定时任务"
         case .monitor: return "盯着\(input["description"]?.string ?? "后台输出")"
         case .taskStop: return "停掉后台任务 \(input["task_id"]?.string ?? input["shell_id"]?.string ?? input["instanceId"]?.string ?? "")"
-        case .terminalRun: return "运行预置脚本 \(input["script"]?.string ?? "")"
         case .terminalRead: return "看后台终端 \(input["instanceId"]?.string ?? "")"
         case .terminalList: return "查看终端"
         case .listAgents: return "查看能联系的 agent"
@@ -393,7 +389,8 @@ extension ToolUse {
         case .previewAction: return previewActionTitle
         case .previewInspect: return "读界面结构"
         case .previewList: return "查看预览"
-        case .previewClose: return "关闭预览"
+        case .previewRead: return "看预览的输出"
+        case .previewStop: return "停止预览"
         case .lineStatus:
             if input["threadId"] != nil { return "读线程最后的回复" }
             return input["machine"]?.string.map { "查看 \($0) 的工作区" } ?? "查看全部工作区"
@@ -442,7 +439,7 @@ extension ToolUse {
             return "+\(added) −\(removed)" + (input["replace_all"]?.bool == true ? " 全部替换" : "")
         case .write: return "\(splitLines(input["content"]?.string ?? "").count) 行"
         case .command: return input["run_in_background"]?.bool == true ? "后台" : nil
-        case .terminalRun: return input["restart"]?.bool == true ? "重新运行" : nil
+        case .previewOpen: return input["restart"]?.bool == true ? "重新运行" : nil
         case .webFetch:
             // 同一个网站看了几页时靠它分开
             let path = URL(string: input["url"]?.string ?? "")?.path() ?? ""

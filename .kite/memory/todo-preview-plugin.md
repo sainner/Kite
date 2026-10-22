@@ -1,27 +1,31 @@
 ---
 name: todo-preview-plugin
-description: 预览插件第一步（网页移出终端、工作机浏览器、模拟器、agent 的 preview_* 工具）已实现待手测；Firefox 在 macOS 27 起不来；Safari、Mac App 窗口与分发包未做；逐帧界面细节与参照
+description: 预览的目标模型（.kite/preview/、实例随进程）、浏览插件、模拟器改用 Xcode 自带的，10-22 已实现、10-23 本机已装待手测，别的工作机升级前要清 agent 里的旧工具名；Xcode 批准待用户跑命令、DeviceHub 窗口裁不出屏幕；我自己定的实现取舍与已知问题
 metadata:
   node_type: memory
   type: todo
   originSessionId: 1fd0107c-f8bf-4003-bdfa-77630176dfbc
-  modified: 2026-10-22T02:41:26.614Z
+  modified: 2026-10-22T15:35:10.413Z
 ---
 
-**来源：** 2026-10-21 讨论终端的预置脚本时延伸出来，用户决定做；设计在 [成果查看与位置 · 预览](../../docs/成果查看与位置.md#预览)，接口在 [实例操作 · 预览](../../docs/实例操作.md#预览)。2026-10-22 用户说「完成三段」，第一步三段一起实现：网页从终端移进 kite.preview（终端去掉 web 视图与 terminal.select，协议号 11）、工作机上的浏览器（Playwright）与 agent 的 preview_* 工具、模拟器。
+**来源：** 2026-10-21 讨论终端的预置脚本时延伸出来；10-22 用户重新讨论预览给谁用，定为「目标」模型加独立的浏览、模拟器改用 Xcode 自带的、设备从列表里选（真机只装包、agent 装真机每次审批）。设计在 [成果查看与位置 · 预览](../../docs/成果查看与位置.md#预览) 与 [实例操作 · 预览](../../docs/实例操作.md#预览)，是现行文档，这里不重复。
 
-**实现时自己定的（用户还没确认，汇报时提过）：** 预览 lifetime 是 window，agent 开的没有窗口、随它归档回收；agent 操作 device 的预览时用工作机 WebKit 另开；preview_action 一个函数工具照 Anthropic computer use 的动作名，不接厂商自带的 computer use；网页视口跟着最近操作的设备窗口；网页上拖动换成滚动；工作机浏览器联网不另设限制（2026-10-22 用户定：原有每个预览一个的出口代理，WebKit 跟随到本机地址的跳转、首次导航绕过它，用户参照 Claude Code desktop 的 Browser 窗格决定不设，只管 agent 去哪）；动作后画面一直没变的等满 1 秒才算稳定（模拟器点开设置约 1.2 秒才出第一帧）；模拟器只给脚本里写到 KITE_SIMULATOR 的建，名字「Kite 工作区名」建在默认设备集，闲置 30 分钟关机，工作机本机默认实时画面。
+**状态：** 10-22 按文档实现（kited 与 App 一起，协议号 12 → 13），`.kite/check` 通过，未提交；第三步原有的 App 窗口、Safari、分发包代码并进来一起。kited 侧用临时冒烟验过：起目标、出网页画面、再起返回同一个、restart 在同一实例里重起、agent 的 open/action/并排一格截图/read/list/stop、找不到目标或设备时错误里列出可选的、浏览窗口新建；Xcode 批准流程验到给出命令为止。10-23 已在这台 Mac mini 装上（App 与 kited 协议 13）。
 
-**待手测：** Mac、iPhone、iPad 上新建网页预览（选端口、换浏览器）、消息里 localhost 链接打开预览、终端标题栏的「打开网页」；工作机浏览器的画面、逐帧与实时、点按与滚动、输入文字、Mac 直接打字；agent 开的预览出现在停靠栏、点开能看它在做什么、关闭预览；模拟器预览与预置脚本装 App。只有新建的代理有 preview_* 工具（同 terminal_run）。
+**别的工作机升到协议 13 前：** 已有 agent 的 config.grants 里的 terminal.run、preview.close 会让新版 kited 启动时读授权报错退出（安装器自动回滚），config.agent.tools 里的 terminal_run、preview_close 会让切换模型等报「agent 配置无效」。按 [[feedback-stale-data]] 征得同意后从这些 agent 里去掉这几项。这台 10-23 已清，改前的库备份在 ~/.kite/kite.db.before-protocol13。
 
-**已知问题：** 模拟器的系统语言跟工作机（这台是简体中文、拼音输入法），没点输入框时按键逐字敲会进入拼音组字，组字中途无障碍写值也写不进去；改 .GlobalPreferences 的 AppleKeyboards 与 com.apple.keyboard.preferences 的 KeyboardsCurrentAndNext 再启动都没用（2026-10-22 实测），没再查。冷启动模拟器约 28 秒，开着约 3GB 内存、目录几 GB（见 spikes/simulator-io）。Playwright 的 Firefox（firefox-1555）在这台 macOS 27.2 上直接运行也报 Could not find profile folder，起不来，等上游。浏览器第一次用时下载到 ~/Library/Caches/ms-playwright（约几百 MB），磁盘紧时注意 [[disk-space]]。
+**待用户做：**
+- Xcode 批准：kited 第一次碰模拟器时，错误里给出两条 `sudo xcrun mcp-server approve --always <编号>`（Kite 与 Kite 目录的 xcode/ 文件夹）。批准前模拟器画面、agent 操作模拟器都用不了；批准后模拟器的点按、滑动、打字、截图、界面结构都没实测过。
+- 装新版后手测（Mac、iPhone、iPad）：新建窗口的「预览目标」与设备菜单（iPhone 上默认选中手上这台）；网页画面在本设备看与换工作机浏览器、并排的添加与移除、输出视图、停止与重新运行；浏览窗口选端口；终端标题栏「打开网页」开浏览；消息里 localhost 链接（属于预览的开预览，属于终端的开浏览）；Mac 上不开窗口也能直接在自己的浏览器里打开工作区端口；装真机的审批卡片；App 窗口画面与「在这台 Mac 上打开」。
 
-**候选改进（2026-10-22 /simplify 审查提出，未定）：** 动作后等满 1 秒（quietMs）是对所有画面统一的定时，候选改为各画面自己判断有没有新帧（模拟器看 kite-sim 的帧计数，网页看导航信号）。
+**DeviceHub 窗口没做成（10-22 实测）：** 屏幕在窗口里的位置只能从辅助功能树读（子角色 iOSContentGroup，关闭按钮也在树上），只有第一次读得到，之后 DeviceHub 的窗口在辅助功能里一律报成整个 App（重开 DeviceHub、重新开机都一样），裁不出屏幕、人点的位置对不上。现行人看的画面用 `simctl io screenshot`，约半秒一帧，实时只有一两帧每秒。要不要回去找别的裁法（比如按 Xcode 截图的尺寸比对）待用户定。
 
-**没做：** Safari（safaridriver）、Mac App 的窗口、分发包与装到设备；模拟器的多机型选择。
+**我定的实现取舍（汇报时说，用户还没确认）：** 预览实例的进程由终端插件托管，进程状态同终端放在 state.terminal（文档原写 state.preview.ports，已改）；state.preview 是 screen、主端口 port、app、browser。已结束、还开着窗口的同一目标与设备再起时在原实例里重起。模拟器目标「画面就绪」按模拟器里 launchctl 多出 UIKitApplication 判断。端口段按「目标 + 设备」分（同一目标装到几台设备时各一段，文档已改）；目标脚本里没写 KITE_SIMULATOR、KITE_DEVICE 的，选的设备不算。重新起的预览结束时通知这次起它的 agent。preview_open 看到已在跑而没做主线比对的，进控制队列时已经结束就不起、让 agent 再调一次。目标标题是「目标名 · 型号或设备名」。并排的格子记在本机、所有预览共用一套，默认 WebKit 手机与 Chromium 桌面两格。preview_open 的结果在画面就绪时带一帧截图；工具清单去掉 terminal_run、preview_close，加 preview_read、preview_stop。kite-sim 删了。
 
-docs 不收、实现时照做了的界面细节（讨论时已认可）：逐帧模式在画面上标出刚点的位置，等待稳定时显示等待中；默认只发稳定后一帧，想看动画切实时画面；拖动、滑动在松手时作为一个动作发出，长按、捏合另给按钮。
+**已知问题（沿用）：** kite-window 第一次用时要在「隐私与安全性」里允许录屏与辅助功能，源码一改要重新允许。App 不在前台时，不接受首次点按的 AppKit 自绘视图吞左键（spikes/mac-app-window）。Safari 开会话会到前台。Playwright 的 Firefox 在 macOS 27.2 上起不来。浏览器第一次用时下载到 ~/Library/Caches/ms-playwright，磁盘紧时注意 [[disk-space]]。目标里的 `simctl launch --console-pty` 是之前两次内核崩溃前的最后一步，onboarding skill 还推荐它，待查。
 
-**参照：** Claude Code 桌面版的 iOS 模拟器面板（2026-07 公测，文档 https://code.claude.com/docs/en/desktop-ios-simulator）。
+**待定（docs 待定节有）：** 测试平台的假设先在一个项目试一轮；Mac 之间传 .app 的动作放哪。
 
-**完成条件：** 用户在 Mac、iPhone、iPad 上手测通过，Safari 与 Mac App 窗口另立待办或做完后删掉本条。
+**候选改进（未定）：** 等画面稳定的 1 秒定时改为各画面自己判断；App 窗口改 SCStream 推帧；照 Claude 桌面版（idb 取帧、H.264 推流、WebCodecs 解码）把模拟器画面改成视频流。
+
+**完成条件：** 用户批准 Xcode、在 Mac、iPhone、iPad 上手测通过后删掉本条；DeviceHub 与待定两项各自另立或并入时删。

@@ -35,10 +35,10 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
   return found;
 };
 
-/** 代理的默认协作授权：可按内置角色创建代理、开 monitor、起预置脚本，对其他代理、monitor 与终端的操作目标默认仅后代。 */
+/** 代理的默认协作授权：可按内置角色创建代理、开 monitor、用预览，对其他代理、monitor 与终端的操作目标默认仅后代。 */
 const collaboration: OperationGrant[] = [
-  { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' }, { operation: 'terminal.run' },
-  ...(['preview.open', 'preview.list', 'preview.action', 'preview.inspect', 'preview.close'] as const).map((operation) => ({ operation })),
+  { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
+  ...(['preview.open', 'preview.list', 'preview.action', 'preview.inspect', 'preview.read', 'preview.stop'] as const).map((operation) => ({ operation })),
   ...(['agent.list', 'agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const)
     .map((operation) => ({ operation, targets: { kind: 'descendants' } }) as OperationGrant),
 ];

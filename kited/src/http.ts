@@ -18,9 +18,10 @@ import { INTEGRATIONS } from './account-data/registry.ts';
 import { tokenPrices } from './token-prices.ts';
 import type { VoiceSocket } from './voice/sessions.ts';
 import { requestedSize, type TerminalSocket } from './terminal/terminals.ts';
+import { openBundle } from './preview/app-bundles.ts';
 import { previewParams, type PreviewSocket } from './preview/previews.ts';
 import { previewSpecSchema } from './preview/state.ts';
-import { listScripts } from './terminal/scripts.ts';
+import { browserSpecSchema } from './browser/browser.ts';
 import { approvalModes } from './execution/grants.ts';
 import { hostDirectory, WorkspaceFiles } from './workspace/files.ts';
 import { fileContent } from './workspace/file-content.ts';
@@ -270,6 +271,8 @@ export function serve(kite: Kite, listen: Listen) {
     hostname: listen.hostname,
     port: listen.port,
     idleTimeout: 60,
+    // 本机监听上收别的 Mac 传来的 .app 包（PUT /apps/:name），调试版带着框架常超过默认的 128 MB；组网上的照默认
+    ...(listen.remote ? {} : { maxRequestBodySize: 2 * 1024 ** 3 }),
     routes: {
       '/machines': { GET: bound(() => kite.directory.entries()) },
       '/project-registry': {
@@ -485,8 +488,8 @@ export function serve(kite: Kite, listen: Listen) {
         if (!parsed.success) throw new KiteError('插件实例请求无效');
         return kite.createPluginInstance(req.params.id, parsed.data.id, parsed.data.definitionId, parsed.data.title);
       }) },
-      // 新建终端时列出的预置脚本，每次打开都来取，工作区里新加的马上看得到。
-      '/workspaces/:id/scripts': { GET: bound((req) => ({ scripts: listScripts(kite.workspace(req.params.id).workspace.cwd) })) },
+      // 新建窗口里列出的预览目标与设备候选，每次打开都来取，工作区里新加的目标、刚配对的设备马上看得到。
+      '/workspaces/:id/preview-targets': { GET: bound((req) => kite.previews.targets(req.params.id)) },
       '/instances/:id/plugin/tools': { GET: bound((req) => kite.plugins.tools(req.params.id)) },
       '/instances/:id/plugin/views/:view': { GET: bound((req) => kite.plugins.view(req.params.id, req.params.view)) },
       '/instances/:id/plugin/tools/:tool': { POST: bound(async (req) => {
@@ -589,7 +592,7 @@ export function serve(kite: Kite, listen: Listen) {
         const identity = z.string().trim().min(1);
         const parsed = z.object({ id: z.uuid(), content: z.discriminatedUnion('kind', [
           z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional(), title: identity.optional(), command: identity.optional(),
-            script: identity.optional(), preview: previewSpecSchema.optional() }).strict(),
+            preview: previewSpecSchema.optional(), browser: browserSpecSchema.optional() }).strict(),
           z.object({ kind: z.literal('open'), instanceId: identity, viewId: identity }).strict(),
         ]) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('窗口请求无效');
@@ -684,6 +687,12 @@ export function serve(kite: Kite, listen: Listen) {
       '/voice': { GET: voice },
       '/instances/:id/terminal': { GET: terminal },
       '/instances/:id/preview': { GET: preview },
+      '/instances/:id/preview/bundle': { GET: bound((req) => kite.previews.bundle(req.params.id)) },
+      /** 在这台 Mac 上放好并打开别的工作机传来的 App，请求体是 .app 的 zip（见 preview/app-bundles.ts）；只接本机监听的请求。 */
+      '/apps/:name': { PUT: long(bound(async (req: Request & { params: { name: string } }) => {
+        if (listen.remote) throw new KiteError('只能由这台 Mac 上的 App 打开', 403);
+        return Response.json(await openBundle(kite.home, req.params.name, await req.blob()));
+      })) },
     },
     websocket: {
       // 终端输出很快而设备读得慢时断开，设备重连时从当前画面接上，不在工作机上无限堆积。

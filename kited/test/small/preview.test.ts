@@ -1,28 +1,25 @@
 /**
- * 预览插件 kite.preview 的网页部分，在工作机上的 Chromium 里看（Playwright 的 headless shell，启动约 0.1 秒；
- * WebKit 启动要几秒，Firefox 在 macOS 27 上起不来，都不用）：
- * 一、设备接入后的逐帧操作；
- * 二、代理用 preview_* 工具开、点、读、列、关。
- * 终端的 shell 换成 bun 跑的网页服务（terminalShell），终端一起来服务就在终端的进程树里监听，端口由系统分配；
- * 探测端口的间隔缩到 50 毫秒。等画面稳定的节奏缩成每 20 毫秒截一帧、60 毫秒不变算稳定（previewSettle），
- * 默认的 0.3 秒每个动作要等近半秒，两个测试都放不进 1 秒。
+ * 预览插件 kite.preview 的网页画面，在工作机上的 Chromium 里看（Playwright 的 headless shell，启动约 0.1 秒；
+ * WebKit 启动要几秒，Firefox 在 macOS 27 上起不来，都不用）：设备接入后的逐帧操作。
+ * 终端插件起进程用的 shell 换成 bun 跑的网页服务（terminalShell），预览的目标一起来服务就在实例的进程树里监听，端口由系统分配；
+ * 探测端口的间隔缩到 20 毫秒（terminalPortScanMs，50 毫秒时认出端口要多等约 30 毫秒）。等画面稳定的节奏缩成
+ * 每 10 毫秒截一帧、30 毫秒不变算稳定（previewSettle）：默认的 0.3 秒每个动作要等近半秒，测试放不进 1 秒；
+ * 宿主每截一帧要和 Chromium 来回一趟，就算稳定时长取 1 毫秒，从点按到发出稳定的帧也要约 0.1 秒，等的期间再点一下的余量足够。
  */
 import { expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+// kited 第一次开浏览器时才 import('playwright-core')，在 Bun 里要约 0.1 秒，转译缓存里没有时约 0.2 秒，
+// 原来全算在文件里第一个测试上，冷启动时超过小测试的 1 秒。文件加载时先载入，kited 里的 import() 拿到的是同一份模块。
+import 'playwright-core';
+import { chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
-import type { WorkspaceModel } from '../../src/model.ts';
 import type { PreviewAction } from '../../src/preview/screen.ts';
 import { previewDefinitionId } from '../../src/preview/state.ts';
-import { terminalState } from '../../src/terminal/state.ts';
-import { terminalDefinitionId } from '../../src/terminal/terminals.ts';
-import { after, folderWorkspace, machine, mark, startKited, waitIdle, type Kited } from '../harness.ts';
-import { item, ManualModel } from '../harness-loop.ts';
-import { imageSize, makeTemp, newDir } from '../util.ts';
+import { folderWorkspace, machine, startKited, type Kited } from '../harness.ts';
+import { makeTemp, newDir } from '../util.ts';
 
 const WAIT_MS = 2_000;
 
-/** 终端里跑的网页服务。首页有一个固定在左上角 200×100 的计数按钮，点一下按钮文字和页面标题都变成「点了 N 次」。 */
+/** 预览进程里跑的网页服务。首页有一个固定在左上角 200×100 的计数按钮，点一下按钮文字和页面标题都变成「点了 N 次」。 */
 const SERVER_SCRIPT = String.raw`
 const page = ${'`'}<!doctype html><html><head><meta charset="utf-8"><title>点了 0 次</title></head><body style="margin:0">
 <button id="count" style="position:fixed;left:0;top:0;width:200px;height:100px">点了 0 次</button>
@@ -39,45 +36,14 @@ const server = Bun.serve({
 console.log('serving ' + server.port);
 `;
 
-/** 起一个 kited，终端的 shell 换成上面的网页服务。 */
-function start(model?: ManualModel): Kited {
+/** 起一个 kited，起进程用的 shell 换成上面的网页服务。 */
+function start(): Kited {
   const root = makeTemp('preview-');
   const server = join(root, 'server.js');
   writeFileSync(server, SERVER_SCRIPT);
-  return startKited(model && (() => model), false, {
-    root, terminalShell: [process.execPath, server], terminalPortScanMs: 50, previewSettle: { stableMs: 60, pollMs: 20, maxMs: 1_000 },
+  return startKited(undefined, false, {
+    root, terminalShell: [process.execPath, server], terminalPortScanMs: 20, previewSettle: { stableMs: 30, pollMs: 10, maxMs: 1_000 },
   });
-}
-
-async function aggregate(k: Kited, workspaceId: string): Promise<WorkspaceModel> {
-  const r = await k.call('GET', `/workspaces/${workspaceId}`);
-  expect(r.status).toBe(200);
-  return r.body as WorkspaceModel;
-}
-
-/** 等工作区聚合满足 find：先读一次，不满足就等这次读之后的 workspace.changed 再读。 */
-async function workspaceUntil<T>(k: Kited, workspaceId: string, find: (model: WorkspaceModel) => T | undefined | false, what: string): Promise<T> {
-  while (true) {
-    const since = mark(k);
-    const hit = find(await aggregate(k, workspaceId));
-    if (hit) return hit;
-    const isAfter = after(k, since);
-    await k.waitEvent((e) => e.type === 'workspace.changed' && e.workspaceId === workspaceId && isAfter(e), WAIT_MS)
-      .catch(() => { throw new Error(`等待超时：${what}`); });
-  }
-}
-
-/** 开一个终端窗口（里面就是网页服务），等终端状态里出现能用 HTTP 打开的端口。 */
-async function serve(k: Kited, workspaceId: string): Promise<number> {
-  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: crypto.randomUUID(), content: { kind: 'create', definitionId: terminalDefinitionId },
-  });
-  expect(opened.status).toBe(200);
-  const instanceId = opened.body.target.instanceId as string;
-  return workspaceUntil(k, workspaceId, (model) => {
-    const instance = model.instances.find((i) => i.id === instanceId);
-    return instance && terminalState(instance)?.ports?.find((p) => p.http)?.port;
-  }, '终端里的网页服务端口认出为 http');
 }
 
 async function operation(k: Kited, workspaceId: string, name: string, body: object): Promise<any> {
@@ -145,7 +111,7 @@ class Device {
 }
 
 /*
- * 配合：终端的进程树端口探测 → 新建预览时核对端口 → 设备接入时才开浏览器页面。
+ * 配合：预览进程树的端口探测 → 画面种类认出网页 → 设备接入时才开浏览器页面。
  * 配合：逐帧点按，宿主做完动作等画面稳定再发带 settled 与 point 的一帧和 JPEG；等的期间再来的逐帧点按回 dropped、不执行，
  * 所以点了两下计数只加一。接入后的首帧不带 settled，可能晚于点按才到，所以按 point 认点按之后的那一帧。
  */
@@ -154,16 +120,19 @@ test('工作机 Chromium 里的网页：逐帧点按等画面稳定后发带 set
   let device: Device | undefined;
   try {
     const machineId = (await machine(k.url)).id;
-    const workspaceId = (await folderWorkspace(k, newDir(k.root, 'project', { 'README.md': '预览\n' }))).workspace.id;
-    const port = await serve(k, workspaceId);
+    // 目标只要在、可执行：起它的 shell 换成了网页服务
+    const project = newDir(k.root, 'project', { 'README.md': '预览\n', '.kite/preview/web': '#!/bin/sh\n' });
+    chmodSync(join(project, '.kite/preview/web'), 0o755);
+    const workspaceId = (await folderWorkspace(k, project)).workspace.id;
 
     const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id: crypto.randomUUID(), content: { kind: 'create', definitionId: previewDefinitionId, preview: { kind: 'web', port, browser: 'chromium' } },
+      id: crypto.randomUUID(), content: { kind: 'create', definitionId: previewDefinitionId, preview: { target: 'web' } },
     });
     expect(opened.status).toBe(200);
     const previewId = opened.body.target.instanceId as string;
+    await operation(k, workspaceId, 'preview.select', { operationId: 'chromium', instanceId: previewId, browser: 'chromium' });
 
-    // 设备接入才开页面
+    // 设备接入才开页面：进程的网页端口认出来之前接入的，认出来后开
     device = new Device(k.url, machineId, previewId, 'width=400&height=300&mode=step');
     await device.control((c) => c.type === 'state' && c.phase === 'ready', '页面打开');
     const shown = (await operation(k, workspaceId, 'preview.inspect', { instanceId: previewId })).text as string;
@@ -188,79 +157,6 @@ test('工作机 Chromium 里的网页：逐帧点按等画面稳定后发带 set
     expect(clicked).not.toContain('点了 2 次');
   } finally {
     device?.close();
-    await k.stop();
-  }
-}, 5_000);
-
-const calledItem = (id: string, name: string, args: Json): ModelItem => ({ ...item(id, name), call: { id, name, arguments: args } });
-const resultOf = (request: ModelRequest, callId: string): ToolResult => {
-  const found = request.history.find((entry) => entry.type === 'tool_result' && entry.callId === callId);
-  if (found?.type !== 'tool_result') throw new Error(`缺少工具结果：${callId}`);
-  return found.result;
-};
-/** 成功的工具结果，JSON 正文解析出来。 */
-const outputOf = (request: ModelRequest, callId: string): any => {
-  const result = resultOf(request, callId);
-  expect(result.status).toBe('success');
-  return JSON.parse(result.output);
-};
-
-/*
- * 配合：代理的工具调用经操作层到预览服务，宿主开没有窗口、来源是这个代理的预览，用 Playwright 在 Chromium 里开页面、截图；
- * 截图要作为 ToolResult.images 交到模型的下一次请求里，JSON 正文不带，图片按逻辑尺寸截（尺寸等于结果里的 width、height）。
- * 点按之后宿主等画面稳定再截图，结果里的页面标题已是点过之后的。preview_list 按调用方列出、preview_close 回收实例，要跨这几处配合才对得上。
- */
-test('代理用 preview_open 在工作机 Chromium 里开终端端口上的网页，截图作为工具结果的图片交给模型、JSON 里不带；preview_action 点按钮后的结果已是点过的页面；preview_list 列出它是这个代理开的、没有窗口；preview_close 后实例没了', async () => {
-  const model = new ManualModel();
-  const k = start(model);
-  try {
-    const workspaceId = (await folderWorkspace(k, newDir(k.root, 'project', { 'README.md': '预览\n' }))).workspace.id;
-    const serving = serve(k, workspaceId);
-    const started = await operation(k, workspaceId, 'agent.start', { operationId: 'agent' });
-    const agentId = started.instanceId as string;
-    expect((await k.call('POST', `/threads/${agentId}/messages`, { id: 'kickoff', text: '看看网页' })).status).toBe(200);
-    const port = await serving;
-
-    const first = await model.call(1);
-    expect(first.request.allowedTools).toEqual(expect.arrayContaining(['preview_open', 'preview_action', 'preview_inspect', 'preview_list', 'preview_close']));
-    await first.response.emit({ type: 'item', item: calledItem('open', 'preview_open', { kind: 'web', port, browser: 'chromium' }) });
-    first.response.complete();
-
-    const second = await model.call(2);
-    const opened = outputOf(second.request, 'open');
-    expect(opened).not.toHaveProperty('images');
-    expect(opened).toMatchObject({ kind: 'web', port, browser: 'chromium', url: `http://localhost:${port}/`, pageTitle: '点了 0 次', settled: true });
-    const openedImages = resultOf(second.request, 'open').images ?? [];
-    expect(openedImages.map((image) => image.mediaType)).toEqual(['image/jpeg']);
-    expect(await imageSize(openedImages[0]!.data)).toEqual({ width: opened.width, height: opened.height });
-    const previewId = opened.instanceId as string;
-
-    await second.response.emit({ type: 'item', item: calledItem('click', 'preview_action', { instanceId: previewId, action: 'left_click', coordinate: [100, 50] }) });
-    second.response.complete();
-    const third = await model.call(3);
-    const clicked = outputOf(third.request, 'click');
-    expect(clicked).not.toHaveProperty('images');
-    expect(clicked).toMatchObject({ instanceId: previewId, pageTitle: '点了 1 次', settled: true });
-    expect(resultOf(third.request, 'click').images?.map((image) => image.mediaType)).toEqual(['image/jpeg']);
-
-    await third.response.emit({ type: 'item', item: calledItem('inspect', 'preview_inspect', { instanceId: previewId }) });
-    await third.response.emit({ type: 'item', item: calledItem('list', 'preview_list', {}) });
-    third.response.complete();
-    const fourth = await model.call(4);
-    expect(outputOf(fourth.request, 'inspect').text).toContain('点了 1 次');
-    expect(outputOf(fourth.request, 'list')).toEqual({ previews: [{
-      instanceId: previewId, title: expect.any(String), kind: 'web', port, browser: 'chromium', createdBy: agentId, window: false,
-    }] });
-
-    await fourth.response.emit({ type: 'item', item: calledItem('close', 'preview_close', { instanceId: previewId }) });
-    fourth.response.complete();
-    const fifth = await model.call(5);
-    expect(outputOf(fifth.request, 'close')).toEqual({ ok: true });
-    expect((await aggregate(k, workspaceId)).instances.map((instance) => instance.id)).not.toContain(previewId);
-    const since = mark(k);
-    fifth.response.complete();
-    await waitIdle(k, agentId, since);
-  } finally {
     await k.stop();
   }
 }, 5_000);

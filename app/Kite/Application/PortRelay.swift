@@ -2,8 +2,8 @@ import Foundation
 import Network
 
 /// 设备上为工作机端口开的转发，按目标共用：同一台工作机的同一个端口只开一个，几个网页视图看到的是同一个本机地址。
-/// 网页视图打开期间，本工作区每个运行中终端的端口都开着（见 PortPreview）。最后一个用它的视图离开后稍等一会儿才关，
-/// 视图重建（重新加载、工作区的端口有增减）时接着用，端口号不变。
+/// 设备打开着工作区期间，本工作区每个运行中终端与预览的端口都开着（见 PortForwarding），网页视图另外用着它看的那个端口（见 PortPreview）。
+/// 最后一个用它的离开后稍等一会儿才关，视图重建（重新加载、工作区的端口有增减）时接着用，端口号不变。
 final class PortRelays {
     static let shared = PortRelays()
     private static let linger = Duration.seconds(2)

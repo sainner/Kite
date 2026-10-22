@@ -27,8 +27,8 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 │   ├── memory/            项目共享记忆，MEMORY.md 做索引，正文按需读取；
 │                          在 Kite 之外直接用 Claude Code 时，另核对 autoMemoryDirectory
 │   ├── setup              可选。工作树的初始化命令，如装依赖；只用退出码报告成败
-│   ├── scripts/           可选。预置脚本：反复要起的命令，如开发服务器、构建并启动 App
-│                          一个可执行文件一个脚本，文件名即脚本名；在终端里运行、不加沙箱，写法见下文
+│   ├── preview/           可选。预览目标：产品的每种运行方式一个可执行文件，如开发服务器、跑在模拟器上的 iOS App、
+│                          Mac App、装到 iPhone；文件名即目标名；在终端环境里运行、不加沙箱，写法见下文
 │   └── check              检查命令：判断这个项目改坏了没有。代码项目是类型检查加受影响的测试，加 --all 跑全量
 │                          受影响的测试从 KITE_BASE 这个版本起算改动，没有这个变量就看还没提交的改动
 │                          只用退出码报告成败；输出只报结论、失败项和超预算项，完整日志写进 KITE_LOG_DIR 并给出路径
@@ -71,17 +71,17 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 
 Kite 仓库自己的 `.kite/check` 是一个例子：它调 `kited/scripts/check.ts`，类型检查和 lint 同时跑，App 有改动时构建 macOS 和 iOS 模拟器目标，用 `bun test --changed` 选测试，小测试按文件分到两个进程并行运行。
 
-## 预置脚本怎么写
+## 预览目标怎么写
 
-契约见 Kite 仓库 docs/实例操作.md 的「预置脚本」。用户在新建窗口里点选，agent 用 terminal_run 起；脚本要可执行（`chmod +x`），经用户的登录 shell 运行，环境同用户开的终端。起出来的终端就是脚本这个进程，脚本退出终端就结束。
+契约见 Kite 仓库 docs/实例操作.md 的「预览」与「目标」。一个目标是产品的一种运行方式，用户在新建窗口里点选，agent 用 preview_open 起；脚本要可执行（`chmod +x`），经用户的登录 shell 运行，环境同用户开的终端。起出来的预览实例就是脚本这棵进程树，画面由它产生什么决定：监听了网页端口就是网页，装进工作区的模拟器就是模拟器，起了带窗口的 Mac App 就是 App 窗口；脚本退出实例就结束。
 
-1. **监听 `$PORT`**。Kite 给每个工作区的每个脚本分一段 10 个端口，`PORT` 是第一个。框架会读 `PORT` 的直接用，不读的传给它的端口参数，比如 `exec bun run dev --port "$PORT"`；同一脚本另起的服务用 `PORT+1` 往后。不写死端口，否则并行的工作区互相抢。
-2. **服务留在前台，最后一步用 `exec`**。不加 `&`、不守护化：脱离进程树的服务探测不到端口，停终端时也停不掉。
-3. **启动 App 时直接运行可执行文件**，比如 `exec 记账.app/Contents/MacOS/记账`，不用 `open`。这样 App 就是终端的进程：输出进终端，停止就是退出，重启就是重新构建再打开。用 `open` 时脚本打开 App 就结束，App 和终端脱钩，旧的得自己想办法关。
-4. **装到设备的脚本跑完就退出**，比如用 `devicectl`、`adb` 装到真机，终端随之结束。
-5. **iOS App 装到 `$KITE_SIMULATOR`**。脚本里写到 `KITE_SIMULATOR` 的，Kite 先给工作区建一台专用的模拟器（不启动），编号经这个变量交给脚本，并行的工作区各用各的；在模拟器预览里看。脚本自己启动、安装和打开，比如 `xcrun simctl bootstatus "$KITE_SIMULATOR" -b`，构建时用 `-destination "id=$KITE_SIMULATOR"`，再 `xcrun simctl install "$KITE_SIMULATOR" 路径/记账.app` 和 `xcrun simctl launch --console-pty "$KITE_SIMULATOR" 包名`；带 `--console-pty` 时 App 的输出进终端，脚本留在前台，停终端就停 App。不要用 `booted`，也不要开 Simulator.app。
-6. **装依赖放 `.kite/setup`**，不放预置脚本。
-7. 改过的预置脚本和主线上的不一样，agent 起它之前要用户批准一次；合回主线后不再问。
+1. **监听 `$PORT`**。Kite 给每个工作区的每个目标（装到几台设备时每台各一段）分一段 10 个端口，`PORT` 是第一个，也是网页画面的主端口。框架会读 `PORT` 的直接用，不读的传给它的端口参数，比如 `exec bun run dev --port "$PORT"`；同一目标另起的服务用 `PORT+1` 往后。不写死端口，否则并行的工作区互相抢。
+2. **服务留在前台，最后一步用 `exec`**。不加 `&`、不守护化：脱离进程树的服务探测不到端口，停实例时也停不掉。前端加接口这类要几个服务的，在一个目标里一起起，别拆成两个目标。
+3. **启动 Mac App 时直接运行可执行文件**，比如 `exec 记账.app/Contents/MacOS/记账`，不用 `open`。这样 App 就是实例的进程：输出进实例，停止就是退出，重启就是重新构建再打开，App 窗口画面也只认实例进程树里的 App。用 `open` 时脚本打开 App 就结束，App 和实例脱钩，旧的得自己想办法关，画面里也看不到。Mac App 打成 .app 再跑它里面的可执行文件，别的 Mac 才能从画面里把它装过去。
+4. **装到真机的目标跑完就退出**，比如用 `devicectl`、`adb` 装到真机，实例随之结束，画面在设备上。iPhone、iPad 装到 `$KITE_DEVICE`：用户在设备列表里选了与工作机配对过的真机时（agent 装真机要经用户批准），Kite 把它的编号经这个变量交给脚本，比如构建时用 `-destination "generic/platform=iOS"`，再 `xcrun devicectl device install app --device "$KITE_DEVICE" 路径/记账.app` 和 `xcrun devicectl device process launch --device "$KITE_DEVICE" 包名`。选的是模拟器时没有这个变量、有 `KITE_SIMULATOR`；一个脚本可以两种都支持：有 `KITE_DEVICE` 装真机，否则装模拟器。
+5. **iOS App 装到 `$KITE_SIMULATOR`**。脚本里写到 `KITE_SIMULATOR` 的，Kite 先按选的模拟器型号（没选用默认型号）给工作区建一台专用的模拟器（不启动），编号经这个变量交给脚本，并行的工作区各用各的。脚本自己启动、安装和打开，比如 `xcrun simctl bootstatus "$KITE_SIMULATOR" -b`，构建时用 `-destination "id=$KITE_SIMULATOR"`，再 `xcrun simctl install "$KITE_SIMULATOR" 路径/记账.app` 和 `xcrun simctl launch --console-pty "$KITE_SIMULATOR" 包名`；带 `--console-pty` 时 App 的输出进实例，脚本留在前台，停实例就停 App。不要用 `booted`，也不要开 Simulator.app。
+6. **只放运行方式。** 装依赖放 `.kite/setup`；构建、迁移、跑测试不是运行产品，不做成目标，agent 用 shell 跑。
+7. 改过的目标和主线上的不一样，agent 起它之前要用户批准一次；合回主线后不再问。
 
 ## 测试规则为什么放在子 agent 里
 

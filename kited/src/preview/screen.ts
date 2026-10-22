@@ -48,13 +48,13 @@ export interface Screen {
   /** forModel 时按逻辑尺寸截、质量高一点，给模型看；否则按设备像素截，给设备显示。 */
   capture(forModel?: boolean): Promise<Frame>;
   act(action: PreviewAction): Promise<void>;
+  /** 自己知道画面什么时候稳定的（模拟器经 Xcode 的工具，动作做完就截好了，见 xcode.ts）直接给一帧，不用每 0.1 秒截一帧比较。 */
+  settle?(options: { forModel?: boolean }): Promise<{ frame: Frame; settled: boolean }>;
   /** 界面结构的文字：网页是无障碍树，模拟器是控件、文字与位置。 */
   inspect(): Promise<string>;
   info(): Promise<ScreenInfo>;
   /** 网页的视口跟着最近操作的那台设备的窗口；模拟器屏幕尺寸固定，没有。 */
   resize?(width: number, height: number): Promise<void>;
-  /** 换端口：在同一个页面里打开新端口的首页。 */
-  retarget?(port: number): Promise<void>;
   /** 底下的浏览器或模拟器还在；断了的重开。 */
   alive(): boolean;
   close(): Promise<void>;
@@ -86,3 +86,7 @@ export async function settle(screen: Screen, timing: SettleTiming, options: { si
   }
   return { frame, settled: false };
 }
+
+/** 等画面稳定：自己知道的画面直接给（见 Screen.settle），其余照 settle 截着比较。 */
+export const settleScreen = (screen: Screen, timing: SettleTiming, options: Parameters<typeof settle>[2] = {}) =>
+  screen.settle?.(options) ?? settle(screen, timing, options);

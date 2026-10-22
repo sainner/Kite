@@ -100,7 +100,7 @@ final class FileContentCache {
         if let cached, let cachedURL, FileManager.default.fileExists(atPath: cachedURL.path(percentEncoded: false)) {
             headers["If-None-Match"] = cached.version
         }
-        let (file, response) = try await client.download(Self.contentPath(workspace, path), headers: headers, progress: progress)
+        let (file, response) = try await client.download(Self.contentPath(workspace, path), headers: headers, segmented: true, progress: progress)
         if let cached, let cachedURL, response.statusCode == 304 {
             // 修改时间当作最近使用时间，清理时按它排
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: directory.path(percentEncoded: false))

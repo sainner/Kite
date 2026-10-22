@@ -232,6 +232,7 @@ final class AppModel {
     /// 和工作机一样的毫秒时间戳，本机先建的对象用。
     private static var now: Int { Int(Date().timeIntervalSince1970 * 1000) }
     static let previewDefinition = "kite.preview"
+    static let browserDefinition = "kite.browser"
 
     #if os(macOS)
     static var deviceName: String { Host.current().localizedName ?? "Mac" }
@@ -669,11 +670,12 @@ final class AppModel {
             } else {
                 local = target
             }
-        case .create(let definitionId, let instanceId, let title, _, _, let preview):
+        case .create(let definitionId, let instanceId, let title, _, let preview, let browser):
             if let definition = area.definitions.first(where: { $0.id == definitionId }) {
                 area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
                                                         title: title ?? area.newInstanceTitle(definition), status: .open, presentation: .window,
-                                                        createdAt: Self.now, config: preview.map { InstanceAgentConfig(preview: .init(kind: $0.kind)) }))
+                                                        createdAt: Self.now, state: browser.map { .init(path: nil, revision: nil, browser: $0) },
+                                                        config: preview.map { InstanceAgentConfig(preview: $0) }))
                 created = instanceId
                 local = WindowTarget(instanceId: instanceId, viewId: definition.defaultView)
             }
@@ -696,7 +698,7 @@ final class AppModel {
             }
             do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
             if let switching { area.settleSwitch(switching, request: request.id) }
-            // 带预置脚本新建时脚本已经在跑，工作机打开的是那个终端：本机先建的实例收回
+            // 新建预览时同一目标与设备已经有了，工作机打开的是那个实例：本机先建的实例收回
             if let created, window.target.instanceId != created { area.settleInstance(created) }
             if accepts(client), switching == nil, local == nil || window.id != request.id {
                 // 本机没先开，或工作机交回了这个实例原有的窗口：本机先开的那个换成它
@@ -707,57 +709,92 @@ final class AppModel {
         }
     }
 
-    /// 消息里的 localhost:端口 链接在所属工作区内解析：端口属于本工作区运行中的终端时，打开看这个端口的网页预览（没有就新建，有窗口的优先）
-    /// 并到链接的路径，否则报错（docs/成果查看与位置.md「运行中的网页」）。打开到哪里只在本机，见 WorkArea.webLinks。
+    /// 消息里的 localhost:端口 链接在所属工作区内解析（docs/成果查看与位置.md「运行中的网页」）：端口是本工作区运行中预览的网页画面时，
+    /// 打开那个预览；属于终端（或预览进程另起的服务）时，打开看这个端口的浏览窗口（没有就新建，有窗口的优先）；都到链接的路径，否则报错。
+    /// 在设备自己的网页视图里看的，打开到哪里只在本机，见 WorkArea.webLinks；工作机上的浏览器里看的预览，在那个共用的页面里打开。
     func openLocalPort(_ target: LocalPort, in area: WorkArea) throws {
         guard area.workspacePorts.contains(target.port) else {
-            throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端在监听的端口")
+            throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端或预览在监听的端口")
         }
-        let previews = area.instances.filter { $0.status == .open && area.previewKind(of: $0) == .web && $0.state?.preview?.port == target.port }
-        if let existing = previews.first(where: { area.window(of: $0.id) != nil }) ?? previews.first {
+        let previews = area.instances.filter { $0.status == .open && area.previewStatus(of: $0)?.screen == .web
+            && $0.state?.preview?.port == target.port && $0.state?.terminal?.running == true }
+        let browsers = area.instances.filter { $0.status == .open && $0.definitionId == Self.browserDefinition && $0.state?.browser?.port == target.port }
+        for candidates in [previews, browsers] {
+            guard let existing = candidates.first(where: { area.window(of: $0.id) != nil }) ?? candidates.first else { continue }
             area.webLinks[existing.id] = WebLink(target: target)
-            openWindow(.open(.init(instanceId: existing.id, viewId: "preview")), in: area)
+            let view = existing.definitionId == Self.previewDefinition ? "screen" : "browser"
+            openWindow(.open(.init(instanceId: existing.id, viewId: view)), in: area)
             return
         }
         let id = UUID().uuidString.lowercased()
         area.webLinks[id] = WebLink(target: target)
-        openWindow(.create(Self.previewDefinition, instance: id, title: area.previewTitle(.web()), preview: .web(port: target.port)), in: area)
+        openWindow(.create(Self.browserDefinition, instance: id, browser: BrowserStatus(port: target.port)), in: area)
     }
 
-    /// 新建窗口里选了网页预览或模拟器：这个窗口原地变成那个预览。
-    func choosePreview(_ spec: PreviewSpec, in area: WorkArea) {
+    #if os(macOS)
+    /// 在这台 Mac 上打开 App 窗口里那个 App：从工作机取 .app 的包，交给这台 Mac 上的 kited 解开、打开（kited 的 preview/app-bundles.ts）。
+    /// 不由 App 自己解开：沙盒里写出的文件带隔离标记，开发签名的 App 打不开。
+    func openAppHere(_ instance: String, in area: WorkArea) async throws {
+        let remote = try activeClient(in: area)
+        guard let local = connections.values.first(where: { $0.client.isLocal && $0.connected })?.client else {
+            throw KitedError(message: "这台 Mac 上没有运行 kited，装不了 App")
+        }
+        let (file, response) = try await remote.download("/instances/\(instance.pathComponent)/preview/bundle")
+        guard let file else { throw KitedError(message: "没有取到 App 的包") }
+        defer { try? FileManager.default.removeItem(at: file) }
+        let name = response.value(forHTTPHeaderField: "X-Kite-App")?.removingPercentEncoding ?? "App.app"
+        struct Opened: Decodable { let path: String }
+        _ = try await local.upload("/apps/\(name.pathComponent)", file: file, as: Opened.self)
+    }
+    #endif
+
+    /// 新建窗口里选了一个目标：这个窗口原地变成以它起的预览，名字是目标名，带设备的加上型号或设备名，同工作机。
+    /// 同一目标与设备已经在跑时关掉新建窗口、打开那个预览；已经结束、还没回收的由工作机在原来的实例里重新起。
+    func choosePreview(_ spec: PreviewSpec, deviceTitle: String?, in area: WorkArea) {
+        if let existing = area.preview(for: spec), existing.state?.terminal?.running == true {
+            area.closeChooser()
+            openWindow(.open(.init(instanceId: existing.id, viewId: "screen")), in: area)
+            return
+        }
         guard let window = area.chooserWindow else { return }
-        send(OpenWindowRequest(id: window, content: .create(Self.previewDefinition, instance: UUID().uuidString.lowercased(),
-                                                            title: area.previewTitle(spec), preview: spec)), in: area)
+        let title = deviceTitle.map { "\(spec.target) · \($0)" } ?? spec.target
+        send(OpenWindowRequest(id: window, content: .create(Self.previewDefinition, instance: UUID().uuidString.lowercased(), title: title, preview: spec)), in: area)
     }
 
-    /// 改网页预览看的端口或在哪看，各设备共用。
-    func selectPreview(_ instance: String, port: Int? = nil, browser: PreviewBrowser? = nil, in area: WorkArea) async throws {
-        struct Select: Encodable { let operationId: String; let instanceId: String; let port: Int?; let browser: String? }
-        struct Selected: Decodable { var port: Int? = nil; var browser: String? = nil }
+    /// 改预览的网页在哪看，各设备共用。
+    func selectPreview(_ instance: String, browser: PreviewBrowser, in area: WorkArea) async throws {
+        struct Select: Encodable { let operationId: String; let instanceId: String; let browser: String }
+        struct Selected: Decodable { var browser: String? = nil }
         let client = try activeClient(in: area)
         _ = try await client.request("/workspaces/\(area.id)/operations/preview.select", method: "POST",
-                                     body: Select(operationId: UUID().uuidString, instanceId: instance, port: port, browser: browser?.rawValue), as: Selected.self)
+                                     body: Select(operationId: UUID().uuidString, instanceId: instance, browser: browser.rawValue), as: Selected.self)
         try await refresh(client)
     }
 
-    /// 关闭预览：连同窗口回收，agent 开的、没有窗口的也一样。
-    func closePreview(_ instance: String, in area: WorkArea) async throws {
-        struct Close: Encodable { let operationId: String; let instanceId: String }
-        struct Closed: Decodable { let ok: Bool }
+    /// 已经结束的预览在原来的实例里重新起：同新建，工作机认出同一目标与设备，打开这个实例。
+    func restartPreview(_ instance: RemotePluginInstance, in area: WorkArea) {
+        guard let spec = instance.config?.preview else { return }
+        openWindow(.create(Self.previewDefinition, instance: UUID().uuidString.lowercased(), title: instance.title, preview: spec), in: area)
+    }
+
+    /// 改浏览窗口看的端口，各设备共用；nil 是不选。
+    func selectBrowser(_ instance: String, port: Int?, in area: WorkArea) async throws {
+        struct Select: Encodable { let operationId: String; let instanceId: String; let port: Int? }
+        struct Selected: Decodable { var port: Int? = nil }
         let client = try activeClient(in: area)
-        _ = try await client.request("/workspaces/\(area.id)/operations/preview.close", method: "POST",
-                                     body: Close(operationId: UUID().uuidString, instanceId: instance), as: Closed.self)
+        _ = try await client.request("/workspaces/\(area.id)/operations/browser.select", method: "POST",
+                                     body: Select(operationId: UUID().uuidString, instanceId: instance, port: port), as: Selected.self)
         try await refresh(client)
     }
 
-    /// 停终端：先挂断 shell，等不到退出再停整个进程组；工作机确认进程结束才返回。
-    func stopTerminal(_ instance: String, in area: WorkArea) async throws {
+    /// 停终端或预览的进程：先挂断，等不到退出再停整个进程组；工作机确认进程结束才返回，没有窗口的随之回收。
+    func stopProcess(_ instance: RemotePluginInstance, in area: WorkArea) async throws {
         struct Stop: Encodable { let operationId: String; let instanceId: String }
         struct Stopped: Decodable { let ok: Bool }
         let client = try activeClient(in: area)
-        _ = try await client.request("/workspaces/\(area.id)/operations/terminal.stop", method: "POST",
-                                     body: Stop(operationId: UUID().uuidString, instanceId: instance), as: Stopped.self)
+        let operation = instance.definitionId == Self.previewDefinition ? "preview.stop" : "terminal.stop"
+        _ = try await client.request("/workspaces/\(area.id)/operations/\(operation)", method: "POST",
+                                     body: Stop(operationId: UUID().uuidString, instanceId: instance.id), as: Stopped.self)
     }
 
     /// 代码块的「在终端中执行」：新开一个以命令第一行为名的终端，工作机等 shell 起好后把命令打进去执行。
@@ -768,27 +805,27 @@ final class AppModel {
         openWindow(.create("kite.terminal", instance: UUID().uuidString.lowercased(), title: title, command: command), in: area)
     }
 
-    /// 工作区里的预置脚本（.kite/scripts/ 下的文件名），新建窗口每次打开都来取。
-    func scripts(in area: WorkArea) async throws -> [String] {
-        struct Scripts: Decodable { let scripts: [String] }
-        return try await activeClient(in: area).request("/workspaces/\(area.id)/scripts", as: Scripts.self).scripts
+    /// 工作区的预览目标（.kite/preview/ 下的文件名）与设备候选，新建窗口每次打开都来取。
+    func previewTargets(in area: WorkArea) async throws -> PreviewTargets {
+        try await activeClient(in: area).request("/workspaces/\(area.id)/preview-targets", as: PreviewTargets.self)
     }
 
-    /// 新建窗口里选了预置脚本：这个窗口原地变成以它起的终端。同一脚本只跑一份，已经在跑的关掉新建窗口、打开那个终端。
-    func runScript(_ name: String, in area: WorkArea) {
-        if let running = area.runningScript(name) {
-            area.closeChooser()
-            openWindow(.open(.init(instanceId: running.id, viewId: "terminal")), in: area)
-            return
-        }
-        guard let window = area.chooserWindow else { return }
-        send(OpenWindowRequest(id: window, content: .create("kite.terminal", instance: UUID().uuidString.lowercased(), title: name, script: name)), in: area)
-    }
+    /// 这台 iPhone、iPad 的硬件型号（如 iPhone18,3）：新建窗口的设备候选里默认选中与它型号相同的那台配对过的真机（iOS 不给 App 设备的名字）。
+    /// Mac 和模拟器里没有。
+    static let deviceModel: String? = {
+        #if os(iOS) && !targetEnvironment(simulator)
+        var system = utsname()
+        uname(&system)
+        return withUnsafeBytes(of: &system.machine) { String(decoding: $0.prefix(while: { $0 != 0 }), as: UTF8.self) }
+        #else
+        return nil
+        #endif
+    }()
 
-    /// 菜单里的停止终端：不等结果，失败报在窗口提示里。
-    func stopTerminal(_ instance: RemotePluginInstance, in area: WorkArea) {
+    /// 菜单里的停止终端、预览：不等结果，失败报在窗口提示里。
+    func requestStop(_ instance: RemotePluginInstance, in area: WorkArea) {
         Task {
-            do { try await stopTerminal(instance.id, in: area) }
+            do { try await stopProcess(instance, in: area) }
             catch { area.windowError = error.localizedDescription }
         }
     }

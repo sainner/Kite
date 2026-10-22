@@ -17,7 +17,7 @@ export async function systemCommand(command: string[], options: { env?: Record<s
 const builds = new Map<string, Promise<string>>();
 
 /**
- * 随 kited 带源码、首次使用时编译的小程序（kite-pdf、kite-sim）：按源码哈希编译到用户临时目录的 kite-<name>-<hash>/<name>，编过的直接用。
+ * 随 kited 带源码、首次使用时编译的小程序（kite-pdf、kite-window）：按源码哈希编译到用户临时目录的 kite-<name>-<hash>/<name>，编过的直接用。
  * 先编到临时文件再改名，几处同时要时只编一次；编译失败时报 failure 加编译输出的最后几行。
  */
 export function compiledHelper(helper: { source: string; name: string; compile: (output: string) => string[]; env: NodeJS.ProcessEnv; failure: string; status?: number }): Promise<string> {

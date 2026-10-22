@@ -33,7 +33,7 @@ struct KiteApp: App {
     var body: some Scene {
         #if os(macOS)
         Window("Kite", id: "main") {
-            AppRoot().dockPreview().connectsToService().cardActionsPreview()
+            AppRoot().dockPreview().connectsToService().modifier(PortForwarding()).cardActionsPreview()
                 .environment(model).readsWindowChrome().keepsLayoutEngine().toastHost().appAppearance()
         }
         .kiteWindowStyle()
@@ -51,7 +51,7 @@ struct KiteApp: App {
 
         #else
         WindowGroup {
-            AppRoot().dockPreview().connectsToService().cardActionsPreview().environment(model).toastHost().appAppearance()
+            AppRoot().dockPreview().connectsToService().modifier(PortForwarding()).cardActionsPreview().environment(model).toastHost().appAppearance()
         }
         // iPad 外接键盘的快捷键
         .commands { KiteCommands(model: model) }

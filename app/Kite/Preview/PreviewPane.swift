@@ -1,29 +1,105 @@
 import SwiftUI
 
-/// 预览窗口（docs/成果查看与位置.md「预览」）：一个实例是一个要看的对象，网页或本工作区的模拟器。
-/// 网页默认在设备自己的网页视图里看（DeviceWebPreview），也可以换到工作机上的浏览器；工作机上的浏览器和模拟器都是传过来的画面（ScreenPreview），
-/// 人和 agent 操作同一个页面、同一块屏幕。端口与在哪看各设备共用，改的是实例状态（AppModel.selectPreview）。
+/// 预览窗口（docs/成果查看与位置.md「预览」）：一个实例是一种目标跑起来的全部进程加画面。视图三个：画面、并排（只有网页画面有）与输出（进程的终端画面）。
+/// 画面的种类由进程产生什么决定（PreviewStatus.screen）：网页默认在设备自己的网页视图里看（DeviceWebPreview），也可以换到工作机上的浏览器；
+/// 工作机上的浏览器、模拟器和 App 窗口都是传过来的画面（ScreenPreview），人和 agent 操作同一个页面、同一块屏幕；还没有画面时画面视图就是输出。
+/// 在哪看各设备共用，改的是实例状态（AppModel.selectPreview）。
 struct PreviewPane: View {
     let instance: RemotePluginInstance
     let client: KitedClient
     let connection: UUID
+    /// 窗口当前视图的渲染方式（定义里声明的）：terminal 是输出，preview-grid 是并排，其余是画面。
+    let renderer: String?
     @Environment(WorkArea.self) private var area
 
     var body: some View {
-        let web = area.previewKind(of: instance) != .simulator
-        let status = instance.state?.preview ?? PreviewStatus()
-        if web, status.choice == .device {
-            DeviceWebPreview(instance: instance, client: client, status: status)
-        } else {
-            ScreenPreview(instance: instance, client: client, connection: connection, web: web, status: status)
+        let status = area.previewStatus(of: instance) ?? PreviewStatus()
+        switch renderer {
+        case "terminal":
+            TerminalPane(instance: instance, client: client, connection: connection, preview: true)
+        case "preview-grid":
+            GridPreview(instance: instance, client: client, connection: connection, status: status)
+        default:
+            switch status.screen {
+            case .none: TerminalPane(instance: instance, client: client, connection: connection, preview: true)
+            case .web where status.choice == .device: DeviceWebPreview(instance: instance, client: client, source: .preview(status))
+            default: ScreenPreview(instance: instance, client: client, connection: connection, status: status)
+            }
         }
     }
 }
 
-/// 网页预览的端口与在哪看：一个菜单，上半是本工作区运行中终端监听的端口，下半是设备自己的网页视图或工作机上的浏览器。
-private struct PreviewTargetMenu: View {
+/// 浏览窗口（docs/成果查看与位置.md「运行中的网页」）：设备自己的网页视图看本工作区的一个端口，端口各设备共用（AppModel.selectBrowser）。
+struct BrowserPane: View {
+    let instance: RemotePluginInstance
+    let client: KitedClient
+
+    var body: some View {
+        DeviceWebPreview(instance: instance, client: client, source: .browser(instance.state?.browser?.port))
+    }
+}
+
+extension WorkArea {
+    /// 预览窗口标题栏右边的进程动作：在跑时停止，结束了重新起。
+    @MainActor func previewActions(_ instance: RemotePluginInstance, model: AppModel, report: @escaping (String?) -> Void) -> [PaneHeaderAction] {
+        guard previewStatus(of: instance) != nil else { return [] }
+        if instance.state?.terminal?.running == true {
+            let busy = stoppingProcesses.contains(instance.id)
+            return [PaneHeaderAction(title: "停止预览", systemImage: "stop.fill", busy: busy, disabled: busy, tint: Theme.danger) {
+                self.stop(instance, model: model, report: report)
+            }]
+        }
+        return [PaneHeaderAction(title: "重新运行", systemImage: "arrow.clockwise", help: "在这个窗口里重新起这个目标") { model.restartPreview(instance, in: self) }]
+    }
+
+    /// 预览的副标题：画面种类与进程状态。
+    func previewSubtitle(_ instance: RemotePluginInstance, status: PreviewStatus) -> String {
+        if let process = instance.state?.terminal, !process.running { return process.summary }
+        return switch status.screen {
+        case .web: [status.port.map { "localhost:\($0)" }, status.choice.title].compactMap { $0 }.joined(separator: " · ")
+        case .simulator: "模拟器"
+        case .app: status.app.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "App 窗口"
+        case .none: "输出"
+        }
+    }
+}
+
+/// 网页在哪看：设备自己的网页视图或工作机上的浏览器；按钮上是主端口。
+private struct PreviewBrowserMenu: View {
     let instance: RemotePluginInstance
     let status: PreviewStatus
+    let report: (String?) -> Void
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+
+    var body: some View {
+        Menu {
+            Section("在哪看") {
+                ForEach(PreviewBrowser.allCases) { choice in
+                    Button { select(choice) } label: {
+                        let title = choice == .device ? "本设备的网页视图" : "工作机上的 \(choice.title)"
+                        if choice == status.choice { Label(title, systemImage: "checkmark") } else { Text(title) }
+                    }
+                }
+            }
+        } label: { PaneHeaderButtonLabel(status.port.map(String.init) ?? "网页") }
+            .foregroundStyle(Color.primary)
+            .help("选在哪看")
+    }
+
+    private func select(_ browser: PreviewBrowser) {
+        report(nil)
+        Task {
+            do { try await model.selectPreview(instance.id, browser: browser, in: area) }
+            catch { report(error.localizedDescription) }
+        }
+    }
+}
+
+/// 浏览窗口看哪个端口：本工作区运行中终端与预览监听的端口。
+private struct BrowserPortMenu: View {
+    let instance: RemotePluginInstance
+    let selected: Int?
     let report: (String?) -> Void
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -34,29 +110,21 @@ private struct PreviewTargetMenu: View {
             Section("端口") {
                 if ports.isEmpty { Text("还没有监听的端口") }
                 ForEach(ports, id: \.port) { item in
-                    Button { select(port: item.port) } label: {
+                    Button { select(item.port) } label: {
                         let title = item.http ? "\(item.port)" : "\(item.port)（不是网页）"
-                        if item.port == status.port { Label(title, systemImage: "checkmark") } else { Text(title) }
+                        if item.port == selected { Label(title, systemImage: "checkmark") } else { Text(title) }
                     }
                 }
             }
-            Section("在哪看") {
-                ForEach(PreviewBrowser.allCases) { choice in
-                    Button { select(browser: choice) } label: {
-                        let title = choice == .device ? "本设备的网页视图" : "工作机上的 \(choice.title)"
-                        if choice == status.choice { Label(title, systemImage: "checkmark") } else { Text(title) }
-                    }
-                }
-            }
-        } label: { PaneHeaderButtonLabel(status.port.map(String.init) ?? "选端口") }
+        } label: { PaneHeaderButtonLabel(selected.map(String.init) ?? "选端口") }
             .foregroundStyle(Color.primary)
-            .help("选要打开的端口和在哪看")
+            .help("选要打开的端口")
     }
 
-    private func select(port: Int? = nil, browser: PreviewBrowser? = nil) {
+    private func select(_ port: Int) {
         report(nil)
         Task {
-            do { try await model.selectPreview(instance.id, port: port, browser: browser, in: area) }
+            do { try await model.selectBrowser(instance.id, port: port, in: area) }
             catch { report(error.localizedDescription) }
         }
     }
@@ -64,15 +132,23 @@ private struct PreviewTargetMenu: View {
 
 // MARK: - 设备自己的网页视图
 
-/// 在设备自己的网页视图里看网页：经端口转发打开（PortPreview），页面里的跳转、滚动与登录状态按设备各自保存（store 按实例分开）。
-/// 控制区：左边后退、前进、首页，中间地址栏（站点图标、localhost:、端口与在哪看的菜单、路径），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
+/// 在设备自己的网页视图里看网页：浏览窗口，或预览的网页画面在本设备上看。经端口转发打开（PortPreview），页面里的跳转、滚动与登录状态按设备各自保存（store 按实例分开）。
+/// 控制区：左边后退、前进、首页，中间地址栏（站点图标、localhost:、端口菜单（浏览）或在哪看的菜单（预览）、路径），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
 /// 路径跟着页面显示，改了回车打开；都在同一个页面里跳转（WebBrowser），前进后退接得上。
 /// 宽屏卡片里控制区随悬停显隐，同窗口按钮（见 WebControls）。紧凑布局里左边只有后退，有下一页时才出现前进，首页挪到地址栏最右边；
 /// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替重新加载，点了路径回到打字前的样子、接着打字。
 private struct DeviceWebPreview: View {
+    enum Source {
+        /// 浏览窗口选的端口。
+        case browser(Int?)
+        /// 预览的网页画面：主端口由进程定。
+        case preview(PreviewStatus)
+    }
+
     let instance: RemotePluginInstance
     let client: KitedClient
-    let status: PreviewStatus
+    let source: Source
+    @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.workspacePresentation) private var presentation
     @State private var browser = WebBrowser()
@@ -83,23 +159,42 @@ private struct DeviceWebPreview: View {
     @State private var pathReset = 0
 
     private var compact: Bool { presentation == .compact }
-    /// 端口还在被本工作区的终端监听才打开；服务停了预览留着，同一端口再被监听时接着显示。
-    private var port: Int? { status.port.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
+    private var selected: Int? {
+        switch source {
+        case .browser(let port): port
+        case .preview(let status): status.port
+        }
+    }
+    /// 端口还在被本工作区监听才打开；浏览窗口的服务停了窗口留着，同一端口再被监听时接着显示。
+    private var port: Int? { selected.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
     /// 消息里点的链接，端口对得上才打开到它的路径（见 AppModel.openLocalPort）。
     private var link: WebLink? { area.webLinks[instance.id].flatMap { $0.target.port == port ? $0 : nil } }
     private var notice: PaneNotice? {
         if let error = selectError ?? (port == nil ? nil : webFailure) { return .failure(error) }
         guard port == nil else { return nil }
-        if let selected = status.port { return .info("localhost:\(selected) 现在没有终端在监听，服务起来后接着显示", symbol: "pause.circle") }
-        return .info(area.workspacePorts.isEmpty ? "还没有监听的端口，先在终端里起服务" : "选要打开的端口")
+        if let selected { return .info("localhost:\(selected) 现在没有终端或预览在监听，服务起来后接着显示", symbol: "pause.circle") }
+        return .info(area.workspacePorts.isEmpty ? "还没有监听的端口，先在终端里起服务或起一个预览目标" : "选要打开的端口")
+    }
+    private var subtitle: String {
+        switch source {
+        case .browser(let port): port.map { "localhost:\($0)" } ?? "浏览"
+        case .preview(let status): area.previewSubtitle(instance, status: status)
+        }
+    }
+    private var headerActions: PaneHeaderActions {
+        let actions = area.previewActions(instance, model: model) { selectError = $0 }
+        return actions.isEmpty ? PaneHeaderActions() : PaneHeaderActions(groups: [actions])
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: instance.title, subtitle: status.port.map { "localhost:\($0)" } ?? "网页预览"), notice: notice) {
+        PaneWindow(header: PaneHeader(title: instance.title, subtitle: subtitle), notice: notice, actions: headerActions) {
             if let port, let store = UUID(uuidString: instance.id) {
-                PortPreview(client: client, port: port, workspacePorts: area.workspacePorts, store: store, link: link, browser: browser,
+                PortPreview(client: client, port: port, store: store, link: link, browser: browser,
                             report: { webFailure = $0 })
                     .id("\(port) \(reload)")
+            } else {
+                // 正文不能是空的：PaneWindow 的标题栏和控制区挂在正文上，正文为空时一起不见（没选端口时整张卡片空白）
+                Color.clear
             }
         } controls: { typing in
             WebControls(typing: typing.wrappedValue) {
@@ -130,9 +225,7 @@ private struct DeviceWebPreview: View {
                                 #if os(macOS)
                                 // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
                                 ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
-                                // 只在 Mac 上：其他设备上页面开在本机转发上（PortRelay），转发随这个窗口的网页视图开着；
-                                // iPhone、iPad 切到浏览器后 App 进后台，转发停下，打不开。
-                                // 不走环境里的 openURL：本机地址会被它接回网页预览（见 ReferenceNavigation）。
+                                // 不走环境里的 openURL：本机地址会被它接回 Kite 的窗口（见 ReferenceNavigation）。
                                 ActionButton("在浏览器中打开", icon: "arrow.up.right.square") {
                                     if let url = browser.url { NSWorkspace.shared.open(url) }
                                 }
@@ -161,7 +254,7 @@ private struct DeviceWebPreview: View {
         }
     }
 
-    /// 地址栏：站点图标、localhost:、端口与在哪看的菜单、路径，端口和路径之间不留空。还没打开端口时只有菜单。
+    /// 地址栏：站点图标、localhost:、菜单、路径，端口和路径之间不留空。还没打开端口时只有菜单。
     /// 紧凑布局里宽度不够，省掉 localhost:，首页放在地址栏最右边。
     private func address(port: Int?, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: port != nil) {
@@ -182,7 +275,10 @@ private struct DeviceWebPreview: View {
                 }
             }
             .padding(.leading, Metrics.paneHeaderButtonGap / 2)
-            PreviewTargetMenu(instance: instance, status: status) { selectError = $0 }
+            switch source {
+            case .browser(let selected): BrowserPortMenu(instance: instance, selected: selected) { selectError = $0 }
+            case .preview(let status): PreviewBrowserMenu(instance: instance, status: status) { selectError = $0 }
+            }
             if let port {
                 WebPathField(path: LocalPort.displayPath(of: browser.url), typing: typing, reset: pathReset) { open($0, on: port) }
                     // 路径框压住端口按钮右边那半个按钮间距，端口的悬停高亮仍按整个按钮画
@@ -204,37 +300,34 @@ private struct DeviceWebPreview: View {
 
 // MARK: - 工作机上的画面
 
-/// 工作机上的浏览器页面或模拟器屏幕，画面经 PreviewSession 传过来。工作机本机默认实时，其他设备默认逐帧：做一个动作，等画面稳定后来一帧，
+/// 工作机上的浏览器页面、模拟器屏幕或 App 窗口，画面经 PreviewSession 传过来。工作机本机默认实时，其他设备默认逐帧：做一个动作，等画面稳定后来一帧，
 /// 等的期间画面上显示等待中、再点会被丢掉；刚点的位置在画面上标出来。想看动画切实时画面。拖动、滑动在松手时作为一个动作发出；
-/// 长按、捏合另给按钮。网页的视口跟着最近操作的那台设备的窗口；模拟器屏幕尺寸固定，按比例放进窗口。
+/// 长按、捏合（模拟器）和右键（App 窗口）另给按钮。网页的视口跟着最近操作的那台设备的窗口；模拟器屏幕和 App 窗口的尺寸由它们自己定，按比例放进窗口。
 /// 打字：Mac 和接了键盘的 iPad 点一下画面就能直接打；输入法和触屏键盘用控制区的「输入文字」。
+/// 在另一台 Mac 上看 App 窗口时，可以把这个 App 装到这台 Mac 上直接用（AppModel.openAppHere）。
 private struct ScreenPreview: View {
     let instance: RemotePluginInstance
     let client: KitedClient
     let connection: UUID
-    let web: Bool
     let status: PreviewStatus
+    @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var session: PreviewSession
     @State private var actionError: String?
+    /// 下一次点按发成长按（模拟器）或右键（App 窗口）。
     @State private var longPress = false
     @State private var composing = false
     @State private var text = ""
+    @State private var openingHere = false
     @FocusState private var textFocused: Bool
 
-    init(instance: RemotePluginInstance, client: KitedClient, connection: UUID, web: Bool, status: PreviewStatus) {
+    init(instance: RemotePluginInstance, client: KitedClient, connection: UUID, status: PreviewStatus) {
         self.instance = instance
         self.client = client
         self.connection = connection
-        self.web = web
         self.status = status
         // 看的设备就是工作机时链路不成问题，默认实时；其他设备默认逐帧，想看动画再切
         _session = State(initialValue: PreviewSession(instanceID: instance.id, live: client.isLocal))
-    }
-
-    private var subtitle: String {
-        guard web else { return "模拟器" }
-        return [status.port.map { "localhost:\($0)" }, status.choice.title].compactMap { $0 }.joined(separator: " · ")
     }
 
     private var notice: PaneNotice? {
@@ -247,8 +340,15 @@ private struct ScreenPreview: View {
         case .connected, .failed: break
         }
         switch session.phase {
-        case "waiting": return .info("选要打开的端口")
-        case "starting": return .info(web ? "正在打开\(status.choice.title)，第一次用要先下载，需要几分钟…" : "正在启动模拟器，第一次要半分钟左右…", symbol: "hourglass")
+        case "waiting": return .info("进程还没产生画面", symbol: "hourglass")
+        case "starting":
+            let message = switch status.screen {
+            case .web: status.choice == .safari ? "正在打开工作机上的 Safari…" : "正在打开\(status.choice.title)，第一次用要先下载，需要几分钟…"
+            case .simulator: "正在连上模拟器，第一次要开机，半分钟到一分钟…"
+            case .app: "正在打开 App 的窗口…"
+            case .none: "正在打开…"
+            }
+            return .info(message, symbol: "hourglass")
         default: return nil
         }
     }
@@ -256,23 +356,29 @@ private struct ScreenPreview: View {
     /// 消息里点的链接（见 AppModel.openLocalPort）：连上工作机后在页面里打开到它的路径；窗口刚开、还没连上时等连上。
     private var linkToOpen: UUID? { session.link == .connected ? area.webLinks[instance.id]?.id : nil }
 
-    /// 实时画面开关放在标题栏右边。
+    /// 实时画面开关与进程的停止、重新运行放在标题栏右边。
     private var headerActions: PaneHeaderActions {
         PaneHeaderActions(groups: [[
             PaneHeaderAction(title: "刷新画面", systemImage: "camera.viewfinder", disabled: session.live) { session.refresh() },
             PaneHeaderAction(title: "实时画面", systemImage: "play.rectangle", help: session.live ? "切回逐帧：做完一个动作等画面稳定再来一帧" : "画面变了就传过来，链路慢时会卡",
                              on: session.live) { session.setLive(!session.live) },
-        ]])
+        ], area.previewActions(instance, model: model) { actionError = $0 }].filter { !$0.isEmpty })
     }
 
     var body: some View {
-        PaneWindow(header: PaneHeader(title: instance.title, subtitle: subtitle), notice: notice, actions: headerActions) {
-            ScreenView(session: session, web: web, longPress: $longPress)
+        PaneWindow(header: PaneHeader(title: instance.title, subtitle: area.previewSubtitle(instance, status: status)), notice: notice, actions: headerActions) {
+            ScreenView(session: session, screen: status.screen, longPress: $longPress)
                 .padding(.horizontal, Metrics.padding)
                 .padding(.bottom, Metrics.padding)
         } controls: { typing in
             WebControls(typing: typing.wrappedValue || composing) {
-                if composing { compose } else if web { webControls(typing: typing) } else { simulatorControls }
+                if composing { compose } else {
+                    switch status.screen {
+                    case .web: webControls(typing: typing)
+                    case .simulator: simulatorControls
+                    case .app, .none: appControls
+                    }
+                }
             }
         }
         .task(id: connection) { await session.run(client: client) }
@@ -295,11 +401,9 @@ private struct ScreenPreview: View {
                     .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
                     .padding(.leading, Metrics.paneHeaderButtonGap / 2)
                     .accessibilityHidden(true)
-                PreviewTargetMenu(instance: instance, status: status) { actionError = $0 }
-                if status.port != nil {
-                    WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing) { act(["type": "navigate", "path": $0]) }
-                        .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
-                }
+                PreviewBrowserMenu(instance: instance, status: status) { actionError = $0 }
+                WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing) { act(["type": "navigate", "path": $0]) }
+                    .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
             }
             PaneHeaderButtonGroup {
                 ActionButton("重新加载", icon: "arrow.clockwise") { act(["type": "reload"]) }
@@ -326,6 +430,37 @@ private struct ScreenPreview: View {
             }
         }
     }
+
+    private var appControls: some View {
+        HStack(spacing: Metrics.paneButtonGap) {
+            PaneHeaderButtonGroup {
+                ActionButton(longPress ? "右键（下一次点按）" : "右键", icon: longPress ? "contextualmenu.and.cursorarrow" : "cursorarrow.click.2") { longPress.toggle() }
+            }
+            Spacer(minLength: 0)
+            PaneHeaderButtonGroup {
+                #if os(macOS)
+                // 看的就是工作机时 App 本来就在这台 Mac 上；直接跑的可执行文件（不是 .app）传不过来
+                if !client.isLocal, status.app?.hasSuffix(".app") == true {
+                    ActionButton(openingHere ? "正在装到这台 Mac…" : "在这台 Mac 上打开", icon: "arrow.down.app") { openHere() }
+                        .disabled(openingHere)
+                }
+                #endif
+                ActionButton("输入文字", icon: "keyboard") { startComposing() }
+            }
+        }
+    }
+
+    #if os(macOS)
+    private func openHere() {
+        actionError = nil
+        openingHere = true
+        Task {
+            do { try await model.openAppHere(instance.id, in: area) }
+            catch { actionError = error.localizedDescription }
+            openingHere = false
+        }
+    }
+    #endif
 
     /// 输入文字：回车把这段文字打进去（不带回车），「回车」键单独发。
     private var compose: some View {
@@ -380,11 +515,137 @@ private struct ScreenPreview: View {
     }
 }
 
-/// 传过来的画面：按比例放进窗口，点按、拖动换成画面坐标发回去。点按不到 6 点的移动算点按，长按模式下发成长按；
-/// 再远是拖动，网页上换成滚动（同触屏上划页面），模拟器上就是滑动。点一下画面后，Mac 和接了键盘的 iPad 的按键直接发过去。
+// MARK: - 并排
+
+/// 并排视图：同一个预览的网页在工作机上几种浏览器、几种尺寸同时看，每格一个 {浏览器, 视口尺寸} 的页面，按比例放进格子。
+/// 哪几格由各设备自己定，记在本机（PreviewGrid.cells），不共享；agent 的 preview_action 带同样的浏览器与尺寸时，操作的就是那一格的页面。
+private struct GridPreview: View {
+    let instance: RemotePluginInstance
+    let client: KitedClient
+    let connection: UUID
+    let status: PreviewStatus
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @State private var cells = PreviewGrid.cells
+    @State private var actionError: String?
+
+    private var notice: PaneNotice? {
+        if let actionError { return .failure(actionError) }
+        if status.screen != .web { return .info("只有网页画面能并排：这个预览现在没有能打开的网页端口", symbol: "square.grid.2x2") }
+        if cells.isEmpty { return .info("用右上角的「添加一格」选浏览器和尺寸", symbol: "plus") }
+        return nil
+    }
+
+    private var headerActions: PaneHeaderActions {
+        PaneHeaderActions(groups: [area.previewActions(instance, model: model) { actionError = $0 }]
+            .filter { !$0.isEmpty })
+    }
+
+    var body: some View {
+        PaneWindow(header: PaneHeader(title: instance.title, subtitle: area.previewSubtitle(instance, status: status)), notice: notice, actions: headerActions) {
+            if status.screen == .web {
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: Metrics.padding) {
+                        ForEach(cells) { cell in
+                            GridCell(instance: instance, client: client, connection: connection, cell: cell) { remove(cell) }
+                        }
+                    }
+                    .padding(.horizontal, Metrics.padding)
+                    .padding(.bottom, Metrics.padding)
+                }
+            } else {
+                Color.clear
+            }
+        } controls: { _ in
+            HStack(spacing: Metrics.paneButtonGap) {
+                Spacer(minLength: 0)
+                PaneHeaderButtonGroup {
+                    Menu {
+                        ForEach(PreviewBrowser.allCases.filter { $0 != .device }) { browser in
+                            Section(browser.title) {
+                                ForEach(PreviewGrid.sizes, id: \.title) { size in
+                                    Button("\(size.title) \(size.width)×\(size.height)") { add(PreviewCell(browser: browser, width: size.width, height: size.height)) }
+                                }
+                            }
+                        }
+                    } label: { PaneHeaderButtonLabel("添加一格") }
+                        .foregroundStyle(Color.primary)
+                }
+            }
+        }
+    }
+
+    private func add(_ cell: PreviewCell) {
+        guard !cells.contains(cell) else { return }
+        cells.append(cell)
+        PreviewGrid.cells = cells
+    }
+
+    private func remove(_ cell: PreviewCell) {
+        cells.removeAll { $0 == cell }
+        PreviewGrid.cells = cells
+    }
+}
+
+/// 并排的格子记在本机，所有预览共用一套；没记过时是 WebKit 的手机与 Chromium 的桌面两格。
+enum PreviewGrid {
+    static let sizes: [(title: String, width: Int, height: Int)] = [("手机", 390, 844), ("平板", 820, 1180), ("桌面", 1280, 800)]
+    private static let key = "KitePreviewGridCells"
+    static var cells: [PreviewCell] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: key), let cells = try? JSONDecoder().decode([PreviewCell].self, from: data) else {
+                let phone = sizes[0], desktop = sizes[2]
+                return [PreviewCell(browser: .webkit, width: phone.width, height: phone.height), PreviewCell(browser: .chromium, width: desktop.width, height: desktop.height)]
+            }
+            return cells
+        }
+        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: key) }
+    }
+}
+
+/// 并排的一格：上面一行是浏览器与尺寸、移除，下面是这一格的画面，逐帧操作。
+private struct GridCell: View {
+    let instance: RemotePluginInstance
+    let client: KitedClient
+    let connection: UUID
+    let cell: PreviewCell
+    let remove: () -> Void
+    @State private var session: PreviewSession
+    @State private var longPress = false
+
+    init(instance: RemotePluginInstance, client: KitedClient, connection: UUID, cell: PreviewCell, remove: @escaping () -> Void) {
+        self.instance = instance
+        self.client = client
+        self.connection = connection
+        self.cell = cell
+        self.remove = remove
+        _session = State(initialValue: PreviewSession(instanceID: instance.id, live: false, cell: cell))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("\(cell.browser.title) \(cell.width)×\(cell.height)").font(Theme.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if let error = session.error { Image(systemName: "exclamationmark.triangle").foregroundStyle(Theme.danger).help(error) }
+                Button(action: remove) { Image(systemName: "xmark") }
+                    .buttonStyle(.pointingPlain)
+                    .font(Theme.caption)
+                    .help("移除这一格")
+            }
+            ScreenView(session: session, screen: .web, longPress: $longPress)
+                .aspectRatio(CGFloat(cell.width) / CGFloat(cell.height), contentMode: .fit)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .task(id: connection) { await session.run(client: client) }
+    }
+}
+
+/// 传过来的画面：按比例放进窗口，点按、拖动换成画面坐标发回去。点按不到 6 点的移动算点按，按钮选了时模拟器上发成长按、App 窗口上发成右键；
+/// 再远是拖动，网页和 App 窗口上换成滚动（同触屏上划页面），模拟器上就是滑动。点一下画面后，Mac 和接了键盘的 iPad 的按键直接发过去。
 private struct ScreenView: View {
     let session: PreviewSession
-    let web: Bool
+    let screen: PreviewScreen
     @Binding var longPress: Bool
     @FocusState private var focused: Bool
 
@@ -431,14 +692,15 @@ private struct ScreenView: View {
                 if moved < 6 {
                     if longPress {
                         longPress = false
-                        session.send(["type": "long_press", "x": start.x, "y": start.y])
+                        if screen == .app { session.send(["type": "click", "x": start.x, "y": start.y, "button": "right"]) }
+                        else { session.send(["type": "long_press", "x": start.x, "y": start.y]) }
                     } else {
                         session.send(["type": "click", "x": start.x, "y": start.y])
                     }
-                } else if web {
-                    session.send(["type": "scroll", "x": start.x, "y": start.y, "dx": start.x - end.x, "dy": start.y - end.y])
-                } else {
+                } else if screen == .simulator {
                     session.send(["type": "drag", "from": ["x": start.x, "y": start.y], "to": ["x": end.x, "y": end.y]])
+                } else {
+                    session.send(["type": "scroll", "x": start.x, "y": start.y, "dx": start.x - end.x, "dy": start.y - end.y])
                 }
             })
             .focusable()

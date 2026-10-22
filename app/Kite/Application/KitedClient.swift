@@ -52,7 +52,7 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
     var outside: Bool?
     /// 出沙箱的命令绑定的密钥引用，如 {project.ssh_pw}。
     var secretReferences: [String]?
-    /// 代理起与主线不一致的预置脚本（tool 为 terminal_run，target 是脚本名）：脚本的内容。
+    /// 代理起与主线不一致的预览目标（tool 为 preview_open，target 是目标名）：脚本的内容。
     var script: String?
     /// 密钥请求一次要的几项，用户在同一张卡片里填，填了几项存几项。
     var secrets: [Secret]?
@@ -454,26 +454,35 @@ struct KitedClient: Equatable {
         return (session, session.webSocketTask(with: request))
     }
 
-    /// 接到预览画面的 WebSocket，协议见 kited 的 preview/previews.ts；带上窗口放得下的逻辑尺寸与实时还是逐帧。
-    func previewSocket(instance: String, width: Int, height: Int, live: Bool) async throws -> (URLSession, URLSessionWebSocketTask) {
-        let (session, request) = try await streamRequest("/instances/\(instance)/preview", thread: nil, webSocket: true, extra: [
-            URLQueryItem(name: "width", value: String(width)), URLQueryItem(name: "height", value: String(height)),
-            URLQueryItem(name: "mode", value: live ? "live" : "step"),
-        ])
+    /// 接到预览画面的 WebSocket，协议见 kited 的 preview/previews.ts；带上窗口放得下的逻辑尺寸与实时还是逐帧，并排的一格另带浏览器与视口尺寸。
+    func previewSocket(instance: String, width: Int, height: Int, live: Bool, cell: PreviewCell? = nil) async throws -> (URLSession, URLSessionWebSocketTask) {
+        var query = [URLQueryItem(name: "width", value: String(width)), URLQueryItem(name: "height", value: String(height)),
+                     URLQueryItem(name: "mode", value: live ? "live" : "step")]
+        if let cell {
+            query += [URLQueryItem(name: "browser", value: cell.browser.rawValue), URLQueryItem(name: "viewportWidth", value: String(cell.width)),
+                      URLQueryItem(name: "viewportHeight", value: String(cell.height))]
+        }
+        let (session, request) = try await streamRequest("/instances/\(instance)/preview", thread: nil, webSocket: true, extra: query)
         return (session, session.webSocketTask(with: request))
     }
 
     /// 按字节取文件，下载到临时文件，调用方挪走或删掉。304 时没有新内容，调用方用自己缓存的那一版。
     /// progress 拿到下载任务的进度对象；method 为 HEAD 时只取大小、类型和修改时间，不返回文件。
-    func download(_ path: String, method: String = "GET", headers: [String: String] = [:],
+    /// segmented 给支持 Range 的接口用：不是本机时按段取，见 segmentedDownload。
+    func download(_ path: String, method: String = "GET", headers: [String: String] = [:], segmented: Bool = false,
                   progress: (@Sendable (Progress) -> Void)? = nil) async throws -> (file: URL?, response: HTTPURLResponse) {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
         var request = URLRequest(url: try url(path))
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        let plain = request
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
+        if segmented, method == "GET", !isLocal,
+           let result = try await segmentedDownload(first: request, rest: plain, session: session, progress: progress) {
+            return result
+        }
         if method == "HEAD" {
             let (_, response) = try await session.data(for: request)
             try validate(response)
@@ -490,6 +499,119 @@ struct KitedClient: Equatable {
             try validate(response, data: data)
         }
         return (file, http)
+    }
+
+    /// 组网上按段取：一段 1 MiB、4 路同时取；一段 2 秒没有新数据就换个请求重取，同一段最多试 8 次。
+    nonisolated private static let segmentSize = 1 << 20
+    nonisolated private static let segmentWorkers = 4
+    nonisolated private static let segmentStall: TimeInterval = 2
+    nonisolated private static let segmentAttempts = 8
+
+    /// 组网上一条连接遇上丢包后可能一直慢下去，路径恢复了也不回来；分段几路同时取、卡住的段换个请求，
+    /// 实测把最慢的情况从几分钟压到几秒，见 docs/research/2026-10-22-组网传输速度.md。
+    /// 取的过程中文件被改了就整份重来，最多三遍。返回 nil 时这个文件按段取不了（空文件回 416），由调用方整份取。
+    ///
+    /// 段请求的超时从任务开始算，在 URLSession 里排队等连接的时间也算进去；所以这次下载用自己的会话，
+    /// 每主机连接数正好是同时取的段数，段请求不排队，也不与别的请求抢连接，2 秒只量真正的卡顿。
+    private func segmentedDownload(first: URLRequest, rest: URLRequest, session: URLSession,
+                                   progress: (@Sendable (Progress) -> Void)?) async throws -> (file: URL?, response: HTTPURLResponse)? {
+        let configuration = session.configuration
+        configuration.httpMaximumConnectionsPerHost = Self.segmentWorkers
+        let own = URLSession(configuration: configuration)
+        defer { own.invalidateAndCancel() }
+        var attempt = 1
+        while true {
+            do {
+                let (file, response, body) = try await Self.fetchSegments(first: first, rest: rest, session: own, progress: progress)
+                if response.statusCode == 416 { return nil }
+                if response.statusCode == 304 { return (nil, response) }
+                try validate(response, data: body)
+                return (file, response)
+            } catch is FileChanged {
+                guard attempt < 3 else { throw KitedError(message: "文件在下载时一直在变，请稍后再打开") }
+                attempt += 1
+            }
+        }
+    }
+
+    /// 先取第一段，带调用方的头（如 If-None-Match），从回应里拿到整份大小与版本；其余各段几路同时取，写进同一个临时文件的对应位置。
+    /// 第一段的回应不是 206 时原样交回：200 是接口给了整份（已写进临时文件），304、416 与错误由调用方处理，body 是错误说明。
+    nonisolated private static func fetchSegments(first: URLRequest, rest: URLRequest, session: URLSession,
+                                                  progress: (@Sendable (Progress) -> Void)?)
+        async throws -> (file: URL?, response: HTTPURLResponse, body: Data) {
+        let overall = Progress(totalUnitCount: -1)
+        progress?(overall)
+        let (head, response) = try await segment(first, session: session, from: 0, to: segmentSize - 1)
+        guard response.statusCode == 206 else {
+            guard response.statusCode == 200 else { return (nil, response, head) }
+            let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            try head.write(to: file)
+            return (file, response, Data())
+        }
+        guard let total = response.value(forHTTPHeaderField: "Content-Range")?.split(separator: "/").last.flatMap({ Int($0) }),
+              head.count == min(segmentSize, total) else { throw URLError(.badServerResponse) }
+        let version = response.value(forHTTPHeaderField: "ETag")
+        let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        do {
+            try head.write(to: file)
+            overall.totalUnitCount = Int64(total)
+            overall.completedUnitCount = Int64(head.count)
+            let handle = try FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            var pending = Array(stride(from: head.count, to: total, by: segmentSize))
+            try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+                var running = 0
+                repeat {
+                    while running < segmentWorkers, !pending.isEmpty {
+                        let start = pending.removeFirst(), end = min(start + segmentSize, total) - 1
+                        group.addTask {
+                            let (data, response) = try await Self.segment(rest, session: session, from: start, to: end)
+                            guard response.statusCode == 206, response.value(forHTTPHeaderField: "ETag") == version,
+                                  data.count == end - start + 1 else { throw FileChanged() }
+                            return (start, data)
+                        }
+                        running += 1
+                    }
+                    guard let next = try await group.next() else { break }
+                    running -= 1
+                    try handle.seek(toOffset: UInt64(next.0))
+                    try handle.write(contentsOf: next.1)
+                    overall.completedUnitCount += Int64(next.1.count)
+                } while running > 0
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            throw error
+        }
+        return (file, whole(response, url: first.url!, total: total), Data())
+    }
+
+    /// 取一段。URLRequest 的超时从任务开始算、每收到数据重新计时：建连或两次收到数据之间超过 2 秒，就当这条连接卡住了，
+    /// 换个请求重取这一段。前提是任务不在会话里排队，见 segmentedDownload。
+    nonisolated private static func segment(_ base: URLRequest, session: URLSession, from start: Int, to end: Int) async throws
+        -> (Data, HTTPURLResponse) {
+        var request = base
+        request.timeoutInterval = segmentStall
+        request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
+        var attempt = 1
+        while true {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+                return (data, http)
+            } catch let error as URLError where [.timedOut, .networkConnectionLost].contains(error.code) && attempt < segmentAttempts {
+                attempt += 1
+            }
+        }
+    }
+
+    /// 按段取完的文件当作一份整的回应交给调用方：去掉分段范围，长度写整份的；类型、版本、修改时间与有没有进快照照第一段的。
+    nonisolated private static func whole(_ response: HTTPURLResponse, url: URL, total: Int) -> HTTPURLResponse {
+        var fields: [String: String] = [:]
+        for case let (key as String, value as String) in response.allHeaderFields
+            where !["content-range", "content-length"].contains(key.lowercased()) { fields[key] = value }
+        fields["Content-Length"] = String(total)
+        return HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: fields)!
     }
 
     /// 把本机文件原样传上去（附件），返回解码后的响应；progress 报已发出的比例，在 URLSession 的队列上调。
@@ -547,6 +669,9 @@ private final class UploadProgress: NSObject, URLSessionTaskDelegate, Sendable {
         report(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
     }
 }
+
+/// 按段取的过程中文件被改了：后面几段的版本与第一段对不上，整份重来；三遍都这样时换成 KitedError 交给调用方。
+nonisolated private struct FileChanged: Error {}
 
 /// 下载任务建好时交出它的进度对象，界面直接观察。
 private final class DownloadProgress: NSObject, URLSessionTaskDelegate, Sendable {

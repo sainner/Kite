@@ -20,10 +20,10 @@ import { pluginToolBindings, pluginToolGranted, type PluginToolBinding } from '.
 import { effectiveTools, threadVariables } from './context-variables.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
-import { trustedScripts } from './terminal/scripts.ts';
+import { trustedTargets } from './preview/targets.ts';
 
 /** 实例上记住的预置脚本内容最多留这么多份。 */
-const MAX_TRUSTED_SCRIPTS = 50;
+const MAX_TRUSTED_TARGETS = 50;
 
 type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history' | 'terminals'>;
 
@@ -135,13 +135,13 @@ export class InstanceConfiguration {
       if (executionRevision(grants) !== executionRevision(current)) this.saveExecutionGrants(instance, grants);
     });
   }
-  /** 预置脚本的「允许并记住」：把脚本内容的摘要记在实例上，同样内容的再起不问；只留最近的 MAX_TRUSTED_SCRIPTS 份。 */
-  rememberScript(id: string, digest: string): Promise<void> {
+  /** 目标的「允许并记住」：把脚本内容的摘要记在实例上，同样内容的再起不问；只留最近的 MAX_TRUSTED_TARGETS 份。 */
+  rememberTarget(id: string, digest: string): Promise<void> {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       const instance = this.control.openThread(id);
-      const trusted = trustedScripts(instance);
+      const trusted = trustedTargets(instance);
       if (trusted.includes(digest)) return;
-      this.kite.store.setInstanceConfig(instance.id, { ...instance.config, trustedScripts: [...trusted, digest].slice(-MAX_TRUSTED_SCRIPTS) });
+      this.kite.store.setInstanceConfig(instance.id, { ...instance.config, trustedTargets: [...trusted, digest].slice(-MAX_TRUSTED_TARGETS) });
       this.control.changed(instance.workspaceId);
     });
   }

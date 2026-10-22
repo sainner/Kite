@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 11
+    static let version = 13
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -134,6 +134,7 @@ struct RemotePluginInstance: Decodable, Identifiable {
         var plugin: JSON? = nil
         var terminal: TerminalStatus? = nil
         var preview: PreviewStatus? = nil
+        var browser: BrowserStatus? = nil
     }
     let id: String
     let workspaceId: String
@@ -150,7 +151,7 @@ struct RemotePluginInstance: Decodable, Identifiable {
     struct Origin: Decodable { let instanceId: String }
 }
 
-/// 终端进程的状态，kited 的 terminal/terminals.ts 写在实例状态里；结束时带退出码或信号，不是自己退出的带原因。
+/// 终端与预览实例的进程状态，kited 的 terminal/terminals.ts 写在实例状态里；结束时带退出码或信号，不是自己退出的带原因。
 struct TerminalStatus: Decodable, Equatable {
     /// 进程树正在监听的端口；http 是工作机试过能用 HTTP 打开。
     struct Port: Decodable, Equatable, Hashable {
@@ -173,18 +174,32 @@ struct TerminalStatus: Decodable, Equatable {
     }
 }
 
-/// 网页预览看的端口与在哪看，kited 的 preview/state.ts 写在实例状态里，各设备共用；模拟器预览没有。
+/// 预览的画面，kited 的 preview/state.ts 写在实例状态里，各设备共用：种类由进程产生什么决定，网页带主端口，App 窗口带 App 的路径；
+/// browser 是网页在哪看。
 struct PreviewStatus: Decodable, Equatable {
+    var screen: PreviewScreen = .none
     var port: Int? = nil
     /// 工作机上的浏览器；没有是 device，设备自己的网页视图。
     var browser: PreviewBrowser? = nil
+    var app: String? = nil
 
     var choice: PreviewBrowser { browser ?? .device }
 }
 
+/// 预览画面的种类：进程树里开着窗口的 Mac App、目标用的模拟器、能用 HTTP 打开的端口，都没有是 none（只有输出）。
+enum PreviewScreen: String, Decodable {
+    case app, simulator, web, none
+    init(from decoder: Decoder) throws { self = Self(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .none }
+}
+
+/// 浏览窗口看的端口，各设备共用。
+struct BrowserStatus: Decodable, Equatable {
+    var port: Int? = nil
+}
+
 /// 网页在哪看：设备自己的网页视图，或工作机上的浏览器（画面传过来）。
-enum PreviewBrowser: String, CaseIterable, Identifiable, Decodable {
-    case device, webkit, chromium, firefox
+enum PreviewBrowser: String, CaseIterable, Identifiable, Codable {
+    case device, webkit, chromium, firefox, safari
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -192,6 +207,7 @@ enum PreviewBrowser: String, CaseIterable, Identifiable, Decodable {
         case .webkit: "WebKit"
         case .chromium: "Chromium"
         case .firefox: "Firefox"
+        case .safari: "Safari"
         }
     }
 }
@@ -269,18 +285,55 @@ struct RemoteWorkspaceWindow: Decodable, Identifiable {
     }
 }
 
-/// 预览看哪一种：网页或本工作区的模拟器，建好不变（kited 的 preview/state.ts）。
-nonisolated enum PreviewKind: String, Codable, Sendable {
-    case web, simulator
+/// 预览装到哪台设备：工作区的这个型号的模拟器，或与工作机配对过的真机（编号），kited 的 preview/devices.ts。
+nonisolated enum PreviewDevice: Codable, Equatable, Hashable, Sendable {
+    case simulator(String)
+    case physical(String)
+
+    private enum Keys: String, CodingKey { case simulator, physical }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        if let model = try c.decodeIfPresent(String.self, forKey: .simulator) { self = .simulator(model) }
+        else { self = .physical(try c.decode(String.self, forKey: .physical)) }
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case .simulator(let model): try c.encode(model, forKey: .simulator)
+        case .physical(let id): try c.encode(id, forKey: .physical)
+        }
+    }
 }
 
-/// 新建预览看什么：网页（可带端口）或本工作区的模拟器。
-struct PreviewSpec: Encodable {
-    let kind: PreviewKind
-    var port: Int? = nil
+/// 新建预览：跑哪个目标、装到哪台设备（kited 的 preview/state.ts），建好不变。
+nonisolated struct PreviewSpec: Codable, Equatable, Sendable {
+    let target: String
+    var device: PreviewDevice? = nil
+}
 
-    static func web(port: Int? = nil) -> Self { .init(kind: .web, port: port) }
-    static let simulator = Self(kind: .simulator)
+/// 新建窗口里的设备候选：模拟器型号，或配对过的真机（名字、硬件型号、连没连着）。
+struct DeviceCandidate: Decodable, Identifiable, Hashable {
+    enum Kind: String, Decodable { case simulator, physical }
+    let kind: Kind
+    let model: String
+    var family: String? = nil
+    var id: String { kind == .physical ? physicalID ?? model : "simulator \(model)" }
+    /// 真机的编号与名字。
+    var physicalID: String? = nil
+    var name: String? = nil
+    var marketingName: String? = nil
+    var connected: Bool? = nil
+
+    private enum CodingKeys: String, CodingKey { case kind, model, family, physicalID = "id", name, marketingName, connected }
+
+    var device: PreviewDevice { kind == .physical ? .physical(physicalID ?? "") : .simulator(model) }
+    var title: String { kind == .physical ? name ?? model : model }
+}
+
+/// 新建窗口里列的预览目标与设备候选（kited 的 GET /workspaces/:id/preview-targets）。
+struct PreviewTargets: Decodable {
+    let targets: [String]
+    let devices: [DeviceCandidate]
 }
 
 struct OpenWindowRequest: Encodable {
@@ -288,23 +341,24 @@ struct OpenWindowRequest: Encodable {
     let content: Content
 
     /// 新建实例的 ID 也由本机定：本机先按它建好实例和窗口（见 AppModel.sendWindowRequest）。
-    /// title 省略时按插件名编号；command 和 script 只用于终端，二选一：command 等 shell 起好后打进去执行，
-    /// script 是要运行的预置脚本名，脚本已经在跑时工作机打开那个终端。preview 只用于预览，必带。
+    /// title 省略时按插件名编号；command 只用于终端，等 shell 起好后打进去执行。preview 只用于预览，必带：
+    /// 同一目标与设备已经在跑时工作机打开那个实例。browser 只用于浏览，可带端口。
     enum Content: Encodable {
-        case create(String, instance: String, title: String? = nil, command: String? = nil, script: String? = nil, preview: PreviewSpec? = nil)
+        case create(String, instance: String, title: String? = nil, command: String? = nil, preview: PreviewSpec? = nil, browser: BrowserStatus? = nil)
         case open(WindowTarget)
-        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, script, preview, viewId }
+        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, preview, browser, viewId }
+        private struct Browser: Encodable { let port: Int? }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
-            case .create(let definitionId, let instanceId, let title, let command, let script, let preview):
+            case .create(let definitionId, let instanceId, let title, let command, let preview, let browser):
                 try c.encode("create", forKey: .kind)
                 try c.encode(definitionId, forKey: .definitionId)
                 try c.encode(instanceId, forKey: .instanceId)
                 try c.encodeIfPresent(title, forKey: .title)
                 try c.encodeIfPresent(command, forKey: .command)
-                try c.encodeIfPresent(script, forKey: .script)
                 try c.encodeIfPresent(preview, forKey: .preview)
+                try c.encodeIfPresent(browser.map { Browser(port: $0.port) }, forKey: .browser)
             case .open(let target):
                 try c.encode("open", forKey: .kind)
                 try c.encode(target.instanceId, forKey: .instanceId)

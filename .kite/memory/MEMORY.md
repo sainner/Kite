@@ -12,7 +12,7 @@
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [Line 与工作区流转](line-direction.md) — 已合回 main、界面待验收；收件箱是 Line 的 monitor；待改进与部署注意
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
-- [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的外置硬盘，暂未插上；命名位置的提供方
+- [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的 ORICO 外置盘，10-22 已接上；按工作机上的普通目录处理
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
 - [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用外置硬盘 ORICO
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
@@ -37,12 +37,12 @@
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
 - [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口）、资源限制、项目收紧是否停旧命令
 - [开发工作流](todo-development-workflow.md) — 检查、宿主 Git、会话回退与分叉的待评估能力
-- [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；到 Mac mini 链路慢；托管容量备份、凭据重绑和多机关系
+- [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；两台 Mac 间时快时慢（10-22 实测，待测中继与局域网）；托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
-- [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测，含预置脚本（旧代理没有 terminal_run）；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
-- [预览插件收尾](todo-preview-plugin.md) — 第一步已实现待手测、自定的几项待确认；Firefox 在 macOS 27 起不来；Safari 与 App 窗口未做
+- [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；预置脚本已移到预览的目标；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
+- [预览插件收尾](todo-preview-plugin.md) — 10-22 已实现、10-23 本机已装待手测；别的工作机升级前清 agent 里的旧工具名；Xcode 批准待跑命令；DeviceHub 裁不出屏幕
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
 - [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退

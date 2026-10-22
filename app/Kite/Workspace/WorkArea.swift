@@ -37,6 +37,8 @@ final class WorkArea: Identifiable {
     private(set) var openingInstances: [RemotePluginInstance] = []
     /// 本机关掉、工作机还没关的窗口：点下去就飞回停靠栏，工作机的列表还有它也不放回来，关不掉再放回来（见 AppModel.closeWindow）。
     private(set) var closingWindows: Set<String> = []
+    /// 正在停的终端、预览进程：各窗口标题栏的停止按钮转圈（见 WorkArea.stop）。
+    var stoppingProcesses: Set<String> = []
     /// 本机换了视图、工作机还没确认的窗口：窗口 ID 到视图和那次请求，当场按它显示；请求有了结果就去掉，以工作机的列表为准（见 AppModel.sendWindowRequest）。
     @ObservationIgnored private var switchingViews: [String: (view: String, request: String)] = [:]
     /// 本机归档、工作机还没归档的实例：当场按已归档排，它的窗口一起收掉；归档不成再放回来（见 AppModel.archiveInstances）。
@@ -154,24 +156,24 @@ final class WorkArea: Identifiable {
         return (definition.views.first { $0.id == definition.defaultView } ?? definition.views.first)?.id
     }
 
-    /// 本工作区运行中终端监听的端口，按端口号排；同一个端口在几个终端里时算一个，能用 HTTP 打开的那个为准。
+    /// 本工作区运行中终端与预览监听的端口，按端口号排；同一个端口在几个实例里时算一个，能用 HTTP 打开的那个为准。
     var workspacePortStatus: [TerminalStatus.Port] {
         let all = instances.filter { $0.status == .open && $0.state?.terminal?.running == true }.flatMap { $0.state?.terminal?.ports ?? [] }
         return Dictionary(grouping: all, by: \.port).map { port, items in TerminalStatus.Port(port: port, http: items.contains(where: \.http)) }
             .sorted { $0.port < $1.port }
     }
 
-    /// 本工作区运行中终端监听的端口：网页预览只能看这些，其他设备上网页视图打开期间为它们都开转发（见 PortPreview）。
+    /// 本工作区运行中终端与预览监听的端口：浏览只能看这些；设备打开着这个工作区期间都开着转发（见 PortForwarding）。
     var workspacePorts: [Int] { workspacePortStatus.map(\.port) }
 
-    /// 预览看哪一种；不是预览时为 nil。
-    func previewKind(of instance: RemotePluginInstance) -> PreviewKind? {
-        instance.definitionId == AppModel.previewDefinition ? instance.config?.preview?.kind ?? .web : nil
+    /// 预览实例的画面；不是预览时为 nil。
+    func previewStatus(of instance: RemotePluginInstance) -> PreviewStatus? {
+        instance.definitionId == AppModel.previewDefinition ? instance.state?.preview ?? PreviewStatus() : nil
     }
 
-    /// 新预览的名字：网页 N、模拟器 N，同工作机的起名规则。
-    func previewTitle(_ spec: PreviewSpec) -> String {
-        Self.numbered(spec.kind == .simulator ? "模拟器" : "网页", among: Set(instances.map(\.title)))
+    /// 本工作区里同一目标与设备的预览（运行中或已结束、还没回收的），同工作机的查找。
+    func preview(for spec: PreviewSpec) -> RemotePluginInstance? {
+        instances.first { $0.status == .open && $0.definitionId == AppModel.previewDefinition && $0.config?.preview == spec }
     }
 
     /// 「名字 N」里还没用过的最小编号，同工作机的 numberedTitle。
@@ -179,6 +181,17 @@ final class WorkArea: Identifiable {
         var number = 1
         while titles.contains("\(name) \(number)") { number += 1 }
         return "\(name) \(number)"
+    }
+
+    /// 停下终端或预览的进程：停的期间各窗口的停止按钮转圈（stoppingProcesses），失败交给 report。
+    func stop(_ instance: RemotePluginInstance, model: AppModel, report: @escaping (String?) -> Void) {
+        stoppingProcesses.insert(instance.id)
+        report(nil)
+        Task {
+            defer { stoppingProcesses.remove(instance.id) }
+            do { try await model.stopProcess(instance, in: self) }
+            catch { report(error.localizedDescription) }
+        }
     }
 
     /// 关掉窗口后实例还在：独立存续的，或者进程还在跑的终端。
@@ -203,9 +216,14 @@ final class WorkArea: Identifiable {
         return definition(of: instance)?.views.first { $0.id == target.viewId }
     }
 
-    /// 插件实例的外观：一个实例一个窗口，窗口和它在停靠栏的小头像同一个样子，不随视图换。预览按看的是网页还是模拟器。
+    /// 插件实例的外观：一个实例一个窗口，窗口和它在停靠栏的小头像同一个样子，不随视图换。预览按画面是网页、模拟器还是 App 窗口。
     func appearance(of instance: RemotePluginInstance) -> WindowAppearance {
-        if previewKind(of: instance) == .simulator { return .init(name: "模拟器", icon: "iphone") }
+        switch previewStatus(of: instance)?.screen {
+        case .simulator: return .init(name: "模拟器", icon: "iphone")
+        case .app: return .init(name: "App 窗口", icon: "macwindow")
+        case .web: return .init(name: "网页", icon: "globe")
+        case .some(.none), nil: break
+        }
         return definition(of: instance).map(WindowAppearance.definition) ?? .renderer("")
     }
 
@@ -276,11 +294,6 @@ final class WorkArea: Identifiable {
     /// 实例的窗口，一个实例最多一个。
     func window(of instance: String) -> RemoteWorkspaceWindow? {
         windows.first { $0.target.instanceId == instance }
-    }
-
-    /// 以这个预置脚本起、还在跑的终端；同一脚本只跑一份。
-    func runningScript(_ name: String) -> RemotePluginInstance? {
-        instances.first { $0.status == .open && $0.config?.terminal?.script == name && $0.state?.terminal?.running == true }
     }
 
     /// 实例集合是工作机上的实例，本机正归档的按已归档算，加上本机正建的；窗口集合是工作机上打开的窗口，
@@ -530,7 +543,9 @@ struct WindowAppearance {
         switch id {
         case "files": .init(name: "文件", icon: "folder")
         case "terminal": .init(name: "终端", icon: "terminal")
-        case "preview": .init(name: "预览", icon: "globe")
+        case "preview": .init(name: "预览", icon: "play.rectangle")
+        case "preview-grid": .init(name: "并排", icon: "square.grid.2x2")
+        case "browser": .init(name: "浏览", icon: "globe")
         case "monitor": .init(name: "监视", icon: "tray")
         default: .init(name: "插件", icon: "puzzlepiece.extension")
         }

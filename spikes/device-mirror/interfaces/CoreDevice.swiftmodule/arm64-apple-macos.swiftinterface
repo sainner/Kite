@@ -1,0 +1,20 @@
+// swift-interface-format-version: 1.0
+// swift-module-flags: -target arm64-apple-macos15.0 -enable-library-evolution -module-name CoreDevice
+// 手写：Xcode 27.2 的 CoreDevice 没有接口文件，只声明实验用到的几个，名字与签名照二进制里的符号（nm 加 swift demangle）。
+import Foundation
+import Swift
+
+final public class DeviceManager {
+  public static var shared: CoreDevice.DeviceManager { get }
+  final public func allDevices() -> [CoreDevice.RemoteDevice]
+  final public func deviceNamed(_ name: Swift.String) throws -> CoreDevice.RemoteDevice
+}
+
+// 不是 final：只声明在扩展里直接派发的成员，类本体里的成员走派发入口，符号对不上。
+public class RemoteDevice {
+}
+
+extension CoreDevice.RemoteDevice {
+  public var id: Foundation.UUID { get }
+  public var description: Swift.String { get }
+}

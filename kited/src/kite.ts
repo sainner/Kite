@@ -81,9 +81,12 @@ import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
 import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
 import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
+import { listApps } from './preview/app-windows.ts';
 import { Previews } from './preview/previews.ts';
 import { Simulators } from './preview/simulators.ts';
-import { trustedScripts } from './terminal/scripts.ts';
+import { previewDefinitionId } from './preview/state.ts';
+import { trustedTargets } from './preview/targets.ts';
+import { Browsing } from './browser/browser.ts';
 import { contentHash } from './harness/context/project.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
@@ -217,6 +220,7 @@ export class Kite {
   readonly terminals: Terminals;
   readonly previews: Previews;
   readonly simulators: Simulators;
+  readonly browse: Browsing;
   /** 最近一条输入是 Line 自己说明的线程；只在内存里，重启后按用户的工作对待。 */
   private lineWork = new Set<string>();
   /** 服务起来后才知道本机监听地址与组网，Line 调本机和别的工作机时用。 */
@@ -404,9 +408,13 @@ export class Kite {
       revokeGrants: (instance) => this.configuration.revokeInstanceGrants(instance),
     });
     const toolEnv = commandEnvironment(process.env) as Record<string, string>;
-    this.simulators = new Simulators({ store, env: toolEnv });
+    this.simulators = new Simulators({ store, home, env: toolEnv });
     this.terminals = new Terminals({ store, home, env: process.env,
-      prepareScript: (workspaceId, script) => this.simulators.prepareScript(workspaceId, script.content),
+      apps: (pids) => listApps(pids, toolEnv),
+      processChanged: (id) => this.previews.processChanged(id),
+      // 预览的进程也由终端插件托管；kited 重启后还开着窗口的预览留着，窗口里能重新起
+      hosts: (instance) => instance.definitionId === previewDefinitionId,
+      keepAfterRestart: (instance) => instance.definitionId === previewDefinitionId,
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       collect: (instance) => this.instances.collect(instance),
@@ -416,12 +424,11 @@ export class Kite {
       forward: (ports) => this.serving?.network?.forward(ports),
       ...(options.terminalShell ? { shell: options.terminalShell } : {}),
       ...(options.terminalPortScanMs !== undefined ? { portScanMs: options.terminalPortScanMs } : {}) });
-    this.previews = new Previews({ store, env: toolEnv, simulators: this.simulators,
+    this.previews = new Previews({ store, env: toolEnv, simulators: this.simulators, terminals: this.terminals,
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
-      collect: (instance) => this.instances.collect(instance),
-      ports: (workspaceId) => this.terminals.workspacePorts(workspaceId),
       ...(options.previewSettle ? { settle: options.previewSettle } : {}) });
+    this.browse = new Browsing({ store, changed: (workspaceId) => this.changed(workspaceId), ports: (workspaceId) => this.terminals.workspacePorts(workspaceId) });
     this.tokenCounts = new TokenCounter({ apiKeys: () => this.credentials.apiKeys() });
     this.voice = new VoiceSessions({
       keys: () => this.credentials.speechKeys(),
@@ -454,7 +461,6 @@ export class Kite {
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
     this.terminals.recover();
-    this.previews.recover();
   }
 
   machine(): Machine { return this.store.machine; }
@@ -1595,12 +1601,18 @@ export class Kite {
     }
     return decision === 'once' || decision === 'remember';
   }
-  /** 代理用 terminal_run 起与主线不一致的预置脚本：这份内容记住过就放行，否则同其他越界请求按审批模式处理，见 askApproval。 */
-  approveScript(id: string, script: { name: string; content: string; reason: string }, signal: AbortSignal): Promise<boolean> {
-    const digest = contentHash(script.content);
-    if (trustedScripts(this.context(id)).includes(digest)) return Promise.resolve(true);
-    return this.askApproval(id, { tool: 'terminal_run', target: script.name, reason: script.reason, mustAsk: false, script: script.content },
-      { what: '预置脚本', save: () => this.configuration.rememberScript(id, digest) }, signal);
+  /** 代理用 preview_open 起与主线不一致的目标：这份内容记住过就放行，否则同其他越界请求按审批模式处理，见 askApproval。 */
+  approveTarget(id: string, target: { name: string; content: string; reason: string }, signal: AbortSignal): Promise<boolean> {
+    const digest = contentHash(target.content);
+    if (trustedTargets(this.context(id)).includes(digest)) return Promise.resolve(true);
+    return this.askApproval(id, { tool: 'preview_open', target: target.name, reason: target.reason, mustAsk: false, script: target.content },
+      { what: '目标', save: () => this.configuration.rememberTarget(id, digest) }, signal);
+  }
+  /** 代理用 preview_open 装到真机：会覆盖设备上正在用的版本，每次都在线程上问人，与审批模式无关，不记住。 */
+  async approveDevice(id: string, request: { target: string; device: string }, signal: AbortSignal): Promise<boolean> {
+    const decision = await this.waits.approve(id, { tool: 'preview_open', target: `${request.target} → ${request.device}`,
+      reason: '装到真机会覆盖设备上正在用的版本', mustAsk: true }, signal);
+    return decision === 'once' || decision === 'remember';
   }
   /** 恢复检查只打开 journal，不执行旧输入。 */
   private async runnerForManagement(t: AgentInstance): Promise<Runtime | undefined> {
@@ -2065,7 +2077,6 @@ export class Kite {
         if (current.status === 'archived') return;
         await this.stopThread(current);
         await this.terminals.stopOwned(member, '启动它的代理已归档');
-        await this.previews.closeOwned(member);
         this.asks.clear(member);
         this.store.archiveInstance(member);
         this.threadChanged({ ...current, status: 'archived' });

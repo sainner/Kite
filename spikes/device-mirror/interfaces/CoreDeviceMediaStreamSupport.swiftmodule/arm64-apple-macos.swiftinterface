@@ -1,0 +1,38 @@
+// swift-interface-format-version: 1.0
+// swift-module-flags: -target arm64-apple-macos15.0 -enable-library-evolution -module-name CoreDeviceMediaStreamSupport
+// 手写：照 CoreDevice.framework/Frameworks/CoreDeviceMediaStreamSupport 的符号，只声明实验用到的。
+import CoreDevice
+import Foundation
+import QuartzCore
+import Swift
+import _Concurrency
+
+public struct VideoStreamReceiveConfiguration {
+}
+
+public struct VideoStreamSendConfiguration {
+}
+
+// 声明出两个 case：没有 case 的枚举会被当成不可能有值。
+public enum VideoStreamConfiguration {
+  case receive(CoreDeviceMediaStreamSupport.VideoStreamReceiveConfiguration)
+  case send(CoreDeviceMediaStreamSupport.VideoStreamSendConfiguration)
+  public static func receiveMirroredPrimary(layer: QuartzCore.CALayer, timeout: Swift.UInt) -> CoreDeviceMediaStreamSupport.VideoStreamConfiguration
+}
+
+public protocol MediaStreamProtocol : _Concurrency.Actor {
+  associatedtype Configuration
+  associatedtype Event
+  func activate() async throws -> _Concurrency.AsyncThrowingStream<Self.Event, any Swift.Error>
+  func invalidate() async
+}
+
+public protocol VideoStream : CoreDeviceMediaStreamSupport.MediaStreamProtocol {
+  func requestLastDecodedFrame() async
+}
+
+public actor MediaStreamSession {
+  public init(clientSessionID: Foundation.UUID)
+  final public func makeVideoStream(withConfiguration configuration: CoreDeviceMediaStreamSupport.VideoStreamConfiguration, fromRemoteDevice device: CoreDevice.RemoteDevice) async throws -> any CoreDeviceMediaStreamSupport.VideoStream
+  nonisolated public var unownedExecutor: _Concurrency.UnownedSerialExecutor { get }
+}

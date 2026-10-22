@@ -47,7 +47,7 @@ final class KitedClient: Equatable {
     let machineID: String? = "fixture-machine"
     let address = "http://fixture"
     var isLocal: Bool { false }
-    func download(_ path: String, method: String = "GET", headers: [String: String] = [:],
+    func download(_ path: String, method: String = "GET", headers: [String: String] = [:], segmented: Bool = false,
                   progress: (@Sendable (Progress) -> Void)? = nil) async throws -> (file: URL?, response: HTTPURLResponse) {
         throw KitedError(message: "未预期的下载：" + path)
     }

@@ -1,6 +1,6 @@
 /**
  * 工作机上的浏览器：WebKit、Chromium、Firefox 用 Playwright 无界面运行，每种一个浏览器进程，每个预览一个独立的浏览器上下文（Cookie、存储互不相通，
- * 不带用户的登录状态）。联网不另设限制，同用户在工作机上自己开的浏览器；管住的是 agent 去哪（navigate 只开本端口上的路径），
+ * 不带用户的登录状态）；真的 Safari 经 safaridriver 驱动，见 safari.ts。联网不另设限制，同用户在工作机上自己开的浏览器；管住的是 agent 去哪（navigate 只开本端口上的路径），
  * kited 的接口自己挡浏览器里的页面（只认本机主机名、要自定义请求头、不开放跨源）。
  * 浏览器第一次用时没装就下载到 Playwright 的默认缓存目录（~/Library/Caches/ms-playwright），要几分钟。
  */
@@ -8,10 +8,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { KiteError } from '../errors.ts';
+import { SafariDriver } from './safari.ts';
 import type { PreviewAction, Screen, ScreenInfo } from './screen.ts';
 import type { WorkstationBrowser } from './state.ts';
 
-export const browserTitles: Record<WorkstationBrowser, string> = { webkit: 'WebKit', chromium: 'Chromium', firefox: 'Firefox' };
+/** 用 Playwright 跑的浏览器。 */
+type PlaywrightBrowser = Exclude<WorkstationBrowser, 'safari'>;
+const browserTitles: Record<PlaywrightBrowser, string> = { webkit: 'WebKit', chromium: 'Chromium', firefox: 'Firefox' };
 /** 没有预览用了，浏览器进程再留这么久，接着开的预览不用重新启动。 */
 const IDLE_CLOSE_MS = 30_000;
 const NAVIGATION_TIMEOUT_MS = 15_000;
@@ -30,8 +33,6 @@ export function pathOn(root: string, path: string): string {
 export interface BrowserOptions {
   /** 首页，本机地址加端口。 */
   url: string;
-  /** 先打开的路径，默认首页。 */
-  path?: string;
   width: number;
   height: number;
 }
@@ -39,15 +40,18 @@ export interface BrowserOptions {
 interface Running { browser: Promise<Browser>; users: number; idle?: ReturnType<typeof setTimeout> }
 
 export class Browsers {
-  private running = new Map<WorkstationBrowser, Running>();
-  private installing = new Map<WorkstationBrowser, Promise<void>>();
+  private running = new Map<PlaywrightBrowser, Running>();
+  private installing = new Map<PlaywrightBrowser, Promise<void>>();
+  private safari: SafariDriver;
 
   /** env 是起浏览器与下载程序用的环境，显式给出。 */
-  constructor(private env: Record<string, string>) {}
+  constructor(private env: Record<string, string>) {
+    this.safari = new SafariDriver(env);
+  }
 
-  /** 开一个预览的页面：新的浏览器上下文，打开首页或给的路径（打不开也返回，页面上显示错误）。 */
+  /** 开一个预览的页面：新的浏览器上下文（Safari 是新窗口），打开首页（打不开也返回，页面上显示错误）。 */
   async open(name: WorkstationBrowser, options: BrowserOptions): Promise<Screen> {
-    const start = pathOn(options.url, options.path ?? '/');
+    if (name === 'safari') return this.safari.open(options);
     const entry = this.acquire(name);
     let context: BrowserContext | undefined;
     try {
@@ -55,7 +59,7 @@ export class Browsers {
         serviceWorkers: 'block', ignoreHTTPSErrors: true });
       const page = await context.newPage();
       const screen = new BrowserScreen(context, page, options.url, () => this.release(name, entry));
-      await screen.goto(start);
+      await screen.goto(options.url);
       return screen;
     } catch (error) {
       await context?.close().catch(() => {});
@@ -64,7 +68,7 @@ export class Browsers {
     }
   }
 
-  private acquire(name: WorkstationBrowser): Running {
+  private acquire(name: PlaywrightBrowser): Running {
     let entry = this.running.get(name);
     if (!entry) {
       entry = { browser: this.launch(name), users: 0 };
@@ -80,7 +84,7 @@ export class Browsers {
   }
 
   /** 记着的是哪个浏览器进程：崩了以后重新启动的那个另算。 */
-  private release(name: WorkstationBrowser, entry: Running): void {
+  private release(name: PlaywrightBrowser, entry: Running): void {
     if (--entry.users > 0) return;
     entry.idle = setTimeout(() => {
       if (this.running.get(name) !== entry || entry.users > 0) return;
@@ -90,7 +94,7 @@ export class Browsers {
     entry.idle.unref();
   }
 
-  private async launch(name: WorkstationBrowser): Promise<Browser> {
+  private async launch(name: PlaywrightBrowser): Promise<Browser> {
     const playwright = await import('playwright-core');
     const options = { headless: true, env: this.env };
     try { return await playwright[name].launch(options); }
@@ -103,7 +107,7 @@ export class Browsers {
   }
 
   /** 用 Playwright 自带的下载程序装这个浏览器；几个预览同时要时只下一次。 */
-  private install(name: WorkstationBrowser): Promise<void> {
+  private install(name: PlaywrightBrowser): Promise<void> {
     const existing = this.installing.get(name);
     if (existing) return existing;
     const cli = join(dirname(fileURLToPath(import.meta.resolve('playwright-core/package.json'))), 'cli.js');
@@ -123,10 +127,10 @@ export class Browsers {
   async close(): Promise<void> {
     const entries = [...this.running.values()];
     this.running.clear();
-    await Promise.all(entries.map(async (entry) => {
+    await Promise.all([this.safari.shutdown(), ...entries.map(async (entry) => {
       clearTimeout(entry.idle);
       await entry.browser.then((browser) => browser.close()).catch(() => {});
-    }));
+    })]);
   }
 }
 
@@ -135,7 +139,7 @@ const firstLine = (error: unknown) => (error instanceof Error ? error.message : 
 class BrowserScreen implements Screen {
   private closed = false;
 
-  constructor(private context: BrowserContext, private page: Page, private root: string, private release: () => void) {}
+  constructor(private context: BrowserContext, private page: Page, private readonly root: string, private release: () => void) {}
 
   /** 打开一个地址，等到文档开始解析；开发服务器首次编译慢、打不开时不报错，画面上就是当时的样子。 */
   async goto(url: string): Promise<void> {
@@ -187,13 +191,6 @@ class BrowserScreen implements Screen {
   async resize(width: number, height: number): Promise<void> {
     const current = this.page.viewportSize();
     if (current?.width !== width || current.height !== height) await this.page.setViewportSize({ width, height });
-  }
-
-  async retarget(port: number): Promise<void> {
-    const root = new URL(this.root);
-    root.port = String(port);
-    this.root = root.href;
-    await this.goto(this.root);
   }
 
   async close(): Promise<void> {

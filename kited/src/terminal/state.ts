@@ -1,4 +1,4 @@
-/** 终端实例的状态：进程是否在跑、怎么结束的、监听的端口。实例聚合和 terminal_read 的结果共用。 */
+/** 终端实例的状态：进程是否在跑、怎么结束的、监听的端口与开着窗口的 App。实例聚合和 terminal_read 的结果共用。 */
 import { z } from 'zod';
 import type { PluginInstance } from '../model.ts';
 
@@ -12,6 +12,8 @@ export const stateSchema = z.object({
   endedAt: z.number().optional(),
   /** 运行中进程树正在监听的 TCP 端口，按端口号排；http 是能不能用 HTTP 打开。结束后没有。 */
   ports: z.array(z.object({ port: z.number().int(), http: z.boolean() }).strict()).optional(),
+  /** 运行中进程树里有窗口的 Mac App：名字与路径（.app 或可执行文件），App 窗口的预览按路径找它。结束后没有。 */
+  apps: z.array(z.object({ name: z.string(), path: z.string() }).strict()).optional(),
 }).strict();
 export type TerminalState = z.infer<typeof stateSchema>;
 export const terminalState = (instance: Pick<PluginInstance, 'state'>): TerminalState | undefined =>

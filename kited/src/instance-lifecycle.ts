@@ -10,15 +10,16 @@ import { defaultRoleId, roleAgent, toolLimits, type RoleChoice } from './roles.t
 import { instanceAgent } from './agents/definition.ts';
 import { monitorDefinitionId } from './monitor/monitors.ts';
 import { terminalDefinitionId } from './terminal/terminals.ts';
-import { findScript } from './terminal/scripts.ts';
 import { previewDefinitionId } from './preview/state.ts';
+import type { Launch } from './preview/previews.ts';
+import { browserDefinitionId } from './browser/browser.ts';
 
 /** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
 export interface AgentChoice extends RoleChoice {
   role?: { id: string; revision?: string };
 }
 
-type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals' | 'previews'>;
+type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals' | 'previews' | 'browse'>;
 
 interface InstanceControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -49,7 +50,7 @@ export class InstanceLifecycle {
 
   /**
    * 新实例和首窗口原子登记，打开已有实例的视图时它的窗口换过去；空会话不启动模型。
-   * 带预置脚本新建终端时，这个脚本已经在跑就打开那个终端，同一脚本只跑一份。
+   * 新建预览时，同一目标与设备已经在跑就打开那个实例，同一目标与设备只跑一份；已经结束、还开着窗口的在原来的实例里重新起。
    */
   openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
     return this.control.run(workspaceId, async () => {
@@ -68,27 +69,29 @@ export class InstanceLifecycle {
       let created: PluginInstance | undefined;
       let thread: Thread | undefined;
       let target: WindowTarget | undefined;
+      /** 要起的预览进程：新建的实例，或已经结束、在原来的实例里重新起的。 */
+      let launch: { instance?: PluginInstance; launch: Launch } | undefined;
       const content = request.content;
       if (content.kind === 'create') {
         const definition = this.kite.catalog.get(content.definitionId);
         if (definition.id === monitorDefinitionId) throw new KiteError('monitor 由代理用 monitor_start 开启，或随 Line 创建');
-        if ((content.command !== undefined || content.script !== undefined) && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令或预置脚本新建');
+        if (content.command !== undefined && definition.id !== terminalDefinitionId) throw new KiteError('只有终端能带命令新建');
         if ((content.preview !== undefined) !== (definition.id === previewDefinitionId)) throw new KiteError('预览要带 preview 新建，别的插件不带');
-        if (content.command !== undefined && content.script !== undefined) throw new KiteError('命令和预置脚本只能带一个');
+        if (content.browser !== undefined && definition.id !== browserDefinitionId) throw new KiteError('只有浏览能带 browser 新建');
         if (content.instanceId && (this.kite.store.instance(content.instanceId) || this.kite.store.hasInstanceWindows(content.instanceId))) {
           throw new KiteError('实例 ID 已使用', 409);
         }
-        // 同一脚本只跑一份：已经在跑就照打开已有实例处理
-        const running = content.script !== undefined ? this.kite.terminals.scriptInstance(workspaceId, content.script) : undefined;
-        if (running) target = { instanceId: running, viewId: 'terminal' };
-        else {
-          const config = content.script !== undefined
-            ? await this.kite.terminals.scriptConfig(workspaceId, findScript(model.workspace.cwd, content.script)) : undefined;
-          const preview = content.preview && this.kite.previews.initial(workspaceId, content.preview);
-          created = { ...this.newInstance(workspaceId, definition.id, content.title ?? content.script
-            ?? (content.preview ? this.kite.previews.title(workspaceId, content.preview.kind) : definition.agent ? '新代理'
+        const resolved = content.preview && await this.kite.previews.resolve(workspaceId, content.preview);
+        const existing = resolved && this.kite.previews.find(workspaceId, resolved.spec);
+        // 同一目标与设备只跑一份：已经在跑就照打开已有实例处理，已经结束的在原来的实例里重新起
+        if (existing) target = { instanceId: existing.id, viewId: 'screen' };
+        if (resolved && !(existing && this.kite.terminals.running(existing.id))) launch = { instance: existing, launch: await this.kite.previews.prepare(workspaceId, resolved) };
+        if (!existing) {
+          created = { ...this.newInstance(workspaceId, definition.id, content.title
+            ?? (launch ? launch.launch.title : definition.agent ? '新代理'
               : numberedTitle(definition.title, model.instances.filter((p) => p.definitionId === definition.id).map((p) => p.title)))),
-            ...(content.instanceId ? { id: content.instanceId } : {}), ...(config ? { config } : {}), ...preview };
+            ...(content.instanceId ? { id: content.instanceId } : {}), ...(content.browser ? this.kite.browse.initial(workspaceId, content.browser) : {}),
+            ...(launch ? { config: { preview: launch.launch.spec } } : {}) };
           if (definition.agent) thread = { instanceId: created.id, runtime: instanceAgent(created).runtime, nativeId: randomUUID() };
         }
       } else target = content;
@@ -104,7 +107,8 @@ export class InstanceLifecycle {
         window = existing ? { ...existing, target: { instanceId: instance.id, viewId } } : this.newWindow(instance, request.id, viewId);
       } else window = this.newWindow(created!, request.id);
       this.kite.store.openWindow(window, { id: request.id, content: key }, created, thread);
-      if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created, content.kind === 'create' ? content.command : undefined);
+      if (created?.definitionId === terminalDefinitionId) this.kite.terminals.start(created, { command: content.kind === 'create' ? content.command : undefined });
+      if (launch) this.kite.previews.start(launch.instance ?? created!, launch.launch);
       this.control.changed(workspaceId);
       return window;
     });
