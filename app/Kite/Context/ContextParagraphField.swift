@@ -16,6 +16,8 @@ struct ContextParagraphField: View {
     var focusRequested = false
     var focusHandled: () -> Void = {}
     var placeholder = "段落文字"
+    /// 字离这块范围边的距离：默认是块卡片里的留白；不套卡片的地方传 0，字和旁边正文的边对齐。
+    var inset = ContextTextStyle.inset
     @Environment(ContextEditor.self) private var editor: ContextEditor?
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
@@ -38,6 +40,9 @@ struct ContextParagraphField: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .opacity(isEnabled ? 1 : 0.6)
             .typingTarget()
+            // 文本视图自己在字外总留一圈卡片的留白：插入点、伸出字边的行内代码底色画得下，点在字边上也落进输入框，打字的范围也算上这圈。
+            // inset 比这圈小时，多出的那截伸到排版范围外、不占地方，字落在 inset 处。
+            .padding(inset - ContextTextStyle.inset)
     }
 }
 

@@ -13,8 +13,9 @@ import UniformTypeIdentifiers
 final class ComposerField: UITextView, UITextViewDelegate {
     /// 字变了（含组字中的字），交给草稿。
     var textChanged: ((String) -> Void)?
-    var skillCompletion: ((SkillCompletionKey) -> Bool)?
-    var hasSkillCandidates: (() -> Bool)?
+    /// 上下键、Tab 先问它（没按修饰键、没在组字时）：外面要接管（如选 skill 候选）就给出按下时做的事，输入框不再自己处理；给 nil 照常。
+    /// 每次取快捷键时问一遍，给了的键登记成优先于系统行为的快捷键，按到时再问一遍、照着做。
+    var intercept: ((ComposerKey) -> (() -> Void)?)?
     /// 成为、交出第一响应者。
     var focusChanged: ((Bool) -> Void)?
     /// 粘贴板上只有图片时（截图、拷的照片）交给它当附件，PNG 数据；有字的照常粘贴。能收附件时才开（acceptsImages）。
@@ -97,25 +98,28 @@ final class ComposerField: UITextView, UITextViewDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var keyCommands: [UIKeyCommand]? {
-        guard markedTextRange == nil, hasSkillCandidates?() == true else { return super.keyCommands }
-        let commands = [UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow, "\t"].map { input in
-            let command = UIKeyCommand(input: input, modifierFlags: [], action: #selector(completeSkill(_:)))
+        guard markedTextRange == nil, let intercept else { return super.keyCommands }
+        let keys = ComposerKey.allCases.filter { intercept($0) != nil }
+        guard !keys.isEmpty else { return super.keyCommands }
+        let commands = keys.map { key in
+            let command = UIKeyCommand(input: Self.input(key), modifierFlags: [], action: #selector(interceptKey(_:)))
             command.wantsPriorityOverSystemBehavior = true
             return command
         }
         return commands + (super.keyCommands ?? [])
     }
 
-    @objc private func completeSkill(_ command: UIKeyCommand) {
-        guard markedTextRange == nil else { return }
-        let key: SkillCompletionKey
-        switch command.input {
-        case UIKeyCommand.inputUpArrow: key = .previous
-        case UIKeyCommand.inputDownArrow: key = .next
-        case "\t": key = .complete
-        default: return
+    @objc private func interceptKey(_ command: UIKeyCommand) {
+        guard markedTextRange == nil, let key = ComposerKey.allCases.first(where: { Self.input($0) == command.input }) else { return }
+        intercept?(key)?()
+    }
+
+    private static func input(_ key: ComposerKey) -> String {
+        switch key {
+        case .up: UIKeyCommand.inputUpArrow
+        case .down: UIKeyCommand.inputDownArrow
+        case .tab: "\t"
         }
-        _ = skillCompletion?(key)
     }
 
     /// 段落样式同现版：折行策略只有 hangulWordPriority（见 FadingSnapshotView.render）。

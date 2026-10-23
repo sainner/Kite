@@ -366,9 +366,7 @@ private struct ContextFileEditor: View {
                 .truncationMode(.head)
                 .help(path)
             ContextParagraphField(parts: Binding(get: { text.isEmpty ? [] : [.text(text)] }, set: { text = $0.plainText }),
-                                  variables: [], focused: $focused, placeholder: "文件内容")
-                // 段落的字离卡片边留了一圈，这里没有卡片，收回去
-                .padding(-ContextTextStyle.inset)
+                                  variables: [], focused: $focused, placeholder: "文件内容", inset: 0)
         }
     }
 }

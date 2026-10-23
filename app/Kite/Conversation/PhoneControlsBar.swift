@@ -126,8 +126,7 @@ final class ControlsBarView: UIView {
             controls?.setFieldText(text)
             contentChanged()
         }
-        field.skillCompletion = { [weak self] in self?.controls?.completeSkill($0) ?? false }
-        field.hasSkillCandidates = { [weak self] in self?.controls?.skillCandidates.isEmpty == false }
+        field.intercept = { [weak self] in self?.controls?.skillKeyAction($0) }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in self.fontChanged() }
     }
 

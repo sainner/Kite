@@ -323,8 +323,7 @@ private struct SkillFileEditor: View {
     var body: some View {
         ContextParagraphField(parts: Binding(get: { text.isEmpty ? [] : [.text(text)] }, set: { text = $0.plainText }),
                               variables: [], focused: $focused,
-                              placeholder: path == SkillPackage.mainFile ? "SKILL.md：开头是 --- 包起来的 name 与 description，后面是做法" : "文件内容")
-            // 段落的字离卡片边留了一圈，这里没有卡片，收回去
-            .padding(-ContextTextStyle.inset)
+                              placeholder: path == SkillPackage.mainFile ? "SKILL.md：开头是 --- 包起来的 name 与 description，后面是做法" : "文件内容",
+                              inset: 0)
     }
 }

@@ -13,7 +13,8 @@ final class ComposerField: NSTextField {
     var submit: (() -> Void)?
     /// 字变了（含组字中的字），交给草稿。
     var textChanged: ((String) -> Void)?
-    var skillCompletion: ((SkillCompletionKey) -> Bool)?
+    /// 上下键、Tab 先问它（没按修饰键、没在组字时）：外面要接管（如选 skill 候选）就给出按下时做的事，输入框不再自己处理；给 nil 照常。
+    var intercept: ((ComposerKey) -> (() -> Void)?)?
     /// 粘贴、拖进来的东西先给它：收下了文件或图片当附件就返回真，否则照常当字处理。
     var attachments: ((NSPasteboard) -> Bool)?
 
@@ -164,7 +165,7 @@ final class ComposerField: NSTextField {
         view.subviews.flatMap { $0 is NSTextInsertionIndicator ? [$0] : indicators(in: $0) }
     }
 
-    /// 字段编辑器把命令先交给控件的代理：回车发送，Shift+回车换行，其余照系统的。
+    /// 字段编辑器把命令先交给控件的代理：上下键、Tab 先问 intercept，回车发送，Shift+回车换行，其余照系统的。
     /// 系统没给 Shift+回车单独的命令，同样是 insertNewline，要看按键时的修饰键。
     private final class Coordinator: NSObject, NSTextFieldDelegate {
         weak var field: ComposerField?
@@ -173,13 +174,16 @@ final class ComposerField: NSTextField {
             guard !textView.hasMarkedText() else { return false }
             let modifiers = NSApp.currentEvent?.modifierFlags.intersection([.shift, .control, .option, .command]) ?? []
             if modifiers.isEmpty {
-                let key: SkillCompletionKey? = switch commandSelector {
-                case #selector(NSResponder.moveUp(_:)): .previous
-                case #selector(NSResponder.moveDown(_:)): .next
-                case #selector(NSResponder.insertTab(_:)): .complete
+                let key: ComposerKey? = switch commandSelector {
+                case #selector(NSResponder.moveUp(_:)): .up
+                case #selector(NSResponder.moveDown(_:)): .down
+                case #selector(NSResponder.insertTab(_:)): .tab
                 default: nil
                 }
-                if let key, field?.skillCompletion?(key) == true { return true }
+                if let key, let action = field?.intercept?(key) {
+                    action()
+                    return true
+                }
             }
             guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {

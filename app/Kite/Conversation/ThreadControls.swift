@@ -94,8 +94,10 @@ struct ThreadControls: View {
                 .onKeyPress(keys: [.upArrow, .downArrow, .tab], phases: [.down, .repeat]) { press in
                     guard press.modifiers.intersection([.shift, .control, .option, .command]).isEmpty,
                           (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return .ignored }
-                    let key: SkillCompletionKey = press.key == .tab ? .complete : press.key == .upArrow ? .previous : .next
-                    return controls.completeSkill(key) ? .handled : .ignored
+                    let key: ComposerKey = press.key == .tab ? .tab : press.key == .upArrow ? .up : .down
+                    guard let action = controls.skillKeyAction(key) else { return .ignored }
+                    action()
+                    return .handled
                 }
                 .onSubmit {
                     // Shift+回车换行，同宽屏的 ComposerField：系统给它的也是 insertNewline，到这里才看得出按了 Shift

@@ -185,7 +185,7 @@ final class ControlsBarView: RepresentedRoot {
             controls?.performPrimaryAction(submit: submit)
         }
         field.submit = { [weak self] in self?.submit() }
-        field.skillCompletion = { [weak self] in self?.controls?.completeSkill($0) ?? false }
+        field.intercept = { [weak self] in self?.controls?.skillKeyAction($0) }
         field.textChanged = { [weak self] text in
             guard let self else { return }
             controls?.setFieldText(text)

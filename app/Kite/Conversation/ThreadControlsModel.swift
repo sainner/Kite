@@ -16,7 +16,8 @@ import SwiftUI
     var skillSelection: (thread: ObjectIdentifier, text: String, name: String)?
 }
 
-enum SkillCompletionKey { case previous, next, complete }
+/// 输入框让外面先接管的按键（两端原生输入框的 intercept，Mac 窄窗口的 onKeyPress）：没按修饰键、没在组字时的上下键和 Tab。
+enum ComposerKey: CaseIterable { case up, down, tab }
 
 /// 会话输入区的逻辑：发送、停止、继续、语音、思考强度，占位文字和哪些按钮显示。各个输入区共用，每次更新按当时的环境现做一份；
 /// 读的都是会话、App 模型和 state 里的可观察属性，SwiftUI 版在 body 里读、原生版在 withObservationTracking 里读，都跟着变。
@@ -129,17 +130,19 @@ struct ThreadControlsModel {
         return candidates.first
     }
 
-    /// 有候选才接管方向键和 Tab；其余时候保留输入框自己的光标与焦点行为。
-    func completeSkill(_ key: SkillCompletionKey) -> Bool {
+    /// 有候选才接管上下键和 Tab，给出按下时做的事：上下换选中的，Tab 把选中的换进输入框；没候选时是 nil，保留输入框自己的光标与焦点行为。
+    /// 先给后做，是因为 iPhone 的输入框要先知道接管哪几个键，才能登记成快捷键。
+    func skillKeyAction(_ key: ComposerKey) -> (() -> Void)? {
         let candidates = skillCandidates
-        guard let selected = selectedSkill(in: candidates), let index = candidates.firstIndex(of: selected) else { return false }
-        switch key {
-        case .complete: pickSkill(selected)
-        case .previous, .next:
-            let next = (index + (key == .next ? 1 : -1) + candidates.count) % candidates.count
-            state.skillSelection = (ObjectIdentifier(thread), thread.draft, candidates[next].name)
+        guard let selected = selectedSkill(in: candidates), let index = candidates.firstIndex(of: selected) else { return nil }
+        return { [self] in
+            switch key {
+            case .tab: pickSkill(selected)
+            case .up, .down:
+                let next = (index + (key == .down ? 1 : -1) + candidates.count) % candidates.count
+                state.skillSelection = (ObjectIdentifier(thread), thread.draft, candidates[next].name)
+            }
         }
-        return true
     }
 
     /// 正在打的 skill 名字：开头是 /、后面还没有空白。
