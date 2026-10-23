@@ -16,8 +16,6 @@ struct CodeEditor {
     var match: Match?
     /// 键盘上按 ⌘S。
     var save: () -> Void = {}
-    /// 建好以后交出编辑器，例如给验证用。
-    var created: (CodeEditorView) -> Void = { _ in }
 
     struct Focus: Equatable {
         let lines: ClosedRange<Int>
@@ -65,6 +63,49 @@ enum CodeEditorText {
         let replacement = new.substring(with: NSRange(location: prefix, length: new.length - prefix - suffix))
         storage.replaceCharacters(in: NSRange(location: prefix, length: old.length - prefix - suffix),
                                   with: NSAttributedString(string: replacement, attributes: attributes))
+    }
+}
+
+/// 两端编辑器跟上 SourceDocument：换进工作机上的新内容，选中引用的行、查找的当前匹配。
+@MainActor
+final class CodeEditorSync {
+    let document: SourceDocument
+    /// 已经换进来的 SourceDocument.revision。
+    private var revision: Int
+    private var focusID: UUID?
+    private var match: CodeEditor.Match?
+    /// 换进新内容时文字存储也会报改动，不算用户改的。
+    private var replacing = false
+
+    init(document: SourceDocument) {
+        self.document = document
+        revision = document.revision
+    }
+
+    /// 文字存储报了改动（SyntaxStyler.edited）。
+    func edited() {
+        if !replacing { document.edited() }
+    }
+
+    /// attributes 是换进来的文字的字体、字色；换了内容就清掉撤销记录。reveal 选中一段并滚过去。
+    func apply(storage: NSTextStorage, styler: SyntaxStyler?, attributes: [NSAttributedString.Key: Any], undo: UndoManager?,
+               focus: CodeEditor.Focus?, match: CodeEditor.Match?, reveal: (NSRange) -> Void) {
+        if document.revision != revision {
+            revision = document.revision
+            replacing = true
+            CodeEditorText.replace(storage, with: document.text, attributes: attributes)
+            replacing = false
+            undo?.removeAllActions()
+        }
+        guard let styler else { return }
+        if let focus, focus.id != focusID {
+            focusID = focus.id
+            reveal(CodeEditorText.range(lines: focus.lines, in: styler.lines, length: storage.length))
+        }
+        if match != self.match {
+            self.match = match
+            if let match, let range = CodeEditorText.range(of: match, in: storage.mutableString, index: styler.lines) { reveal(range) }
+        }
     }
 }
 
@@ -128,22 +169,15 @@ final class LineNumberGutter: PlatformView {
 final class CodeEditorView: UITextView {
     let gutter: LineNumberGutter
     private(set) var styler: SyntaxStyler?
-    let document: SourceDocument
     var save: () -> Void = {}
-    /// 已经换进来的 SourceDocument.revision，见 apply。
-    private var revision: Int
-    private var focusID: UUID?
-    private var match: CodeEditor.Match?
-    /// 换进工作机上的新内容时文字存储也会报改动，不算用户改的。
-    private var replacing = false
+    private let sync: CodeEditorSync
     /// TextKit 2 的一套自己搭、由这里拿着，同 PhoneProseTextView：容器到排版管理器、排版管理器到内容存储都是弱引用。
     private let stack: (content: NSTextContentStorage, layout: NSTextLayoutManager)
 
     init(document: SourceDocument) {
         let font = SelectableText.phoneFonts.code
         gutter = LineNumberGutter(font: font)
-        self.document = document
-        revision = document.revision
+        sync = CodeEditorSync(document: document)
         let layout = NSTextLayoutManager()
         let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true
@@ -168,11 +202,8 @@ final class CodeEditorView: UITextView {
         keyboardDismissMode = .interactive
         text = document.text
         document.storage = textStorage
-        if let manager = textLayoutManager { styler = SyntaxStyler(layoutManager: manager, language: document.language) }
-        styler?.edited = { [weak self] in
-            guard let self, !replacing else { return }
-            self.document.edited()
-        }
+        if let manager = textLayoutManager { styler = SyntaxStyler(layoutManager: manager, language: CodeLanguage.forPath(document.path)) }
+        styler?.edited = { [sync] in sync.edited() }
         gutter.textView = self
         gutter.styler = styler
         addSubview(gutter)
@@ -190,22 +221,8 @@ final class CodeEditorView: UITextView {
 
     /// 跟上 SourceDocument：新内容、引用的行、查找的当前匹配。
     func apply(focus: CodeEditor.Focus?, match: CodeEditor.Match?) {
-        if document.revision != revision {
-            revision = document.revision
-            replacing = true
-            CodeEditorText.replace(textStorage, with: document.text, attributes: [.font: font as Any, .foregroundColor: UIColor.label])
-            replacing = false
-            undoManager?.removeAllActions()
-        }
-        guard let styler else { return }
-        if let focus, focus.id != focusID {
-            focusID = focus.id
-            reveal(CodeEditorText.range(lines: focus.lines, in: styler.lines, length: textStorage.length))
-        }
-        if match != self.match {
-            self.match = match
-            if let match, let range = CodeEditorText.range(of: match, in: textStorage.mutableString, index: styler.lines) { reveal(range) }
-        }
+        sync.apply(storage: textStorage, styler: styler, attributes: [.font: font as Any, .foregroundColor: UIColor.label], undo: undoManager,
+                   focus: focus, match: match, reveal: reveal)
     }
 
     private func reveal(_ range: NSRange) {
@@ -229,9 +246,7 @@ final class CodeEditorView: UITextView {
 
 extension CodeEditor: UIViewRepresentable {
     func makeUIView(context: Context) -> CodeEditorView {
-        let view = CodeEditorView(document: document)
-        created(view)
-        return view
+        CodeEditorView(document: document)
     }
 
     func updateUIView(_ view: CodeEditorView, context: Context) {
@@ -246,20 +261,13 @@ final class CodeEditorView: NSView, NSTextViewDelegate {
     let textView = CodeEditorTextView(usingTextLayoutManager: true)
     let gutter: LineNumberGutter
     private(set) var styler: SyntaxStyler?
-    let document: SourceDocument
-    /// 已经换进来的 SourceDocument.revision，见 apply。
-    private var revision: Int
-    private var focusID: UUID?
-    private var match: CodeEditor.Match?
-    /// 换进工作机上的新内容时文字存储也会报改动，不算用户改的。
-    private var replacing = false
+    private let sync: CodeEditorSync
     private let undo = UndoManager()
 
     init(document: SourceDocument) {
-        let font = NSFont.monospacedSystemFont(ofSize: NSFont.preferredFont(forTextStyle: .subheadline).pointSize, weight: .regular)
+        let font = Theme.code.resolve(in: EnvironmentValues().fontResolutionContext).ctFont as NSFont
         gutter = LineNumberGutter(font: font)
-        self.document = document
-        revision = document.revision
+        sync = CodeEditorSync(document: document)
         super.init(frame: .zero)
         textView.font = font
         textView.textColor = .labelColor
@@ -291,11 +299,8 @@ final class CodeEditorView: NSView, NSTextViewDelegate {
         textView.string = document.text
         textView.delegate = self
         document.storage = textView.textStorage
-        if let manager = textView.textLayoutManager { styler = SyntaxStyler(layoutManager: manager, language: document.language) }
-        styler?.edited = { [weak self] in
-            guard let self, !replacing else { return }
-            self.document.edited()
-        }
+        if let manager = textView.textLayoutManager { styler = SyntaxStyler(layoutManager: manager, language: CodeLanguage.forPath(document.path)) }
+        styler?.edited = { [sync] in sync.edited() }
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -323,22 +328,8 @@ final class CodeEditorView: NSView, NSTextViewDelegate {
     /// 跟上 SourceDocument：新内容、引用的行、查找的当前匹配。
     func apply(focus: CodeEditor.Focus?, match: CodeEditor.Match?) {
         guard let storage = textView.textStorage else { return }
-        if document.revision != revision {
-            revision = document.revision
-            replacing = true
-            CodeEditorText.replace(storage, with: document.text, attributes: [.font: textView.font as Any, .foregroundColor: NSColor.labelColor])
-            replacing = false
-            undo.removeAllActions()
-        }
-        guard let styler else { return }
-        if let focus, focus.id != focusID {
-            focusID = focus.id
-            reveal(CodeEditorText.range(lines: focus.lines, in: styler.lines, length: storage.length))
-        }
-        if match != self.match {
-            self.match = match
-            if let match, let range = CodeEditorText.range(of: match, in: storage.mutableString, index: styler.lines) { reveal(range) }
-        }
+        sync.apply(storage: storage, styler: styler, attributes: [.font: textView.font as Any, .foregroundColor: NSColor.labelColor], undo: undo,
+                   focus: focus, match: match, reveal: reveal)
     }
 
     private func reveal(_ range: NSRange) {
@@ -371,9 +362,7 @@ final class CodeEditorTextView: NSTextView {
 
 extension CodeEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> CodeEditorView {
-        let view = CodeEditorView(document: document)
-        created(view)
-        return view
+        CodeEditorView(document: document)
     }
 
     func updateNSView(_ view: CodeEditorView, context: Context) {

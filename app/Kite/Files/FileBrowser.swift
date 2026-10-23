@@ -77,6 +77,8 @@ final class FileBrowser {
     /// 渲染 HTML、打开网页时网页报的错。
     var pageError: String?
     var requestKey: String { connectionRevision.uuidString + selection.revision + focusID.uuidString + String(rendered) }
+    /// 时间线只跟着所选文件和连接重读（loadHistory）；跳行、换看法、换版本不用。
+    var historyKey: String { connectionRevision.uuidString + (selection.path ?? "") }
     var locationMessage: String? {
         guard let start = focus?.startLine else { return nil }
         if let page, start > page.totalLines { return "定位行已超出文件范围" }
@@ -348,22 +350,17 @@ final class FileBrowser {
     }
 
     func loadSelection() async {
-        async let versions: Void = loadHistory()
-        if let id = selection.diffId {
-            await loadDiff(id)
-        } else {
-            switch format {
-            case .text: await loadSource()
-            case .markdown, .html:
-                if rendered {
-                    closeDocument()
-                    await fetch()
-                } else { await loadSource() }
-            case .pdf, .quickLook: await fetch()
-            case .other: await describe()
-            }
+        if let id = selection.diffId { await loadDiff(id); return }
+        switch format {
+        case .text: await loadSource()
+        case .markdown, .html:
+            if rendered {
+                closeDocument()
+                await fetch()
+            } else { await loadSource() }
+        case .pdf, .quickLook: await fetch()
+        case .other: await describe()
         }
-        await versions
     }
 
     /// 原文：整篇读进编辑器，现在的内容可以改，历史版本只读。先按页读一次，太大、不是文本的由工作机挡下（只列文件信息）；
@@ -379,21 +376,28 @@ final class FileBrowser {
                                                               version: selection.version) { [weak self] progress in
                 Task { @MainActor in if self?.textRequest == request { self?.download = progress } }
             }
-            guard textRequest == request, !Task.isCancelled,
-                  let data = try? Data(contentsOf: file.url), let text = String(data: data, encoding: .utf8) else { return }
-            let version = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            guard let source = await Self.sourceText(file), textRequest == request, !Task.isCancelled else { return }
             let editable = selection.version == nil
             if let document, document.path == path, document.editable == editable {
-                if !document.dirty, document.version != version { document.replace(text, version: version) }
+                document.follow(source.text, version: source.version)
             } else if editable, let draft = drafts[path] {
                 document = SourceDocument(path: path, editable: true, text: draft.text, version: draft.version, dirty: true)
             } else {
-                document = SourceDocument(path: path, editable: editable, text: text, version: version)
+                document = SourceDocument(path: path, editable: editable, text: source.text, version: source.version)
             }
             contentRevision = UUID()
         } catch {
             if textRequest == request && !Task.isCancelled { textError = error.localizedDescription }
         }
+    }
+
+    /// 原文编辑器要的文字和版本（全文 sha256，同工作机的 textVersion，保存时交给它核对）；读不成 UTF-8 时是 nil。
+    /// 读文件、解码和算摘要放到后台，大文件不卡界面。
+    private nonisolated static func sourceText(_ file: CachedFile) async -> (text: String, version: String)? {
+        await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: file.url), let text = String(data: data, encoding: .utf8) else { return nil }
+            return (text, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        }.value
     }
 
     /// 不再看这份原文：没保存的改动留进草稿。
@@ -427,11 +431,9 @@ final class FileBrowser {
 
     /// 放弃没保存的改动，换回工作机上现在的内容。
     func discard() async {
-        guard let document else { return }
-        drafts[document.path] = nil
-        self.document = nil
-        saveConflict = false
-        saveError = nil
+        guard let path = document?.path else { return }
+        closeDocument()
+        drafts[path] = nil
         await loadSource()
     }
 
@@ -441,10 +443,8 @@ final class FileBrowser {
         await loadHistory()
         guard let document, !document.dirty, selection.version == nil, let path = selection.path, let client,
               let file = try? await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path),
-              self.document === document, !document.dirty,
-              let data = try? Data(contentsOf: file.url), let text = String(data: data, encoding: .utf8) else { return }
-        let version = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        if version != document.version { document.replace(text, version: version) }
+              let source = await Self.sourceText(file), self.document === document else { return }
+        document.follow(source.text, version: source.version)
     }
 
     /// 读所选文件的时间线：内容变过的工作区快照，新的在前。读不到时记下原因，时间线里说明。
@@ -651,12 +651,11 @@ final class FileBrowser {
 }
 
 /// 原文编辑器里的一份文件：打开时的文字与版本（全文 sha256，保存时交给工作机核对，见 files.write），改没改过。
-/// 改动中的文字在编辑器的文字存储里（storage），保存时取；工作机上的新内容、保存后的结果经 replace、saved 换进来。
+/// 改动中的文字在编辑器的文字存储里（storage），保存时取；工作机上的新内容、保存后的结果经 follow、saved 换进来。
 @Observable
 final class SourceDocument {
     let path: String
     let editable: Bool
-    let language: CodeLanguage?
     /// 工作机上那一份的版本：打开时的，或上次保存后的。
     private(set) var version: String
     /// 交给编辑器的文字；revision 变了时编辑器换成它。
@@ -672,7 +671,6 @@ final class SourceDocument {
         self.text = text
         self.version = version
         self.dirty = dirty
-        language = CodeLanguage.forPath(path)
     }
 
     /// 编辑器里现在的文字。
@@ -681,11 +679,11 @@ final class SourceDocument {
     /// 用户在编辑器里改了字。
     func edited() { if !dirty { dirty = true } }
 
-    /// 换成工作机上的新内容。
-    func replace(_ text: String, version: String) {
+    /// 跟上工作机上的新内容：改过的不动，内容一样的不换。
+    func follow(_ text: String, version: String) {
+        guard !dirty, version != self.version else { return }
         self.text = text
         self.version = version
-        dirty = false
         revision += 1
     }
 

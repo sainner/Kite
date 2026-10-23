@@ -167,6 +167,7 @@ struct FilePane: View {
         }
         .task(id: browser.connectionRevision) { await browser.list() }
         .task(id: browser.requestKey) { await browser.loadSelection() }
+        .task(id: browser.historyKey) { await browser.loadHistory() }
         .task(id: "\(searching) \(String(describing: searchTarget)) \(query) \(browser.selection.revision) \(browser.diff?.id ?? "")") {
             await runFind()
         }
@@ -584,7 +585,7 @@ struct FilePane: View {
                 MenuButton("用默认 App 打开", systemImage: "arrow.up.forward.app") { NSWorkspace.shared.open(url) }
             }
             #endif
-            if fileVisible, browser.format == .other, browser.content == nil, !browser.isLocal || browser.selection.version != nil {
+            if fileVisible, browser.format == .other, browser.content == nil, !opensOriginal {
                 MenuButton("下载", systemImage: "arrow.down.circle") { Task { await browser.fetch() } }
                     .disabled(browser.loadingText)
             }
@@ -595,17 +596,23 @@ struct FilePane: View {
         .help("文件操作")
     }
 
-    /// 认不出的格式用默认 App 打开：工作机就是本机、看的是现在的内容时开工作区里的原文件，其他时候开下载好的副本。
+    /// 认不出的格式用默认 App 打开：能开原文件时开工作区里的，其他时候开下载好的副本。
     private var defaultAppURL: URL? {
         guard fileVisible, browser.format == .other, let path = browser.selection.path else { return nil }
-        if browser.isLocal && browser.selection.version == nil { return URL(filePath: area.remote.workspace.cwd).appending(path: path) }
+        if opensOriginal { return URL(filePath: area.remote.workspace.cwd).appending(path: path) }
         return browser.content?.url
     }
+
+    /// 能直接开工作区里的原文件：工作机就是本机、看的是现在的内容。不能时要先下载。
+    private var opensOriginal: Bool { browser.isLocal && browser.selection.version == nil }
 
     /// 目录和文件看得见哪个就刷新哪个。
     private func refresh() {
         if browser.showDirectory || !browser.displayingFile { Task { await browser.list() } }
-        if fileVisible { Task { await browser.loadSelection() } }
+        if fileVisible {
+            Task { await browser.loadSelection() }
+            Task { await browser.loadHistory() }
+        }
     }
 
     private static let directoryWidth: CGFloat = 210

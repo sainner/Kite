@@ -40,11 +40,6 @@ import Foundation
 
 typealias PlatformImage = NSImage
 
-// 资源引用合同不涉及代码语言解析，保持不提供高亮语言的最小替身。
-enum CodeLanguage {
-    static func forPath(_ path: String) -> CodeLanguage? { nil }
-}
-
 // 工作机替身只提供当前文件和两份历史 diff，按真实接口的路径和字段应答。
 final class KitedClient: Equatable {
     static func == (lhs: KitedClient, rhs: KitedClient) -> Bool { lhs === rhs }

@@ -1,10 +1,10 @@
 /** 文件工具限定在工作目录内，read 另可读 skill 文件夹；shell 通过工作机共用的操作系统沙箱执行。 */
 import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
 import { applyDiff } from '@openai/agents-core/utils';
 import { z } from 'zod';
-import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
+import { WorkspaceFiles, readFileArgs, textVersion } from '../workspace/files.ts';
 import { within } from '../paths.ts';
 import { SkillCatalog } from '../harness/context/project.ts';
 import { loadSkill, systemSkillSources } from '../harness/context/skills.ts';
@@ -97,7 +97,6 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
   // 只记录本次运行中读取或修改后已知的版本；不代表整文件仍在模型上下文里。
   const versions = new Map<string, string>();
   const pdfs = new PdfReader(commandEnvironment(options.env));
-  const hash = (content: string) => createHash('sha256').update(content).digest('hex');
   const make = <T extends z.ZodType>(name: string, description: string, schema: T,
     execute: (args: z.output<T>, context: Parameters<Tool['execute']>[1]) => Promise<ToolResult>, parallel = false): Tool => ({
     name, description, parameters: z.toJSONSchema(schema) as JsonObject, parallel,
@@ -172,7 +171,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
         const known = versions.get(key);
         const notice = type === 'create_file' ? '' : known === undefined
           ? `提示：${path} 没有本次运行的读取或修改记录；依赖周边内容时请先 read。`
-          : known !== hash(original) ? `提示：${path} 自上次读取或修改后已有其他变化；依赖周边内容时请重新 read。` : '';
+          : known !== textVersion(original) ? `提示：${path} 自上次读取或修改后已有其他变化；依赖周边内容时请重新 read。` : '';
         let content: string | null = null;
         if (type !== 'delete_file') {
           // applyDiff 接收单文件正文；拒绝包装头，避免上游把它当终止符而忽略后续内容。
@@ -198,7 +197,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
           } else {
             mkdirSync(dirname(change.target), { recursive: true });
             writeFileSync(change.target, change.content, { flag: change.type === 'create_file' ? 'wx' : 'w' });
-            versions.set(realpathSync(change.target), hash(change.content));
+            versions.set(realpathSync(change.target), textVersion(change.content));
           }
           const completed = { path: change.path, before: change.original, after: change.content };
           try { diffs.save({ ...diff, files: [...diff.files, completed] }); }

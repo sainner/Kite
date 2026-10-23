@@ -225,19 +225,38 @@ export async function findSnapshot(cwd: string, workspaceId: string, commit: str
   return r.code === 0 && full && owner?.trim() === workspaceId ? full : null;
 }
 
+const trailer = (key: string) => `%(trailers:key=${key},valueonly,separator=%x2C)`;
+/** git log 里一枚快照的字段（--format 用，以 \x1f 分隔，不带记录分隔符；尾注都带 separator，不会多出换行），parseSnapshot 按同样的顺序读。 */
+export const snapshotFormat = ['%H', '%ct', '%s', ...['Kite-Workspace', 'Kite-At', 'Kite-Thread', 'Kite-Tool-Use'].map(trailer)].join('%x1f');
+
+/** 按 snapshotFormat 读一条记录（见 message）；owner 是它所属的工作区，不是快照的提交为空。 */
+export function parseSnapshot(fields: string): { snapshot: Snapshot; owner: string } | undefined {
+  const [commit, seconds, label, owner, ms, thread, tools] = fields.trim().split('\x1f');
+  if (!commit) return undefined;
+  return { owner: owner?.trim() ?? '', snapshot: { commit, at: Number(ms?.trim()) || Number(seconds) * 1000, label: label ?? '',
+    toolUseIds: (tools ?? '').split(',').map((s) => s.trim()).filter(Boolean), ...(thread?.trim() ? { threadId: thread.trim() } : {}) } };
+}
+
+/**
+ * 快照链外的第一条提交，即第一枚快照的第一父节点，多是工作区开始时项目的 HEAD；按同 list 的规则沿第一父节点找。
+ * 只读提交说明、不比树，走到它就停。链一直到根（开始时项目还没有提交）时为 null，还没有快照时为 undefined。
+ */
+export async function chainBase(cwd: string, workspaceId: string): Promise<string | null | undefined> {
+  const owner = `^Kite-Workspace: ${workspaceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+  const r = await gitTry(cwd, ['rev-list', '-1', '--first-parent', '--invert-grep', '-E', `--grep=${owner}`, snapshotRef(workspaceId)]);
+  return r.code === 0 ? r.stdout.trim() || null : undefined;
+}
+
 /** 会话的快照链，新的在前，最多 1000 枚。沿第一父节点走，遇到不属于本会话的提交就停。 */
 export async function list(cwd: string, workspaceId: string): Promise<Snapshot[]> {
-  const fmt = '%H%x1f%ct%x1f%s%x1f%(trailers:key=Kite-Workspace,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-Tool-Use,valueonly,separator=%x2C)%x1f%(trailers:key=Kite-At,valueonly)%x1f%(trailers:key=Kite-Thread,valueonly)%x1e';
   // 还没有快照时引用不存在，log 失败
-  const r = await gitTry(cwd, ['log', '--first-parent', '-n1000', `--format=${fmt}`, snapshotRef(workspaceId)]);
+  const r = await gitTry(cwd, ['log', '--first-parent', '-n1000', `--format=${snapshotFormat}%x1e`, snapshotRef(workspaceId)]);
   if (r.code !== 0) return [];
-  const out = r.stdout.trim();
   const snaps: Snapshot[] = [];
-  for (const rec of out.split('\x1e')) {
-    const [commit, at, label, owner, tools, ms, thread] = rec.trim().split('\x1f');
-    if (!commit || owner?.trim() !== workspaceId) break;
-    snaps.push({ commit, at: Number(ms?.trim()) || Number(at) * 1000, label: label ?? '', toolUseIds: (tools ?? '').split(',').map((s) => s.trim()).filter(Boolean),
-      ...(thread?.trim() ? { threadId: thread.trim() } : {}) });
+  for (const rec of r.stdout.split('\x1e')) {
+    const parsed = parseSnapshot(rec);
+    if (!parsed || parsed.owner !== workspaceId) break;
+    snaps.push(parsed.snapshot);
   }
   return snaps;
 }

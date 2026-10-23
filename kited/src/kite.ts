@@ -1426,7 +1426,6 @@ export class Kite {
    */
   private async chooseFile(workspace: Workspace, input: OperationInput<'files.select'>) {
     let path: string | null = null;
-    let version: string | undefined;
     if (input.path !== null) {
       try {
         const files = new WorkspaceFiles(workspace.cwd);
@@ -1437,7 +1436,6 @@ export class Kite {
           if (!diff.files.some((file) => file.path === path)) throw new KiteError('这份差异中没有指定文件', 404);
         } else if (input.version) {
           await assertVersion(files, workspace.id, path, input.version);
-          version = input.version;
         } else files.regular(target);
       }
       catch (error) {
@@ -1445,7 +1443,7 @@ export class Kite {
         throw new KiteError(`无法选择文件：${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    return { path, revision: randomUUID(), ...(path && input.diffId ? { diffId: input.diffId } : {}), ...(path && version ? { version } : {}) };
+    return { path, revision: randomUUID(), ...(path && input.diffId ? { diffId: input.diffId } : {}), ...(path && input.version ? { version: input.version } : {}) };
   }
 
   /** 浏览选一个网页时的状态：端口须是本工作区运行中终端或预览此刻监听的；服务停了选择保留，同一端口再被监听时接着显示。 */

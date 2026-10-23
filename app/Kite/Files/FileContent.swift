@@ -98,17 +98,20 @@ final class FileContentCache {
         let metaURL = directory.appending(path: "meta.json")
         let cached = (try? Data(contentsOf: metaURL)).flatMap { try? JSONDecoder().decode(Meta.self, from: $0) }
         let cachedURL = cached.map { directory.appending(path: "file").appending(path: $0.name) }
+        func reuse(_ cached: Meta, at url: URL) -> CachedFile {
+            // 修改时间当作最近使用时间，清理时按它排
+            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: directory.path(percentEncoded: false))
+            return CachedFile(url: url, version: cached.version, info: cached.info)
+        }
         var headers: [String: String] = [:]
         if let cached, let cachedURL, FileManager.default.fileExists(atPath: cachedURL.path(percentEncoded: false)) {
+            // 历史版本不会变，有副本就不再向工作机校验
+            if version != nil { return reuse(cached, at: cachedURL) }
             headers["If-None-Match"] = cached.version
         }
         let (file, response) = try await client.download(Self.contentPath(workspace, path, version: version), headers: headers, segmented: true,
                                                          progress: progress)
-        if let cached, let cachedURL, response.statusCode == 304 {
-            // 修改时间当作最近使用时间，清理时按它排
-            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: directory.path(percentEncoded: false))
-            return CachedFile(url: cachedURL, version: cached.version, info: cached.info)
-        }
+        if let cached, let cachedURL, response.statusCode == 304 { return reuse(cached, at: cachedURL) }
         guard let file else { throw KitedError(message: "工作机没有返回文件内容") }
         let name = (path as NSString).lastPathComponent
         let meta = Meta(name: name.isEmpty ? "file" : name, version: response.value(forHTTPHeaderField: "ETag") ?? "", info: Self.info(response))

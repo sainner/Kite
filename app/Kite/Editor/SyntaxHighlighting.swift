@@ -82,10 +82,10 @@ struct CodeLanguage {
     ]
 }
 
-/// 一段代码的种类，见 SyntaxTree.highlights。
+/// 一段代码的字色，见 SyntaxTree.highlights。
 struct SyntaxHighlight {
     let range: NSRange
-    let name: String
+    let color: PlatformColor
 }
 
 /// 各行开头的位置（UTF-16），改动时只重算改到的那几行。语法树要的行列号、行号栏都从这里取。
@@ -160,17 +160,16 @@ final class SyntaxTree {
         tree = parse(text, previous: nil)
     }
 
-    /// 文字改了以后跟上：range 是改后的范围，delta 是长度变化，oldLines 是改之前的行。返回颜色可能变了的范围。
+    /// 文字改了以后跟上：range 是改后的范围，delta 是长度变化，oldLines 是改之前的行。返回改动以外颜色也可能变了的范围。
     func edit(_ range: NSRange, delta: Int, in text: NSString, oldLines: LineIndex, newLines: LineIndex) -> [NSRange] {
-        guard let old = tree else { return [range] }
+        guard let old = tree else { return [] }
         let oldEnd = NSMaxRange(range) - delta
         old.edit(InputEdit(startByte: range.location * 2, oldEndByte: oldEnd * 2, newEndByte: NSMaxRange(range) * 2,
                            startPoint: oldLines.point(range.location), oldEndPoint: oldLines.point(oldEnd),
                            newEndPoint: newLines.point(NSMaxRange(range))))
-        guard let new = parse(text, previous: old) else { return [range] }
+        guard let new = parse(text, previous: old) else { return [] }
         tree = new
-        return [range] + old.changedRanges(from: new).map { NSRange(location: Int($0.bytes.lowerBound) / 2,
-                                                                    length: Int($0.bytes.count) / 2) }
+        return old.changedRanges(from: new).map { NSRange(location: Int($0.bytes.lowerBound) / 2, length: Int($0.bytes.count) / 2) }
     }
 
     /// range 里配了颜色的各段代码，按上色的先后排好，后上的盖前面的：外面的大范围先上、套在里面的后上；
@@ -182,16 +181,16 @@ final class SyntaxTree {
         let context = Predicate.Context { range, _ in
             NSMaxRange(range) <= text.length ? text.substring(with: range) : nil
         }
-        var captures: [QueryCapture] = []
+        var captures: [(capture: QueryCapture, color: PlatformColor)] = []
         for match in cursor.resolve(with: context) {
-            captures += match.captures.filter { $0.name.flatMap(SyntaxPalette.color(for:)) != nil }
+            captures += match.captures.compactMap { capture in capture.name.flatMap(SyntaxPalette.color(for:)).map { (capture, $0) } }
         }
         captures.sort { a, b in
-            if a.range.location != b.range.location { return a.range.location < b.range.location }
-            if a.range.length != b.range.length { return a.range.length > b.range.length }
-            return a.patternIndex > b.patternIndex
+            if a.capture.range.location != b.capture.range.location { return a.capture.range.location < b.capture.range.location }
+            if a.capture.range.length != b.capture.range.length { return a.capture.range.length > b.capture.range.length }
+            return a.capture.patternIndex > b.capture.patternIndex
         }
-        return captures.compactMap { capture in capture.name.map { SyntaxHighlight(range: capture.range, name: $0) } }
+        return captures.map { SyntaxHighlight(range: $0.capture.range, color: $0.color) }
     }
 
     private func parse(_ text: NSString, previous: MutableTree?) -> MutableTree? {
@@ -298,8 +297,8 @@ final class SyntaxStyler: NSObject, NSTextStorageDelegate, NSTextContentStorageD
         let styled = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: range))
         for highlight in syntax.highlights(in: range, text: storage.mutableString) {
             let clipped = NSIntersectionRange(highlight.range, range)
-            guard clipped.length > 0, let color = SyntaxPalette.color(for: highlight.name) else { continue }
-            styled.addAttribute(.foregroundColor, value: color, range: NSRange(location: clipped.location - range.location, length: clipped.length))
+            guard clipped.length > 0 else { continue }
+            styled.addAttribute(.foregroundColor, value: highlight.color, range: NSRange(location: clipped.location - range.location, length: clipped.length))
         }
         return NSTextParagraph(attributedString: styled)
     }
@@ -314,7 +313,7 @@ final class SyntaxStyler: NSObject, NSTextStorageDelegate, NSTextContentStorageD
             let old = lines
             lines.edit(editedRange, delta: delta, in: text)
             recolor.shift(startingAt: NSMaxRange(editedRange) - delta, by: delta)
-            for range in syntax?.edit(editedRange, delta: delta, in: text, oldLines: old, newLines: lines).dropFirst() ?? [] {
+            for range in syntax?.edit(editedRange, delta: delta, in: text, oldLines: old, newLines: lines) ?? [] {
                 if let range = Range(range) { recolor.insert(integersIn: range) }
             }
             edited?()
@@ -347,12 +346,5 @@ final class SyntaxStyler: NSObject, NSTextStorageDelegate, NSTextContentStorageD
         let length = contentStorage.offset(from: textRange.location, to: textRange.endLocation)
         guard location != NSNotFound, length != NSNotFound else { return nil }
         return NSRange(location: location, length: length)
-    }
-
-    func textRange(_ range: NSRange) -> NSTextRange? {
-        let start = contentStorage.documentRange.location
-        guard let location = contentStorage.location(start, offsetBy: range.location),
-              let end = contentStorage.location(location, offsetBy: range.length) else { return nil }
-        return NSTextRange(location: location, end: end)
     }
 }

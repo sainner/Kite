@@ -44,7 +44,7 @@ function page<T extends { name: string; kind: EntryKind }, R>(entries: T[], offs
 }
 
 /** 当文本读写的上限。 */
-const TEXT_LIMIT = 2 * 1024 * 1024;
+export const TEXT_LIMIT = 2 * 1024 * 1024;
 
 /** 当文本读的内容：超过 2 MiB 或含 NUL 的不读，查看器改按字节看。按版本读的同样处理，见 file-versions.ts。 */
 export function textContent(size: number, read: () => string): string {
