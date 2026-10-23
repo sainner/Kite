@@ -28,12 +28,11 @@ enum SidebarSection: CaseIterable, Identifiable {
     /// 设置不在一级导航里，从用户栏末尾的设置按钮进入。
     var navigable: Bool { self != .settings }
 
-    /// 导航行尾的数字：工作区数量，设备一栏是在线的机器数。
+    /// 导航行尾的数字：工作区数量。设备一栏不用数字，每台设备一个标记，见 DeviceMarks。
     @MainActor func count(in model: AppModel) -> Int? {
         switch self {
         case .workspaces: model.workspaces.count
-        case .drive: model.availableWorkers.count
-        case .extensions, .settings: nil
+        case .drive, .extensions, .settings: nil
         }
     }
 }
@@ -74,11 +73,12 @@ private struct SidebarNavigationStyle: ButtonStyle {
     }
 }
 
-/// 一级菜单的图标、标题与数量。
+/// 一级菜单的图标、标题与数量；设备一栏行尾换成各设备的标记。
 private struct SidebarNavigationLabel: View {
     let title: String
     let systemImage: String
     var note: String?
+    var devices = false
     /// 选中时图标换实心，白字配合主题色背景。
     var selected = false
     @Environment(\.sidebarMetrics) private var metrics
@@ -96,6 +96,11 @@ private struct SidebarNavigationLabel: View {
                 Text(note).font(Theme.caption).monospacedDigit()
                     .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
                     .frame(minWidth: metrics.rowHeight)
+            }
+            if devices {
+                // 只有一台时标记落在数字方格的中心
+                DeviceMarks(onAccent: selected)
+                    .padding(.trailing, ((metrics.rowHeight - DeviceMarks.size(metrics)) / 2).rounded())
             }
         }
         .modifier(SidebarIconTint(foreground: selected ? Color.white : Color.primary, allowsHover: !selected))
@@ -129,7 +134,8 @@ struct SidebarNavigation: View {
                             .contentShape(sidebarRowShape)
                     } else {
                         SidebarNavigationLabel(title: section.title, systemImage: section.symbol,
-                                               note: section.count(in: model).map(String.init), selected: selected)
+                                               note: section.count(in: model).map(String.init), devices: section == .drive,
+                                               selected: selected)
                     }
                 }
                 .help(section.title)

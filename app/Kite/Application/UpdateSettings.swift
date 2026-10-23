@@ -26,6 +26,9 @@ struct UpdateStatus: Decodable, Equatable {
     let error: String?
     let retry: Bool?
     let app: StagedApp?
+
+    /// 取文件、等空闲与换版期间，状态会接着变。
+    var inProgress: Bool { ["downloading", "ready", "installing"].contains(state) }
 }
 
 /// 这个 App 带的服务运行目录的构建号；Debug 版与 iPhone、iPad 不带服务，为 nil。
@@ -91,9 +94,12 @@ extension AppModel {
     }
 
     /// 本机 kited 的更新状态，侧栏提示与重启以更新用；只有作为工作机的 Mac 才有本机 kited。
-    func refreshLocalUpdate(_ connection: WorkerConnection) async {
-        guard connection.client.isLocal, let status = try? await connection.client.request("/update", as: UpdateStatus.self) else { return }
-        if localUpdate != status { localUpdate = status }
+    var localUpdate: UpdateStatus? { connections.values.first { $0.client.isLocal }?.update }
+
+    /// 重读工作机的更新状态，版本页、设备标记与本机的重启以更新共用。
+    func refreshUpdate(_ connection: WorkerConnection) async {
+        guard let status = try? await connection.client.request("/update", as: UpdateStatus.self) else { return }
+        if connection.update != status { connection.update = status }
     }
 }
 
@@ -102,10 +108,11 @@ extension AppModel {
 struct UpdateSettingsPage: View {
     let connection: WorkerConnection
     @Environment(AppModel.self) private var model
-    @State private var status: UpdateStatus?
     @State private var error: String?
     @State private var busy = false
     @State private var confirming = false
+
+    private var status: UpdateStatus? { connection.update }
 
     var body: some View {
         Form {
@@ -131,7 +138,7 @@ struct UpdateSettingsPage: View {
             if let error { Text(error).foregroundStyle(Theme.danger) }
         }
         .pageForm()
-        .task(id: "\(connection.id) \(connection.updateRevision)") { await load() }
+        .task(id: connection.id) { await load() }
         .confirmationDialog("现在更新", isPresented: $confirming) {
             Button("现在更新", role: .destructive) { Task { await apply() } }
         } message: {
@@ -179,7 +186,7 @@ struct UpdateSettingsPage: View {
 
     private func load() async {
         do {
-            status = try await connection.client.request("/update", as: UpdateStatus.self)
+            connection.update = try await connection.client.request("/update", as: UpdateStatus.self)
             error = nil
         } catch is CancellationError {
         } catch { self.error = error.localizedDescription }
@@ -188,7 +195,7 @@ struct UpdateSettingsPage: View {
     private func apply() async {
         busy = true
         defer { busy = false }
-        do { status = try await connection.client.request("/update/apply", method: "POST", as: UpdateStatus.self) }
+        do { connection.update = try await connection.client.request("/update/apply", method: "POST", as: UpdateStatus.self) }
         catch { self.error = error.localizedDescription }
     }
 }

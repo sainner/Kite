@@ -28,8 +28,6 @@ final class AppModel {
     var monitorRevisions: [String: Int] = [:]
     /// 点了系统通知、要在收件箱里展开的那一项。
     var lineFocusItem: String?
-    /// 本机 kited 的自动更新状态（只有作为工作机的 Mac 有），侧栏的版本提示与重启以更新用，见 refreshLocalUpdate。
-    var localUpdate: UpdateStatus?
     let account: KiteAccount
     /// 语音输入的录音，整个 App 共用一支麦克风。
     let voice = VoiceInput()
@@ -413,6 +411,7 @@ final class AppModel {
             if account.devices.first(where: { $0.id == connection.deviceID })?.online == false {
                 connection.connected = false
                 connection.outdated = nil
+                connection.update = nil
                 connection.error = "上线后自动连接"
                 for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
@@ -420,7 +419,7 @@ final class AppModel {
             }
             let generation = connection.catalog.reset()
             do {
-                // 先核对版本：协议号与 App 不同就不连，锁定为待更新；工作机可能正在自动更新，隔一阵再看。
+                // 先核对版本：协议号与 App 不同就不连，锁定为待更新；工作机可能正在自动更新，隔一阵再看，取文件与换版期间看得勤些。
                 let machine = try await client.request("/machine", timeout: 10, as: RemoteMachine.self)
                 guard accepts(client) else { return }
                 connection.version = machine.version
@@ -429,9 +428,9 @@ final class AppModel {
                     connection.connected = false
                     connection.error = nil
                     for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
-                    // 本机 kited 换了新版而 App 还旧时，它备好的新 App 就在更新状态里。
-                    await refreshLocalUpdate(connection)
-                    try await Task.sleep(for: .seconds(30))
+                    // 锁定期间收不到 update.changed，更新状态在这里读；本机 kited 换了新版而 App 还旧时，它备好的新 App 也在里面。
+                    await refreshUpdate(connection)
+                    try await Task.sleep(for: .seconds(connection.update?.inProgress == true ? 3 : 30))
                     continue
                 }
                 // 插件定义和事件流并行请求，任一失败都按断线重连。
@@ -475,8 +474,7 @@ final class AppModel {
                 return
             }
             if event.type == "update.changed" {
-                connection.updateRevision += 1
-                Task { await self.refreshLocalUpdate(connection) }
+                Task { await self.refreshUpdate(connection) }
                 return
             }
             if event.type == "monitor.changed" {
@@ -507,7 +505,7 @@ final class AppModel {
                 try self.apply(remote, from: client, cursor: cursor, generation: generation)
                 // 目录流（重新）连上了：收件箱重读，关注状态再报一次（事件流断开时工作机已把这台设备移出）
                 Task { await self.refreshLineInbox() }
-                Task { await self.refreshLocalUpdate(connection) }
+                Task { await self.refreshUpdate(connection) }
                 LineAttention.shared.report()
                 // 断线期间收不到资源库的变化事件，重连后每一类都当变过
                 for kind in LibraryList.allCases { self.libraryChanged(kind, on: connection) }

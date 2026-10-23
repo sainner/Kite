@@ -24,8 +24,8 @@ import SwiftUI
     /// 连接前实时读到的版本；协议号与 App 不同时 outdated 说明哪边旧了，这台锁定为待更新（docs/App.md「版本」）。
     var version: MachineVersion?
     var outdated: VersionMismatch?
-    /// 工作机推 update.changed 时加一，版本页据此重新读 /update。
-    var updateRevision = 0
+    /// 工作机的自动更新状态：连上时与每次 update.changed 重读；锁定为待更新时没有事件，随版本核对读，见 AppModel.follow。
+    var update: UpdateStatus?
     /// 工作机推 mcp.changed 时加一，MCP 页与代理的服务开关据此重新读 /mcp；清单本身变了时 mcpCatalogRevision 也加一。
     var mcpRevision = 0
     var mcpCatalogRevision = 0
@@ -60,22 +60,36 @@ enum VersionMismatch: Equatable {
     }
 }
 
-/// 设备的连接状态。侧栏的设备行、工作区行和窗口信息区共用同一套判断、文字、颜色与图标。
+/// 设备的连接状态。设备标记、工作区行和窗口信息区共用同一套判断、文字与颜色；符号只用在窗口信息区。
 struct DeviceStatus {
     let ready: Bool
     let waiting: Bool
     /// 协议号与 App 不同，锁定为待更新。
     let outdated: Bool
+    /// 自动更新的进度：取文件时为已取的比例，换版时为 1；没在更新为 nil。换版要重启工作机，期间连不上也算。
+    let progress: Double?
 
     /// 工作机以本机的连接为准，控制端没有连接，按工作机目录的在线状态；目录里找不到的设备按离线处理。
     init(device: AccountDevice?, connection: WorkerConnection?) {
         ready = connection?.connected == true || (device.map { $0.role != "worker" && $0.online } ?? false)
         outdated = !ready && connection?.outdated != nil
         waiting = !ready && !outdated && device?.online == true
+        progress = switch connection?.update {
+        case let update? where update.state == "downloading": Double(update.done ?? 0) / Double(max(update.total ?? 0, 1))
+        case let update? where update.state == "installing": 1
+        default: nil
+        }
     }
 
+    var offline: Bool { !ready && !outdated && !waiting }
     var tint: Color { ready ? .accentColor : outdated || waiting ? Theme.warning : .secondary }
-    var title: String { ready ? "在线" : outdated ? "待更新" : waiting ? "等待连接" : "离线" }
+    var title: String { ready ? "在线" : progress != nil ? "更新中" : outdated ? "待更新" : waiting ? "等待连接" : "离线" }
+    /// 悬停说明：更新中时说到哪一步。
+    var detail: String {
+        guard let progress else { return title }
+        let step = progress < 1 ? "正在取新版本 \(Int(progress * 100))%" : "正在换上新版本"
+        return ready ? "在线 · \(step)" : step
+    }
     var symbol: String { ready ? "checkmark.circle.fill" : outdated ? "arrow.down.circle.fill" : waiting ? "clock.fill" : "xmark.circle.fill" }
 }
 
@@ -83,6 +97,10 @@ extension AppModel {
     func deviceStatus(_ connection: WorkerConnection?) -> DeviceStatus {
         DeviceStatus(device: connection.flatMap { connection in account.devices.first { $0.id == connection.deviceID } },
                      connection: connection)
+    }
+
+    func deviceStatus(_ device: AccountDevice) -> DeviceStatus {
+        DeviceStatus(device: device, connection: connections.values.first { $0.deviceID == device.id })
     }
 
     /// 所属工作机没连上时窗口信息区的提示，比窗口自己的提示更优先；连接错误跟在说明里。

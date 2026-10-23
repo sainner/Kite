@@ -162,7 +162,6 @@ struct NetworkState: Decodable {
         let id: String?
         let name: String
         let ip: String?
-        let os: String?
         let online: Bool?
         let connection: String
         let endpoint: String?

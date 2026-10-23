@@ -1,8 +1,5 @@
 import Foundation
 import Observation
-#if os(iOS)
-import UIKit
-#endif
 
 /// 登录的 Tailscale 用户；email 放登录名。
 struct AccountUser: Codable, Equatable { let id: String; let email: String; let name: String }
@@ -11,7 +8,6 @@ struct AccountDevice: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let role: String
-    let kind: String?
     let online: Bool
     let address: String?
 }
@@ -52,18 +48,8 @@ private struct Identity: Codable {
     var deviceID: String? { identity.deviceID }
     var role: String? { identity.role }
     var workers: [AccountDevice] { devices.filter { $0.role == "worker" } }
-
-    static var localDeviceKind: String {
-        #if os(iOS)
-        switch UIDevice.current.userInterfaceIdiom {
-        case .phone: "phone"
-        case .pad: "tablet"
-        default: "unknown"
-        }
-        #else
-        "computer"
-        #endif
-    }
+    /// 每台设备的形状，见 DeviceMark。
+    var deviceShapes: [String: String] { DeviceMark.shapes(for: devices.map(\.id)) }
 
     init() {
         identity = (UserDefaults.standard.data(forKey: Self.identityKey)).flatMap { try? JSONDecoder().decode(Identity.self, from: $0) } ?? Identity()
@@ -132,7 +118,7 @@ private struct Identity: Codable {
             return NodeState(running: running, needsLogin: status.state == "NeedsLogin", loginURL: status.loginURL.flatMap(URL.init(string:)),
                              user: status.user.map { AccountUser(id: $0.id, email: $0.loginName, name: $0.displayName ?? $0.loginName) },
                              id: status.id, ipv4: status.ips?.first { !$0.contains(":") },
-                             peers: (status.peers ?? []).map { Peer(id: $0.id ?? $0.ip ?? $0.name, name: $0.name, ip: $0.ip, os: $0.os, online: $0.online ?? false) },
+                             peers: (status.peers ?? []).map { Peer(id: $0.id ?? $0.ip ?? $0.name, name: $0.name, ip: $0.ip, online: $0.online ?? false) },
                              error: status.state == "Stopped" ? status.error : nil)
         }
         #endif
@@ -141,7 +127,7 @@ private struct Identity: Codable {
             AccountUser(id: String(id), email: $0.LoginName ?? String(id), name: $0.DisplayName ?? $0.LoginName ?? "") } }
         return NodeState(running: status.running, needsLogin: status.BackendState == "NeedsLogin",
                          loginURL: status.AuthURL.flatMap { $0.isEmpty ? nil : URL(string: $0) }, user: user, id: status.me?.ID, ipv4: status.me?.ipv4,
-                         peers: status.ownPeers.map { Peer(id: $0.ID ?? $0.ipv4 ?? "", name: $0.HostName ?? "设备", ip: $0.ipv4, os: $0.OS, online: $0.Online ?? false) },
+                         peers: status.ownPeers.map { Peer(id: $0.ID ?? $0.ipv4 ?? "", name: $0.HostName ?? "设备", ip: $0.ipv4, online: $0.Online ?? false) },
                          error: nil)
     }
 
@@ -196,7 +182,7 @@ private struct Identity: Codable {
         guard node.running else { throw KitedError(message: role == "worker" ? "本机 kited 还没有上线" : "组网还没有上线") }
         if role != "worker" { _ = try await Tailnet.shared.urlSession() }
         try noteDevice(node.id)
-        let own = AccountDevice(id: node.id ?? "self", name: AppModel.deviceName, role: role, kind: Self.localDeviceKind, online: true,
+        let own = AccountDevice(id: node.id ?? "self", name: AppModel.deviceName, role: role, online: true,
                                 address: role == "worker" ? node.ipv4.map(Self.workerAddress) : nil)
         try await refresh(own: own, peers: node.peers)
     }
@@ -216,7 +202,7 @@ private struct Identity: Codable {
         let others = peers.map { peer -> AccountDevice in
             let address = peer.ip.map(Self.workerAddress)
             let worker = address.map { known.contains($0) || probes[$0]?.worker == true } ?? false
-            return AccountDevice(id: peer.id, name: peer.name, role: worker ? "worker" : "controller", kind: Self.kind(os: peer.os, name: peer.name),
+            return AccountDevice(id: peer.id, name: peer.name, role: worker ? "worker" : "controller",
                                  online: peer.online, address: worker ? address : nil)
         }.sorted { $0.name < $1.name }
         // 没变就不赋值，依赖设备列表的界面不必重算。
@@ -233,21 +219,13 @@ private struct Identity: Codable {
     /// 工作机在组网上的访问地址；各工作机的 kited 都监听同一个端口。
     private static func workerAddress(_ ip: String) -> String { "http://\(ip.contains(":") ? "[\(ip)]" : ip):5483" }
 
-    private static func kind(os: String?, name: String) -> String {
-        switch os?.lowercased() {
-        case "ios": name.lowercased().contains("ipad") ? "tablet" : "phone"
-        case "macos", "linux", "windows": "computer"
-        default: "unknown"
-        }
-    }
-
     /// 从一台工作机读到的目录：各工作机最近一次的摘要按组网地址对上设备，对不上的（还没上线过）先不列。
     /// revision 是发请求前的外观版本，期间刚保存的外观不被旧数据覆盖。
     func updateDirectory(machines: [DirectoryMachine], projects: [AccountProject], revision: Int) throws {
         let catalogs: [HostedCatalog] = machines.compactMap { machine in
             guard let snapshot = machine.snapshot, let address = machine.address else { return nil }
             let device = devices.first { $0.address == address }
-                ?? AccountDevice(id: machine.id, name: machine.name, role: "worker", kind: "computer", online: machine.online, address: address)
+                ?? AccountDevice(id: machine.id, name: machine.name, role: "worker", online: machine.online, address: address)
             return HostedCatalog(device: device, machineId: machine.id, updatedAt: machine.updatedAt, snapshot: snapshot)
         }
         // 没变就不赋值，依赖目录的界面不必重算；摘要不可比较，按编码后的内容比。
@@ -331,7 +309,6 @@ private struct Peer: Sendable {
     let id: String
     let name: String
     let ip: String?
-    let os: String?
     let online: Bool
 }
 

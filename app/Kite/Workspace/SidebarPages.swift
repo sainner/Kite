@@ -222,34 +222,186 @@ struct SectionPages: View {
     }
 }
 
-/// 在线、等待连接和离线同时用颜色与符号区分，状态说明保留在悬停与辅助功能中。
+/// 一台设备的标记：形状认机器，颜色与动画说明状态。在线用主题色，待更新用警示色，等待连接在警示色上呼吸，离线只描边；
+/// 自动更新期间拆成点阵按进度点亮，颜色仍按能不能用。设备列表、收起的侧栏和导航「设备」一行的行尾共用。
+struct DeviceMark: View {
+    let shape: String
+    let status: DeviceStatus
+    let size: CGFloat
+    /// 画在主题色底上（选中的导航行）时，在线与离线换成白色，免得和底色混在一起。
+    var onAccent = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// 形状按区分度排，设备不多时只用前几个。
+    private static let symbols = ["circle", "triangle", "square", "diamond", "star", "heart",
+                                  "hexagon", "shield", "seal", "pentagon", "octagon", "capsule.portrait"]
+
+    /// 各设备的形状互不相同：按 ID 的哈希挑，撞了往后顺延。各端看到的是同一份设备列表，算出来一样；
+    /// 增减设备只挪动撞上的那几台。超出形状数的设备重复用。
+    static func shapes(for ids: [String]) -> [String: String] {
+        let count = min(symbols.count, max(6, ids.count))
+        var taken = Set<Int>()
+        var shapes: [String: String] = [:]
+        for id in ids.sorted() {
+            // FNV-1a，不用 hashValue：它每次启动都换种子。
+            let hash = id.utf8.reduce(UInt64(14695981039346656037)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+            let start = Int(hash % UInt64(count))
+            let index = (0..<count).map { (start + $0) % count }.first { !taken.contains($0) } ?? start
+            taken.insert(index)
+            shapes[id] = symbols[index]
+        }
+        return shapes
+    }
+
+    private var color: Color {
+        onAccent && !status.waiting && !status.outdated ? Color.white.opacity(status.ready ? 1 : 0.7) : status.tint
+    }
+
+    var body: some View {
+        let symbol = Image(systemName: shape)
+            .symbolVariant(status.offline ? .none : .fill)
+            .font(.system(size: size, weight: .semibold))
+        if let progress = status.progress {
+            // 占位与其他状态的符号一样大，点阵画在里面。
+            // 小图标格子少些，点才不挤成一团；少于 5×5 圆和方、圆和菱形就分不出了。
+            symbol.hidden().overlay { DeviceDotMatrix(shape: shape, grid: size >= 12 ? 6 : 5, progress: progress, color: color) }
+        } else {
+            symbol
+                .foregroundStyle(color)
+                .symbolEffect(.breathe, options: .repeating, isActive: status.waiting && !reduceMotion)
+        }
+    }
+}
+
+/// 更新中的设备标记：形状拆成点阵，按进度从下往上逐行点亮，正在点的那行闪烁；满了（换版中）有一行暗带往上扫。
+private struct DeviceDotMatrix: View {
+    let shape: String
+    let grid: Int
+    let progress: Double
+    let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static var covered: [String: Coverage] = [:]
+
+    /// 形状盖住的格子；area 是点阵所在的正方形在符号里的位置，按比例。
+    private struct Coverage {
+        let cells: [Bool]
+        let area: CGRect
+    }
+
+    /// 把实心符号画大，裁到笔画所在的正方形分成格，盖住四成以上的格子算在形状里。只取格子中心的话细的星角会丢。
+    private static func coverage(_ shape: String, grid n: Int) -> Coverage {
+        let key = "\(shape) \(n)"
+        if let cached = covered[key] { return cached }
+        var result = Coverage(cells: Array(repeating: true, count: n * n), area: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let renderer = ImageRenderer(content: Image(systemName: shape).symbolVariant(.fill)
+            .font(.system(size: 128, weight: .semibold)).foregroundStyle(.black))
+        if let image = renderer.cgImage,
+           let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let width = image.width, height = image.height
+            if let pixels = context.data?.assumingMemoryBound(to: UInt8.self) {
+                let alpha = { (x: Int, y: Int) in Double(pixels[(y * width + x) * 4 + 3]) / 255 }
+                var minX = width, minY = height, maxX = -1, maxY = -1
+                for y in 0..<height {
+                    for x in 0..<width where alpha(x, y) > 0.5 {
+                        minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                    }
+                }
+                if maxX >= 0 {
+                    let side = Double(max(maxX - minX, maxY - minY) + 1)
+                    let originX = Double(minX + maxX + 1) / 2 - side / 2, originY = Double(minY + maxY + 1) / 2 - side / 2
+                    let step = side / Double(n)
+                    var cells: [Bool] = []
+                    for row in 0..<n {
+                        for column in 0..<n {
+                            var sum = 0.0
+                            for y in Int(originY + Double(row) * step)..<Int(originY + Double(row + 1) * step) where (0..<height).contains(y) {
+                                for x in Int(originX + Double(column) * step)..<Int(originX + Double(column + 1) * step) where (0..<width).contains(x) {
+                                    sum += alpha(x, y)
+                                }
+                            }
+                            cells.append(sum / (step * step) > 0.4)
+                        }
+                    }
+                    result = Coverage(cells: cells, area: CGRect(x: originX / Double(width), y: originY / Double(height),
+                                                                 width: side / Double(width), height: side / Double(height)))
+                }
+            }
+        }
+        covered[key] = result
+        return result
+    }
+
+    var body: some View {
+        let coverage = Self.coverage(shape, grid: grid)
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+            let time = timeline.date.timeIntervalSinceReferenceDate
+            Canvas { context, size in
+                let n = grid
+                let area = CGRect(x: coverage.area.minX * size.width, y: coverage.area.minY * size.height,
+                                  width: coverage.area.width * size.width, height: coverage.area.height * size.height)
+                let cell = CGSize(width: area.width / CGFloat(n), height: area.height / CGFloat(n))
+                let diameter = min(cell.width, cell.height) * 0.72
+                // 从下往上数已点亮的行；满了以后换成往上扫的暗带。
+                let lit = Int(progress * Double(n))
+                let sweep = progress >= 1 && !reduceMotion ? Int(time * 6) % (n + 2) : -1
+                for row in 0..<n {
+                    let level = n - 1 - row
+                    for column in 0..<n where coverage.cells[row * n + column] {
+                        let opacity = if level == sweep { 0.35 }
+                            else if level < lit { 1.0 }
+                            else if level == lit { reduceMotion ? 0.6 : 0.6 + 0.25 * sin(time * 8 + Double(column) * 4) }
+                            else { 0.22 }
+                        let rect = CGRect(x: area.minX + (CGFloat(column) + 0.5) * cell.width - diameter / 2,
+                                          y: area.minY + (CGFloat(row) + 0.5) * cell.height - diameter / 2, width: diameter, height: diameter)
+                        context.fill(Path(ellipseIn: rect), with: .color(color.opacity(opacity)))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 设备列表里的设备标记，状态说明保留在悬停与辅助功能中。
 struct DeviceStatusIcon: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.sidebarMetrics) private var metrics
     let device: AccountDevice
     let connection: WorkerConnection?
 
     private var status: DeviceStatus { DeviceStatus(device: device, connection: connection) }
 
     var body: some View {
-        Group {
-            switch device.id == model.account.deviceID ? KiteAccount.localDeviceKind : device.kind ?? "unknown" {
-            case "phone": Image(systemName: "iphone")
-            case "tablet": Image(systemName: "ipad")
-            case "computer": TablerIcon(.desktop, selected: status.ready)
-            default: TablerIcon(.appWindow, selected: status.ready)
+        DeviceMark(shape: model.account.deviceShapes[device.id] ?? "circle", status: status, size: metrics.labelExtent - 4)
+            .help("\(device.role == "worker" ? "工作机" : "控制端") · \(status.detail)")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(status.title)
+    }
+}
+
+/// 导航「设备」一行的行尾：每台工作机一个标记，排法与设备列表相同；悬停列出各台的名字与状态。
+struct DeviceMarks: View {
+    var onAccent = false
+    @Environment(AppModel.self) private var model
+    @Environment(\.sidebarMetrics) private var metrics
+
+    static func size(_ metrics: SidebarMetrics) -> CGFloat { (metrics.labelExtent * 0.44).rounded() }
+
+    var body: some View {
+        let devices = model.account.workers
+        let shapes = model.account.deviceShapes
+        let summary = devices.map { "\($0.name) · \(model.deviceStatus($0).detail)" }.joined(separator: "\n")
+        HStack(spacing: 3) {
+            ForEach(devices) { device in
+                DeviceMark(shape: shapes[device.id] ?? "circle", status: model.deviceStatus(device),
+                           size: Self.size(metrics), onAccent: onAccent)
             }
         }
-        .foregroundStyle(status.tint)
-        .overlay(alignment: .bottomTrailing) {
-            Image(systemName: status.symbol)
-                .font(.system(size: 8, weight: .semibold))
-                .foregroundStyle(status.tint)
-                .background(Theme.background, in: Circle())
-                .offset(x: 3, y: 3)
-        }
-        .help("\(device.role == "worker" ? "工作机" : "控制端") · \(status.title)")
+        .help(summary)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(status.title)
+        .accessibilityLabel(summary)
     }
 }
 

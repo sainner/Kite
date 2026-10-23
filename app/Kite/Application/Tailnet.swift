@@ -276,13 +276,12 @@ nonisolated struct SocksProxy: Sendable {
     let password: String?
 }
 
-/// 节点的 ipnstate.Status：上游 Swift 类型缺少 Active、OS 等字段，直接解析 JSON。
+/// 节点的 ipnstate.Status：上游 Swift 类型缺少 Active 等字段，直接解析 JSON。
 nonisolated struct TailnetStatus: Decodable, Sendable {
     struct Node: Decodable {
         let ID: String?
         let HostName: String?
         let TailscaleIPs: [String]?
-        let OS: String?
         let UserID: Int64?
         let Online: Bool?
         let Active: Bool?
