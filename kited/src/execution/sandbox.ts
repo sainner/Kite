@@ -1,7 +1,7 @@
 /** 工作机共用的沙箱启动适配；策略由宿主决定，每次执行使用独立的上游代理与配置。 */
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SandboxRuntimeConfig } from '@anthropic-ai/sandbox-runtime';
 import { within } from '../paths.ts';
@@ -53,6 +53,9 @@ export function secretEnvironment(credentials: Record<string, SecretValue>, dir:
   return env;
 }
 
+/** 上游把带这些字符的路径当成 glob 或无法表达；宿主授权的只能是确切路径。 */
+const globCharacters = /[*?\[\]{}\0\n\r]/;
+
 /** 首期工作区策略：工作树可写，系统工具链可读，网络需宿主另行授权。 */
 export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionPolicy {
   const system = process.platform === 'darwin'
@@ -60,12 +63,41 @@ export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionP
     : ['/bin', '/sbin', '/usr', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys'];
   // 安装包把 rg 与 Bun 放在同一个 bin 里，见 kited/scripts/package-macos.ts；从源码运行时没有，靠系统装的。
   const tools = [process.execPath, join(dirname(process.execPath), 'rg'), developerDirectory(env), env.SDKROOT]
-    .filter((path): path is string => !!path && isAbsolute(path));
-  // git 默认读的全局配置、忽略与属性文件；读不到时每条命令都报警告，全局忽略规则也不生效。同目录的 credentials 不放行。
-  const gitConfigs = env.HOME && isAbsolute(env.HOME)
-    ? ['.gitconfig', '.config/git/config', '.config/git/ignore', '.config/git/attributes'].map((name) => join(env.HOME!, name)) : [];
-  return { read: [...new Set([cwd, ...system.filter(existsSync), ...tools.filter(existsSync), ...gitConfigs].map(canonicalPath))],
+    .filter((path): path is string => !!path && isAbsolute(path) && existsSync(path));
+  // 工具与 git 配置是顺带放行的，真实位置带通配符时上游写不出确切规则（见 paths()），略过，不让每条命令都起不来。
+  const extras = [...tools, ...gitGlobalFiles(env)].map(canonicalPath).filter((path) => !globCharacters.test(path));
+  return { read: [...new Set([...[cwd, ...system.filter(existsSync)].map(canonicalPath), ...extras])],
     write: [realpathSync(cwd)], network: [] };
+}
+
+/** 按 HOME 记下全局配置的修改时间与读出的文件，配置没变就不再起 git。 */
+const gitFiles = new Map<string, { key: string; files: string[] }>();
+
+/**
+ * git 读的全局配置、忽略与属性文件；读不到时每条命令都报警告，全局忽略规则也不生效。忽略与属性文件除了 ~/.config/git 下的默认位置，
+ * 还有全局配置里 core.excludesFile、core.attributesFile 指定的（常见 ~/.gitignore_global）。只放行这几个文件，同目录的 credentials 不放行。
+ */
+function gitGlobalFiles(env: NodeJS.ProcessEnv): string[] {
+  const home = env.HOME;
+  if (!home || !isAbsolute(home)) return [];
+  const configs = ['.gitconfig', '.config/git/config'].map((name) => join(home, name));
+  const defaults = [...configs, ...['.config/git/ignore', '.config/git/attributes'].map((name) => join(home, name))];
+  const git = Bun.which('git', { PATH: env.PATH ?? '' });
+  if (!git) return defaults;
+  const key = [git, ...configs.map((path) => statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? '')].join('\0');
+  const cached = gitFiles.get(home);
+  if (cached?.key === key) return cached.files;
+  // 沙箱里的环境不带 XDG_CONFIG_HOME（见 commandEnvironment），这里也只给 HOME 与 PATH，读的是同一份全局配置；git 负责展开 ~。
+  const result = Bun.spawnSync([git, 'config', '--global', '--type=path', '--null', '--get-regexp', '^core\\.(excludesfile|attributesfile)$'],
+    { env: { HOME: home, PATH: env.PATH ?? '' }, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' });
+  // 每项是「键\n值\0」；相对路径 git 按命令所在的目录解释，不放行。
+  const configured = result.exitCode === 0 ? result.stdout.toString().split('\0').flatMap((entry) => {
+    const value = entry.slice(entry.indexOf('\n') + 1);
+    return entry.includes('\n') && isAbsolute(value) ? [value] : [];
+  }) : [];
+  const files = [...defaults, ...configured];
+  gitFiles.set(home, { key, files });
+  return files;
 }
 
 /** 宿主文件工具也按执行策略检查；已有符号链接按真实目标匹配，尚未创建的文件检查实际父目录。 */
@@ -87,24 +119,38 @@ export function canonicalPath(path: string): string {
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /** 沙箱收的路径：上游支持 glob，此入口只接收宿主授权的确切路径，不能把文件名解释成授权表达式。 */
-export const exactPath = (value: string): boolean => isAbsolute(value) && !/[*?\[\]{}\0\n\r]/.test(value);
+export const exactPath = (value: string): boolean => isAbsolute(value) && !globCharacters.test(value);
 
 function paths(values: string[]): string[] {
   return [...new Set(values.map((value) => {
     if (!exactPath(value)) throw new Error(`沙箱路径必须是无通配符的绝对路径：${value}`);
-    return canonicalPath(value);
+    // 交给上游的是解析软链接后的真实位置，它带通配符同样会被当成 glob：整棵子树放行变成只匹配一层，还匹配上同一模式的兄弟目录。
+    const path = canonicalPath(value);
+    if (globCharacters.test(path)) throw new Error(`沙箱路径的真实位置不能带通配符：${value} 指向 ${path}`);
+    return path;
   }))];
 }
 
 /**
  * 放行路径的各级上级目录，每个只匹配目录本身。上游只给上级目录元数据，从 / 起逐级 openat 的程序（Python 的 dir_fd 遍历等）
  * 第一级就被拒；Seatbelt 分不开打开目录与列目录，放开后命令能列出这些目录里的名字，仍读不到其中的文件。
- * 确切路径上游按整棵子树放行，只能把最后一个字符写成字符类，同 /et[c]；paths() 已排除带通配符的路径。
+ * 确切路径上游按整棵子树放行，只能写成 glob，把一个字符写成字符类，上游转成整串匹配的正则。Seatbelt 的正则按字节匹配，
+ * 字符类里只能放单字节字符，中文、emoji 放进去就匹配不上；所以括住名字前的分隔符（/Users/x[/]项目）。顶层目录前只有根的 /，
+ * 括起来就不是绝对路径了，改括名字里最后一个 ASCII 字母或数字（/User[s]）；没有这样的字符就略过这一级：
+ * macOS 的根目录在只读的系统卷上，顶层的名字由系统给出。paths() 已排除真实位置带通配符的路径。
  */
 function ancestorDirectories(roots: string[]): string[] {
   const found = new Set<string>();
   for (const root of roots) {
-    for (let dir = dirname(root); dir !== '/'; dir = dirname(dir)) found.add(`${dir.slice(0, -1)}[${dir.slice(-1)}]`);
+    for (let dir = dirname(root); dir !== '/'; dir = dirname(dir)) {
+      const parent = dirname(dir);
+      if (parent !== '/') {
+        found.add(`${parent}[/]${basename(dir)}`);
+        continue;
+      }
+      const at = dir.search(/[A-Za-z0-9][^A-Za-z0-9]*$/);
+      if (at > 0) found.add(`${dir.slice(0, at)}[${dir[at]}]${dir.slice(at + 1)}`);
+    }
   }
   return [...found];
 }

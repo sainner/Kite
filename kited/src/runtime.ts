@@ -18,7 +18,7 @@ import { agentPolicy, harnessPolicy } from './execution/policy.ts';
 import { effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
 import { projectContext, SkillCatalog } from './harness/context/project.ts';
 import { skillsBinding, type SkillSources } from './harness/context/skills.ts';
-import { threadVariables } from './context-variables.ts';
+import { effectiveTools, threadVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { agentTools } from './plugins/definitions.ts';
@@ -28,7 +28,7 @@ import type { CompactionRequest, Input, Model, Outcome, Phase, Recovery, StopReq
 import type { UpdatesOptions } from './update/updates.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
-import { ruleAllows } from './agents/tool-policy.ts';
+import { permittedTools } from './agents/tool-policy.ts';
 import { searchTool } from './harness/tool-search.ts';
 import { Attachments } from './workspace/attachments.ts';
 import type { NetworkAsk } from './execution/command.ts';
@@ -120,16 +120,13 @@ export interface RuntimeHost {
   withdrawSecret(id: string): string;
 }
 
-const constraintAllows = (rule: ProjectToolRule | undefined, name: string) => !rule || ruleAllows(rule, name);
-
-/** 两个后端共用的工具筛选：agent 配置声明的工具中，须未被项目约束禁用，协作与 Line 的工具还须获得授权；插件工具只看授权。 */
+/** 两个后端共用的工具筛选：agent 配置声明、经项目约束过滤后的有效工具，协作与 Line 的工具还须获得授权；插件工具只看授权。 */
 function selectTools(current: ThreadContext, operations: RuntimeHost['operations'], constraint: ProjectToolRule | undefined) {
   const agent = instanceAgent(current);
   const selection = operations.prepare(current);
   const operationNames = new Set<string>([...operationToolNames, ...lineToolNames]);
-  const configured = new Set<string>(agent.tools);
-  const permitted = (name: string) => configured.has(name) && constraintAllows(constraint, name)
-    && (!operationNames.has(name) || selection.allowed.has(name));
+  const effective = new Set(effectiveTools(agent, constraint));
+  const permitted = (name: string) => effective.has(name) && (!operationNames.has(name) || selection.allowed.has(name));
   return { agent, selection, permitted, plugins: selection.plugins };
 }
 
@@ -194,8 +191,12 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       return {
         model: options.model?.(current) ?? model,
         tools: [...declared.filter((tool) => permitted(tool.name)), search, ...plugins],
-        // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
-        blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
+        // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下；依赖的工具被禁，它也拦下。
+        blocked: (name) => {
+          const constraint = host.toolConstraint();
+          return (agentTools as readonly string[]).includes(name) && !permittedTools(agentTools, constraint ? [constraint] : []).includes(name)
+            ? `项目约束已禁用 ${name}` : undefined;
+        },
         toolDefinitions: [...declared, search].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(agent.context, values), variables: values,
         contextUpdateTemplate: host.contextUpdateTemplate(),

@@ -8,7 +8,7 @@ import { runCommand, type NetworkAsk } from '../../src/execution/command.ts';
 import { harnessPolicy } from '../../src/execution/policy.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import { workspacePolicy } from '../../src/execution/sandbox.ts';
-import { gitWorktree, newRepo, useTemp } from '../util.ts';
+import { gitWorktree, newDir, newRepo, useTemp } from '../util.ts';
 
 const temp = useTemp();
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -31,17 +31,25 @@ function report(output: string): Record<string, any> {
  * 逐级 os.open(..., O_DIRECTORY|O_NOFOLLOW, dir_fd=...) 的 Python 脚本第一级就报 EPERM（'private' 或 'Users'）。
  * 能不能打开取决于 Seatbelt 怎么区分打开目录与读文件、上游把 glob 转成正则后规则的先后，上游升级可能退回打不开，
  * 也可能放宽成整棵子树可读；所以同时看上级目录里直接放着的文件仍读不到（兄弟目录里的文件由 externalRead 看）。
+ * 工作区放在中文名、emoji 名的目录下，挡住真实 bug：只匹配目录本身的写法把路径最后一个 UTF-16 码元包进字符类
+ * （/et[c]），上游转成 Seatbelt 正则后按字节匹配，[档] 只匹配一个字节，名字以中文结尾的上级目录永远打不开；
+ * 以 emoji 结尾的还被切开代理对。两级都报 EPERM。
  */
-test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能打开各级上级目录，拦住宿主凭据、外部文件、上级目录里的文件、本机端口、外部域名解析和后代逃逸', async () => {
-  const root = temp('sandbox-default-');
+test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能打开各级上级目录（名字含中文、emoji 的也能），拦住宿主凭据、外部文件、上级目录里的文件、本机端口、外部域名解析和后代逃逸', async () => {
+  // 临时目录前缀取短：工作区里的 Unix socket 路径在 macOS 上限 103 字节，下面两级非 ASCII 名字占了 16 字节。
+  const root = temp('sandbox-');
   const main = newRepo(root, 'main', { 'tracked.txt': '原始内容\n' });
-  const cwd = gitWorktree(main, join(root, 'workspace'), 'kite/sandbox-test');
+  // 一级名字以中文结尾，一级以 BMP 之外的字符（emoji）结尾。
+  const parent = join(root, '文档', '项目🪁');
+  mkdirSync(parent, { recursive: true });
+  const cwd = gitWorktree(main, join(parent, 'workspace'), 'kite/sandbox-test');
   const outside = join(root, 'outside');
   mkdirSync(outside);
   const secret = join(outside, 'fake-secret.txt');
   writeFileSync(secret, '仅供测试的假秘密');
-  const rootSecret = join(root, 'fake-root-secret.txt');
-  writeFileSync(rootSecret, '上级目录里的假秘密');
+  // 每一级非 ASCII 名字的上级目录和临时目录本身里都直接放一个文件。
+  const ancestorSecrets = [root, dirname(parent), parent].map((dir) => join(dir, 'fake-ancestor-secret.txt'));
+  for (const path of ancestorSecrets) writeFileSync(path, '上级目录里的假秘密');
   // 从 / 到 cwd 的每一级；temp() 已解析符号链接，macOS 上从 /private 起。
   const levels = [cwd];
   while (levels[0] !== '/') levels.unshift(dirname(levels[0]!));
@@ -65,8 +73,8 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能
       'import { lookup } from "node:dns/promises";',
       `const cwd = ${JSON.stringify(cwd)};`,
       `const levels: string[] = ${JSON.stringify(levels)};`,
-      `const root = ${JSON.stringify(root)};`,
-      `const rootSecret = ${JSON.stringify(rootSecret)};`,
+      `const parent = ${JSON.stringify(parent)};`,
+      `const ancestorSecrets: string[] = ${JSON.stringify(ancestorSecrets)};`,
       `const secret = ${JSON.stringify(secret)};`,
       `const authFile = ${JSON.stringify(authFile)};`,
       `const hostDatabase = ${JSON.stringify(hostDatabase)};`,
@@ -93,7 +101,8 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能
       '  workspaceWrite: canWrite(`${cwd}/allowed.txt`),',
       '  externalRead: canRead(secret), externalWrite: canWrite(secret),',
       '  ancestorsOpened: Object.fromEntries(levels.map((dir) => [dir, opened(dir)])),',
-      '  rootEntries: list(root), rootFileRead: canRead(rootSecret),',
+      '  parentEntries: list(parent),',
+      '  ancestorFilesRead: Object.fromEntries(ancestorSecrets.map((path) => [path, canRead(path)])),',
       '  authRead: canRead(authFile), authWrite: canWrite(authFile),',
       '  databaseRead: canRead(hostDatabase),',
       '  gitMetadataWrite: canWrite(`${commonDir}/sandbox-should-not-write`),',
@@ -149,8 +158,8 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能
       if (process.platform === 'darwin') {
         expect(probe.localhost).toEqual({ addresses: expect.arrayContaining(['127.0.0.1']) });
         expect(probe.ancestorsOpened).toEqual(Object.fromEntries(levels.map((dir) => [dir, true])));
-        expect(probe.rootEntries).toContain('workspace');
-        expect(probe.rootFileRead).toBe(false);
+        expect(probe.parentEntries).toEqual(expect.arrayContaining(['workspace', 'fake-ancestor-secret.txt']));
+        expect(probe.ancestorFilesRead).toEqual(Object.fromEntries(ancestorSecrets.map((path) => [path, false])));
       }
       expect(probe.externalDns).not.toHaveProperty('addresses');
       expect(probe).toMatchObject({ gitStatus: 0 });
@@ -173,6 +182,46 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能
     await server.stop(true);
     await new Promise<void>((resolve, reject) => unixServer.close((error) => error ? reject(error) : resolve()));
   }
+}, 1000);
+
+/*
+ * 依赖 git 自己按 ~/.gitconfig 的 core.excludesFile、core.attributesFile 找文件（~ 按 HOME 展开），打不开时报
+ * warning: unable to access … 并当作没有这份规则；放没放行只有在 Seatbelt 里跑才知道。
+ * 挡住真实 bug：沙箱只放行 git 默认位置的 ~/.config/git/{ignore,attributes}，用户在 ~/.gitconfig 里改了位置时，
+ * 沙箱里每条 git 命令都报读不到 ~/.gitignore_global，全局忽略规则也不生效。HOME 放在工作区之外，否则工作区授权本来就可读；
+ * 放行的只该是这两个文件，同在 HOME 里的 git 凭据仍读不到。
+ */
+test('~/.gitconfig 指定位置的全局忽略、属性文件在沙箱里的 git 读得到且规则生效，同在 HOME 里的 git 凭据仍读不到', async () => {
+  const root = temp('sandbox-gitconfig-');
+  const home = newDir(root, 'home', {
+    '.gitconfig': '[core]\n\texcludesFile = ~/.gitignore_global\n\tattributesFile = ~/.gitattributes_global\n',
+    '.gitignore_global': '*.kite-ignored\n',
+    '.gitattributes_global': '*.txt kite-global\n',
+    '.git-credentials': 'https://kite:fake-token@example.test\n',
+  });
+  const cwd = newRepo(root, 'workspace', { 'tracked.md': '已跟踪\n' }, null);
+  writeFileSync(join(cwd, 'build.kite-ignored'), '');
+  writeFileSync(join(cwd, 'visible.txt'), '');
+  const selectedEnv: NodeJS.ProcessEnv = { ...env(cwd), HOME: home };
+  const command = [
+    'echo "--- status"; git status --porcelain 2>&1',
+    'echo "--- attr"; git check-attr kite-global -- visible.txt 2>&1',
+    'echo "--- credentials"; cat "$HOME/.git-credentials" 2>&1 || echo DENIED',
+  ].join('; ');
+  const result = await runCommand(command, 3000, new AbortController().signal,
+    { cwd, logDir: join(root, 'logs'), env: selectedEnv, policy: workspacePolicy(cwd, selectedEnv) });
+  expect(result).toMatchObject({ status: 'success' });
+  const sections: Record<string, string[]> = {};
+  let current: string[] | undefined;
+  for (const line of result.output.split('\n')) {
+    if (line.startsWith('--- ')) sections[line.slice(4)] = current = [];
+    else if (line.trim()) current?.push(line);
+  }
+  // 没有 unable to access 的警告，匹配全局忽略规则的不列出；没被忽略的照常列出，说明 status 确实列了未跟踪文件。
+  expect(sections.status).toEqual(['?? visible.txt']);
+  expect(sections.attr).toEqual(['visible.txt: kite-global: set']);
+  expect(sections.credentials).toContain('DENIED');
+  expect(sections.credentials!.join('\n')).not.toContain('fake-token');
 }, 1000);
 
 // 同时启动两份上游代理/Seatbelt 配置，才能发现允许目录或目标端口在实例间串用。

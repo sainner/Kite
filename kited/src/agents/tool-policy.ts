@@ -1,6 +1,6 @@
 /**
  * 工具的逐层约束：每层要么是白名单（只准这些），要么是黑名单（除这些外都准）。
- * 有效集 = 全集 ∩ 各层白名单 − 各层黑名单之并，禁止优先，与层的顺序无关。
+ * 有效集 = 全集 ∩ 各层白名单 − 各层黑名单之并，禁止优先，与层的顺序无关；依赖的工具不在有效集里时，这个工具也去掉。
  */
 import { z } from 'zod';
 
@@ -14,10 +14,17 @@ export type ToolRule = z.infer<typeof toolRuleSchema>;
 
 export const allTools: ToolRule = { mode: 'deny', tools: [], required: [] };
 
-export const ruleAllows = (rule: Pick<ToolRule, 'mode' | 'tools'>, name: string): boolean => (rule.mode === 'allow') === rule.tools.includes(name);
+const ruleAllows = (rule: Pick<ToolRule, 'mode' | 'tools'>, name: string): boolean => (rule.mode === 'allow') === rule.tools.includes(name);
+
+/**
+ * 离开另一个工具就用不全的工具。skill 照 Claude Code 的 Skill 工具只交正文，文件夹里的其他文件靠 read 按绝对路径读，
+ * 没有 read 时 skill 也不给。被依赖的工具自己不再有依赖。
+ */
+const dependencies: Readonly<Record<string, readonly string[]>> = { skill: ['read'] };
 
 export function permittedTools(universe: readonly string[], rules: readonly Pick<ToolRule, 'mode' | 'tools'>[]): string[] {
-  return universe.filter((name) => rules.every((rule) => ruleAllows(rule, name)));
+  const direct = universe.filter((name) => rules.every((rule) => ruleAllows(rule, name)));
+  return direct.filter((name) => (dependencies[name] ?? []).every((dependency) => direct.includes(dependency)));
 }
 
 /** 必需工具中不在有效集里的那些；非空即角色在这一处不可用。 */
