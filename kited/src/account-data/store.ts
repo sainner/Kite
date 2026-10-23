@@ -14,7 +14,7 @@ import { Database } from 'bun:sqlite';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { KiteError } from '../errors.ts';
 
-export type EntryKind = 'role' | 'template' | 'emblem' | 'plugin' | 'project' | 'constraints' | 'credential' | 'catalog' | 'release' | 'conflict';
+export type EntryKind = 'role' | 'template' | 'emblem' | 'plugin' | 'skill' | 'project' | 'constraints' | 'credential' | 'catalog' | 'release' | 'conflict';
 type Body = Record<string, unknown>;
 
 export interface Version { at: number; by: string }

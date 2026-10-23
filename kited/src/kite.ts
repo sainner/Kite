@@ -2,7 +2,7 @@
 import type { AttachmentRef, CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
 import { AgentReports, agentReportContextDefinition, agentWorkspaceContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
 import { ChildrenPending, GitLoginRequired, KiteError } from './errors.ts';
@@ -59,7 +59,7 @@ import { LineMonitor, lineMonitorContextDefinition } from './line/monitor.ts';
 import { lineTools } from './line/tools.ts';
 import { LINE_AGENTS } from './line/project.ts';
 import { Attention } from './line/attention.ts';
-import { setupLogPath, worktreePath } from './paths.ts';
+import { setupLogPath, userHome, worktreePath } from './paths.ts';
 import type { Network } from './network.ts';
 import { WorkspaceFiles, fileSelection, type Page } from './workspace/files.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
@@ -86,7 +86,9 @@ import { Previews } from './preview/previews.ts';
 import { Simulators } from './preview/simulators.ts';
 import { previewDefinitionId } from './preview/state.ts';
 import { trustedTargets } from './preview/targets.ts';
-import { contentHash } from './harness/context/project.ts';
+import { contentHash, projectFolders } from './harness/context/project.ts';
+import { collectSkills, loadSkill, setSkillSources } from './harness/context/skills.ts';
+import { Skills, type SkillSnapshot } from './skills.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
 import type { Integration } from './account-data/registry.ts';
@@ -181,6 +183,7 @@ export class Kite {
   readonly catalog: PluginCatalog;
   readonly contextTemplates: ContextTemplates;
   readonly roles: Roles;
+  readonly skills: Skills;
   /** 账号级数据（资源库、项目登记与约束、凭据、各工作机的目录摘要），在工作机之间同步，见 docs/分布式架构.md。 */
   readonly accountData: AccountData;
   readonly registry: ProjectRegistry;
@@ -313,6 +316,9 @@ export class Kite {
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: () => this.credentials.apiKeys() }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
+    // 用户层的 skill 落在数据目录；机器层是这台工作机用户主目录里 Codex 与 Claude Code 的个人 skill。清单与沙箱放行都按这里的位置。
+    setSkillSources({ user: join(home, 'skills'), machine: [join(userHome(), '.agents/skills'), join(userHome(), '.claude/skills')] });
+    this.skills = new Skills(join(home, 'skills'), this.accountData);
     this.roles = new Roles(store);
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate, commitMessageTemplate,
@@ -321,7 +327,7 @@ export class Kite {
       agentReportContextDefinition, agentWorkspaceContextDefinition,
     ]);
     this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
-      catalog: this.catalog, changed: (changes) => this.libraryChanged(changes) });
+      catalog: this.catalog, skills: this.skills, changed: (changes) => this.libraryChanged(changes) });
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
     this.waits = new Waits((threadId, waiting) => bus.emit({ type: 'waiting', threadId, ...(waiting ? { waiting } : {}) }));
@@ -506,7 +512,39 @@ export class Kite {
   private libraryChanged(changes: LibraryChanges) {
     if (changes.roles) this.bus.emit({ type: 'roles.changed' });
     if (changes.templates) this.bus.emit({ type: 'context-templates.changed' });
+    if (changes.skills) this.bus.emit({ type: 'skills.changed' });
     for (const { projectId, before } of changes.constraints) this.configuration.constraintsChanged(projectId, before);
+  }
+  /** 资源库里的 skill：系统层的默认加账号里自建或改过的，整包带文件。 */
+  skillCatalog() { return { skills: this.skills.list() }; }
+  async createSkill(value: unknown) {
+    const skill = this.skills.validateNew(value);
+    this.library.write('skill', skill.name, skill, null);
+    return this.skillSaved(this.skills.create(skill));
+  }
+  async updateSkill(name: string, expectedRevision: string, value: unknown) {
+    const skill = this.skills.validate(name, expectedRevision, value);
+    this.library.save('skill', name, skill, this.skills.accountRevision(name), this.skills.isDefault(skill));
+    return this.skillSaved(this.skills.update(skill));
+  }
+  /** 只有随 kited 带的 skill 能恢复默认，就是保存默认内容。 */
+  resetSkill(name: string, expectedRevision: string) { return this.updateSkill(name, expectedRevision, this.skills.builtin(name)); }
+  /** 自建的 skill 删掉；随 kited 带的只能恢复默认。 */
+  async deleteSkill(name: string, expectedRevision: string) {
+    this.skills.validateDelete(name, expectedRevision);
+    this.library.remove('skill', name, this.skills.accountRevision(name));
+    this.skills.remove(name);
+    this.bus.emit({ type: 'skills.changed' });
+  }
+  private skillSaved(saved: SkillSnapshot) {
+    this.bus.emit({ type: 'skills.changed' });
+    return saved;
+  }
+  /** 这个工作区的代理能加载的 skill：四层合成后的名字、说明与所在层，输入框点选时列出来。 */
+  availableSkills(workspaceId: string) {
+    const model = this.store.workspaceModel(workspaceId);
+    if (!model) throw new KiteError(`没有这个工作区：${workspaceId}`, 404);
+    return { skills: collectSkills(projectFolders(realpathSync(model.workspace.cwd))).map(({ name, description, layer }) => ({ name, description, layer })) };
   }
   /** 角色保存后通知各端刷新，并随提示词更新点阵签名。 */
   private roleSaved(saved: RoleSnapshot) {
@@ -1246,7 +1284,7 @@ export class Kite {
       if (!prompt.trim() && !attachments.length) throw new KiteError('第一条消息不能为空');
       if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
       this.assertNotResolving(workspaceId);
-      const input = this.withAttachments({ id: messageId ?? randomUUID(), text: prompt, source: 'human' }, workspaceId, attachments);
+      const input = this.withSkill(this.withAttachments({ id: messageId ?? randomUUID(), text: prompt, source: 'human' }, workspaceId, attachments), workspace.cwd);
       await this.snapshot(workspace, [], '线程开始');
       const t = this.newThread(workspaceId, promptText(input), choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
@@ -1664,7 +1702,7 @@ export class Kite {
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
-      await this.sendInput(t, this.withAttachments({ id: inputId, text, ...origin }, t.workspaceId, attachments), check);
+      await this.sendInput(t, this.withSkill(this.withAttachments({ id: inputId, text, ...origin }, t.workspaceId, attachments), t.workspace.cwd), check);
       return { id: inputId };
     });
   }
@@ -1691,6 +1729,19 @@ export class Kite {
   }
   removeAttachment(workspaceId: string, id: string): void {
     this.attachments.remove(workspaceId, this.workspace(workspaceId).workspace.cwd, id);
+  }
+  /**
+   * 人发的消息开头是 /名字、名字是这个工作区能加载的 skill 时，按此刻的 SKILL.md 把正文固定在输入上，随消息交给模型；
+   * 不是 skill 名字的照普通文字交给模型。
+   */
+  private withSkill(input: Input, cwd: string): Input {
+    if (input.source !== 'human') return input;
+    const match = /^\/([a-z0-9][a-z0-9._-]*)(?=\s|$)/i.exec(input.text);
+    if (!match) return input;
+    let skill;
+    try { skill = collectSkills(projectFolders(realpathSync(cwd))).find((entry) => entry.name === match[1]); } catch { return input; }
+    if (!skill) return input;
+    return { ...input, skill: { name: skill.name, text: loadSkill(skill).text } };
   }
   /** 给人发的消息挂上附件，按存好的那份固定名字、类型与尺寸。 */
   private withAttachments(input: Input, workspaceId: string, ids: string[]): Input {

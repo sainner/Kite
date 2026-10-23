@@ -119,7 +119,7 @@ extension ToolUse {
         case "WebSearch": .webSearch
         case "WebFetch": .webFetch
         case "Agent": .agent
-        case "Skill": .skill
+        case "Skill", "skill": .skill
         case "ToolSearch", "tool_search": .tools
         case "CronCreate": .cronCreate
         case "CronDelete": .cronDelete
@@ -358,7 +358,11 @@ extension ToolUse {
         case .webSearch: return "搜索「\(input["query"]?.string ?? "")」"
         case .webFetch: return "看 \(URL(string: input["url"]?.string ?? "")?.host() ?? "网页")"
         case .agent: return input["description"]?.string ?? "派子 agent"
-        case .skill: return "用 skill \(input["skill"]?.string ?? "")"
+        case .skill:
+            // Claude 的 Skill 工具参数叫 skill；Kite 的 skill 工具叫 name，带 file 时是看文件夹里的一个文件
+            let name = input["skill"]?.string ?? input["name"]?.string ?? ""
+            if let file = input["file"]?.string { return "看 skill \(name) 的 \(file)" }
+            return "用 skill \(name)"
         case .tools:
             // select: 后面是点名加载的工具
             let query = input["query"]?.string ?? ""

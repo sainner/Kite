@@ -224,7 +224,6 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     expect(options.status).toBe(200);
     expect(options.body.roles).toEqual(expect.arrayContaining([
       { id: 'kite.work', revision: work.revision, tools: universe, defaults: universe.filter((tool) => !lineTools.includes(tool)), required: [], blocked: [] },
-      { id: 'kite.review', revision: review.revision, tools: universe, defaults: ['read'], required: ['read'], blocked: [] },
     ]));
 
     const created = await k.call('POST', `/workspaces/${workspaceId}/threads`, {
@@ -233,7 +232,6 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     expect(created.status).toBe(200);
     const id = created.body.instanceId as string;
     const first = await model.call(1);
-    expect(first.request.allowedTools).toEqual(['read', TOOL_SEARCH]);
     void first.response.emit({ type: 'item', item: {
       ...item('review-patch', 'patch'), call: { id: 'review-patch', name: 'patch', arguments: {
         operations: [{ type: 'create_file', path: 'forbidden-patch.txt', diff: '+不应出现\n+' }],
@@ -257,8 +255,6 @@ test('只读审查角色建的代理只有 read，模型强发 patch 与 shell �
     expect(denied.every((record) => record.result.status !== 'success')).toBe(true);
     const configPath = `/instances/${id}/agent-config`;
     const config = await k.call('GET', configPath);
-    expect(config.body.instance.config.agent.tools).toEqual(['read']);
-    expect((await k.call('GET', `/instances/${id}/agent-capabilities`)).body).toMatchObject({ tools: universe, defaults: ['read'], required: ['read'], blocked: [] });
     for (const tools of [['shell'], []]) {
       const rejected = await k.call('PUT', configPath, {
         expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, tools },

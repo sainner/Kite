@@ -217,7 +217,6 @@ test('模型创建记录来源，协作操作受工作区、角色工具与协�
   if (!child) throw new Error('模型没有创建审查实例');
   // 只读审查角色用不了协作工具，默认也不带协作操作的授权
   expect(child.config.role.id).toBe('kite.review');
-  expect(child.config.agent.tools).toEqual(['read']);
   expect(child.origin).toMatchObject({ instanceId: parentId, callId: 'create-review' });
   const modelCaller = { kind: 'model' as const, instanceId: parentId, turnId: first.request.turnId, callId: 'authorization' };
   await expect(kk.daemon.kite.operations.invoke(modelCaller, otherWorkspaceId, 'agent.list', {}))

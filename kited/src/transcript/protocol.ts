@@ -8,8 +8,8 @@ import type { WorkspaceStatus } from '../model.ts';
 import type { Ask, Waiting } from '../waiting.ts';
 
 export type DisplayBlock =
-  /** attachments 是消息带的附件，内容经 /workspaces/:id/attachments/:attachment 读取。 */
-  | { type: 'human'; id: string; text: string; midTurn: boolean; attachments?: AttachmentRef[] }
+  /** attachments 是消息带的附件，内容经 /workspaces/:id/attachments/:attachment 读取；skill 是开头 /名字 点选并已随消息交给模型的 skill。 */
+  | { type: 'human'; id: string; text: string; midTurn: boolean; attachments?: AttachmentRef[]; skill?: string }
   /** 别的代理发来的：sender 的名称在收下时固定，instance 是发信方的实例 ID（Line 是 Line 的），画头像用。 */
   | { type: 'agent'; id: string; text: string; sender: { name: string; instance: string } }
   /** Kite 自动发的：notice 说是哪种通知，没有的（Claude 原生行等）按正文显示；response 是转交的用户回应。 */
@@ -24,7 +24,8 @@ export type DisplayBlock =
 /** 输入在记录里的样子：按来源分三种块，正文都是原文。 */
 export function inputBlock(input: Input, midTurn: boolean): DisplayBlock {
   switch (input.source) {
-    case 'human': return { type: 'human', id: input.id, text: input.text, midTurn, ...(input.attachments ? { attachments: input.attachments } : {}) };
+    case 'human': return { type: 'human', id: input.id, text: input.text, midTurn, ...(input.attachments ? { attachments: input.attachments } : {}),
+      ...(input.skill ? { skill: input.skill.name } : {}) };
     case 'agent': return { type: 'agent', id: input.id, text: input.text, sender: { name: senderName(input.from), instance: input.from.instance } };
     case 'kite': return { type: 'kite', text: input.text, ...(input.notice ? { notice: input.notice } : {}), ...(input.response ? { response: true } : {}) };
   }

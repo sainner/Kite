@@ -13,6 +13,11 @@ export const worktreePath = (home: string, projectId: string, workspaceId: strin
 /** 工作区 setup 的日志。 */
 export const setupLogPath = (home: string, workspaceId: string): string => join(home, 'workspaces', workspaceId, 'setup.log');
 
+/** 文件树里的相对路径：不含绝对路径、空段、. 或 ..；符号链接由调用方另行检查。 */
+export function safePath(path: string): boolean {
+  return !!path && !path.startsWith('/') && !path.split('/').some((part) => part === '' || part === '.' || part === '..');
+}
+
 /** path 在 root 里面，或就是 root；调用方负责解析符号链接。 */
 export function within(path: string, root: string): boolean {
   const r = relative(root, path);

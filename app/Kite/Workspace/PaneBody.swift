@@ -20,6 +20,9 @@ struct PaneBody: View {
             case .agentContext(let item, _):
                 AgentContextPane(item: item, pane: pane)
                     .environment(\.paneConnectionNotice, model.connectionNotice(model.activeConnection))
+            case .skill(let name, _):
+                SkillPane(name: name)
+                    .environment(\.paneConnectionNotice, model.connectionNotice(model.activeConnection))
             case .credentials:
                 CredentialPane(pane: pane)
             }

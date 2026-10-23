@@ -24,7 +24,7 @@ afterEach(async () => {
   }
 });
 const temp = useTemp();
-const expectedTools = ['read', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop',
+const expectedTools = ['read', 'skill', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop',
   'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop',
   'preview_open', 'preview_action', 'preview_inspect', 'preview_read', 'preview_list', 'preview_stop'].sort();
 

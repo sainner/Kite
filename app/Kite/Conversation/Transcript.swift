@@ -128,6 +128,12 @@ struct Message: Identifiable {
         }
     }
 
+    /// 工作机记录里点选了 skill 的消息：正文是输入框里打的原样，命令名拆出来显示，id 沿用记录的。
+    init(id: String, typed: String, attachments: [Attachment] = [], midTurn: Bool = false) {
+        let split = Message(typed: typed)
+        self.init(id: id, text: split.text, command: split.command, attachments: attachments, midTurn: midTurn)
+    }
+
     /// 放回输入框、复制时的原文：斜杠命令连同命令名。
     var typed: String {
         guard let command else { return text }

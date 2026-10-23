@@ -46,12 +46,104 @@ private struct ExtensionSidebar: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(ExtensionLibrary.allCases) { page in
                 if page == .contexts { AgentContextSection(onSelect: onSelect) }
+                else if page == .skills { SkillSection(onSelect: onSelect) }
                 else { SidebarPageRow(selection: $model.extensionPage, page: page, onSelect: onSelect) }
             }
         }
         // 代理上下文页没打开时也要列出角色与模板。
         .task(id: model.connectionRevision) { try? await model.ensureRoles() }
         .task(id: model.connectionRevision) { try? await model.ensureContextTemplates() }
+        .task(id: model.connectionRevision) { try? await model.ensureSkills() }
+    }
+}
+
+/// Skill 页的分区：自建的和随 Kite 提供的各一组，改过没保存的标「未保存」，还没存过的标「新建」。
+private struct SkillSection: View {
+    var onSelect: () -> Void
+    @Environment(AppModel.self) private var model
+    @Environment(\.sidebarMetrics) private var metrics
+    @State private var expanded = true
+
+    private struct Item: Identifiable {
+        let id: String
+        let note: String?
+    }
+
+    private struct Group: Identifiable {
+        let title: String
+        let items: [Item]
+        /// 这一组的小标题上有新建按钮。
+        let addable: Bool
+        var id: String { title }
+    }
+
+    var body: some View {
+        let page = ExtensionLibrary.skills
+        let selected = model.extensionPage == page
+        let current = selected ? model.skillItem : nil
+        let groups = [Group(title: "自建", items: items(builtin: false), addable: true), Group(title: "随 Kite 提供", items: items(builtin: true), addable: false)]
+            .filter { !$0.items.isEmpty || $0.addable }
+        SidebarStickySection(headerHeight: metrics.rowHeight) {
+            SidebarListRow(selected: selected) { foreground in
+                Button { open(nil) } label: {
+                    SidebarListLabel(title: page.title, icon: page.icon, selected: selected)
+                }
+                .buttonStyle(SidebarButtonStyle(foreground: foreground))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                SidebarDisclosureButton(title: page.title, noun: page.title, isExpanded: $expanded, foreground: foreground)
+            }
+        } content: {
+            if expanded {
+                SidebarSubgroups(linked: true) {
+                    ForEach(groups) { group in
+                        let selectedIndex = group.items.firstIndex { $0.id == current }
+                        SidebarStickySection(enabled: selectedIndex != nil, topInset: metrics.rowHeight, headerHeight: metrics.subheaderHeight) {
+                            SidebarSubheader(title: group.title, selected: selectedIndex != nil, help: "打开\(group.title)的 skill",
+                                             open: group.items.first.map { first in { open(first.id) } },
+                                             add: group.addable ? SidebarSubheaderAdd(help: "新建 Skill", label: "新建 Skill", action: newSkill) : nil)
+                        } content: {
+                            SidebarTreeRows(items: group.items, selectedIndex: selectedIndex, hasCheckout: true) { item in
+                                SidebarTreeRow(selected: item.id == current) {
+                                    Button { open(item.id) } label: {
+                                        HStack(spacing: 6) {
+                                            Text(item.id)
+                                                .lineLimit(1).truncationMode(.middle)
+                                            if let note = item.note {
+                                                Text(note).font(Theme.caption).foregroundStyle(.secondary)
+                                            }
+                                            Spacer(minLength: 0)
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.pointingPlain)
+                                }
+                            }
+                        }
+                        .zIndex(selectedIndex != nil ? 1 : 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private func items(builtin: Bool) -> [Item] {
+        let saved = (model.skillCatalog?.skills ?? []).filter { $0.isBuiltin == builtin }
+            .map { Item(id: $0.id, note: model.skillDraft($0.id) != nil ? "未保存" : nil) }
+        guard !builtin else { return saved }
+        return saved + model.skillDrafts.filter(\.isNew).map { Item(id: $0.id, note: "新建") }
+    }
+
+    /// 打开 Skill 页；给了哪个就选中它，没给时显示上次选中的。
+    private func open(_ name: String?) {
+        model.extensionPage = .skills
+        if let name { model.selectedSkill = name }
+        onSelect()
+    }
+
+    private func newSkill() {
+        model.newLibrarySkill()
+        onSelect()
     }
 }
 
@@ -321,7 +413,7 @@ struct ExtensionContent: View {
             case .plugins: PluginLibrary()
             case .contexts: AgentContextLibrary()
             case .credentials: TilesLayer(group: .credentials(model.credentialWindows))
-            case .skills: EmptyView()
+            case .skills: SkillLibrary()
             }
         }
         // 凭据属于 Kite 账号，切换工作机不应重置正在编辑的内容。
@@ -355,5 +447,5 @@ nonisolated enum ExtensionLibrary: String, SidebarPage {
         }
     }
 
-    var available: Bool { self != .skills }
+    var available: Bool { true }
 }

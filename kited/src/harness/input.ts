@@ -6,6 +6,8 @@ import { z } from 'zod';
 import { MAX_MESSAGE_ATTACHMENTS, attachmentPath, attachmentRef } from '../workspace/attachments.ts';
 import type { AttachmentRef, Input, InputNotice, InputSender, StopRequest } from './types.ts';
 
+const inputSkill = z.object({ name: z.string().min(1), text: z.string().min(1) }).strict();
+
 const id = z.string().min(1);
 const text = z.string().refine((value) => !!value.trim(), '内容不能为空');
 export const inputVia = z.object({ kind: z.literal('line'), machine: id, instance: id }).strict();
@@ -21,7 +23,7 @@ const inputNotice: z.ZodType<InputNotice> = z.object({
 /** 每种来源只带自己的字段，正文不能为空（人发的带了附件时可以只有附件）；收下输入、读回记录和接口参数都用它校验。 */
 export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [
   z.object({ id, text: z.string(), source: z.literal('human'), via: inputVia.optional(),
-    attachments: z.array(attachmentRef).min(1).max(MAX_MESSAGE_ATTACHMENTS).optional() }).strict()
+    attachments: z.array(attachmentRef).min(1).max(MAX_MESSAGE_ATTACHMENTS).optional(), skill: inputSkill.optional() }).strict()
     .refine((input) => !!input.text.trim() || !!input.attachments, '内容不能为空'),
   z.object({ id, text, source: z.literal('kite'), notice: inputNotice.optional(), response: z.literal(true).optional() }).strict(),
   z.object({ id, text, source: z.literal('agent'), from: inputSender }).strict(),
@@ -30,7 +32,7 @@ export const inputSchema: z.ZodType<Input> = z.discriminatedUnion('source', [
 export const senderName = (from: InputSender) => from.kind === 'line' ? 'Line' : from.title;
 
 const attachmentIds = (input: Input) => input.source === 'human' ? (input.attachments ?? []).map((ref) => ref.id).join('\n') : '';
-/** 同一个输入 ID 重发时是不是同一条：正文、来源和附件都要一样。 */
+/** 同一个输入 ID 重发时是不是同一条：正文、来源和附件都要一样。点选的 skill 由宿主按正文开头的 /名字 定下，App 退回重发时不带，不比。 */
 export const sameInput = (a: Input, b: Input) => a.id === b.id && a.text === b.text && a.source === b.source && attachmentIds(a) === attachmentIds(b);
 
 /**
@@ -61,9 +63,14 @@ function attachmentNote(attachments: AttachmentRef[]): string {
   return ['<attachments>', '用户随这条消息附上的文件，已放进工作区：', ...lines, '</attachments>'].join('\n');
 }
 
-/** 交给模型的正文：代理来信标明发信方，Kite 自动发的写明不是用户说的话；转交的用户回应与人发的原样，带附件的接上附件说明。 */
+/**
+ * 交给模型的正文：代理来信标明发信方，Kite 自动发的写明不是用户说的话；转交的用户回应与人发的原样，带附件的接上附件说明，
+ * 点选了 skill 的再接上收下时固定的 skill 正文。
+ */
 export function modelText(input: Input): string {
-  if (input.source === 'human' && input.attachments) return [input.text, attachmentNote(input.attachments)].filter((part) => part.trim()).join('\n\n');
+  if (input.source === 'human' && (input.attachments || input.skill)) {
+    return [input.text, input.attachments ? attachmentNote(input.attachments) : '', input.skill?.text ?? ''].filter((part) => part.trim()).join('\n\n');
+  }
   if (input.source === 'agent') {
     // 名称里的引号、尖括号与换行会破坏包装；正文里的结束标记转义，免得冒充包装之外的内容。
     const name = senderName(input.from).replace(/["<>\r\n]/g, ' ').trim() || '代理';

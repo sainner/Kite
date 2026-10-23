@@ -33,6 +33,8 @@ export type DomainEvent =
   /** 模板或点阵签名有变化，客户端重新读取模板列表。 */
   | { type: 'context-templates.changed' }
   | { type: 'roles.changed' }
+  /** 资源库里的 skill 变了（本机改的或同步来的），客户端重新读取 skill 列表。 */
+  | { type: 'skills.changed' }
   /** Line 的收件箱变了：客户端更新标志旁的数目，打开着的收件箱重新读取。 */
   | { type: 'line.inbox' }
   /** Line 找用户：App 发系统通知，点开是收件箱里的那一项。 */

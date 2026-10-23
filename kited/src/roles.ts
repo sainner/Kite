@@ -91,11 +91,11 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), approval };
 }
 const defaultModel = { model: defaultAgentModel, reasoning: 'medium' };
-const reviewTools: ToolRule = { mode: 'allow', tools: ['read'], required: ['read'] };
+const reviewTools: ToolRule = { mode: 'allow', tools: ['read', 'skill'], required: ['read'] };
 const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
   { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
     text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。只审查不修改；需要的材料工具拿不到时（如目录或 diff）请用户提供，不声称执行过修改或检查。' }] },
-  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory'].includes(block.id)),
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory', 'skills'].includes(block.id)),
 ] };
 export const lineRoleId = 'kite.line';
 const lineTools: ToolRule = { mode: 'allow', tools: ['read', 'patch', 'question', 'monitor_start', 'monitor_list', 'monitor_stop', ...lineToolNames], required: ['line_status'] };

@@ -110,6 +110,8 @@ final class ControlsBarView: RepresentedRoot {
     private let responseClip = ResponseClip()
     /// 待发的附件那一行，在输入框上面。
     private let strip = DraftStripHost()
+    /// 打「/」时的 skill 候选那一行，在附件下面、输入框上面。
+    private let skills = SkillStripHost()
     /// 卡片正在显示的等待；没有时只有输入区。
     private var shownWaiting: String?
     private var responseKey: WaitingResponseKey?
@@ -160,6 +162,8 @@ final class ControlsBarView: RepresentedRoot {
         addSubview(responseClip)
         strip.resized = { [weak self] in self?.contentChanged() }
         addSubview(strip.view, positioned: .below, relativeTo: responseClip)
+        skills.resized = { [weak self] in self?.contentChanged() }
+        addSubview(skills.view, positioned: .below, relativeTo: responseClip)
         registerForDraggedTypes([.fileURL])
 
         attach.label = .symbol("paperclip")
@@ -181,6 +185,7 @@ final class ControlsBarView: RepresentedRoot {
             controls?.performPrimaryAction(submit: submit)
         }
         field.submit = { [weak self] in self?.submit() }
+        field.skillCompletion = { [weak self] in self?.controls?.completeSkill($0) ?? false }
         field.textChanged = { [weak self] text in
             guard let self else { return }
             controls?.setFieldText(text)
@@ -242,6 +247,7 @@ final class ControlsBarView: RepresentedRoot {
         voice.isEnabled = enabled
         attach.isEnabled = enabled && controls.canAttach
         strip.show(controls.thread, environment: environment)
+        skills.show(controls, environment: environment)
         primary.label = .symbol(controls.primaryAction.symbol)
         primary.title = controls.primaryAction.title
         primary.fill = controls.primaryActionFill
@@ -418,7 +424,13 @@ final class ControlsBarView: RepresentedRoot {
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0) + 2 * ComposerField.fieldInset
         var fieldHeight = field.height(width: fieldWidth, text: field.text)
         if let fading = controls?.state.fading { fieldHeight = max(fieldHeight, fading.height) }
-        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize, strip: strip.height(width: width))
+        return ComposerLayout.plan(width: width, field: fieldHeight, effort: leftSize, strip: stripsHeight(width: width))
+    }
+
+    /// 输入框上面的两行：待发附件和 skill 候选，都有时上下叠着。
+    private func stripsHeight(width: CGFloat) -> CGFloat {
+        let attachments = strip.height(width: width), candidates = skills.height(width: width)
+        return attachments + candidates + (attachments > 0 && candidates > 0 ? ComposerLayout.stripGap : 0)
     }
 
     /// 按钮行左边那一格：平常是思考强度；作答时多题是上一题、下一题，一题时空着；审批、密钥请求时是它们的决定。
@@ -460,8 +472,15 @@ final class ControlsBarView: RepresentedRoot {
         // 有卡片时输入区贴着底边
         let dy = pose.card > 0 ? bounds.height - plan.height : 0
 
-        if plan.strip > 0 {
-            place(strip.view, CGRect(x: Metrics.controlInset, y: Metrics.controlInset + dy, width: ComposerLayout.stripWidth(width), height: plan.strip))
+        var stripTop = Metrics.controlInset + dy
+        let attachments = strip.height(width: width)
+        if attachments > 0 {
+            place(strip.view, CGRect(x: Metrics.controlInset, y: stripTop, width: ComposerLayout.stripWidth(width), height: attachments))
+            stripTop += attachments + ComposerLayout.stripGap
+        }
+        let candidates = skills.height(width: width)
+        if candidates > 0 {
+            place(skills.view, CGRect(x: Metrics.controlInset, y: stripTop, width: ComposerLayout.stripWidth(width), height: candidates))
         }
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         let top = plan.fieldTop + dy

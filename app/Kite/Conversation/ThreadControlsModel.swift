@@ -12,7 +12,11 @@ import SwiftUI
     fileprivate(set) var savingEffort = false
     var effortError: String?
     var voiceError: String?
+    /// 只在这次输入的候选里保留键盘选中项；换会话或改了前缀后回到第一项。
+    var skillSelection: (thread: ObjectIdentifier, text: String, name: String)?
 }
+
+enum SkillCompletionKey { case previous, next, complete }
 
 /// 会话输入区的逻辑：发送、停止、继续、语音、思考强度，占位文字和哪些按钮显示。各个输入区共用，每次更新按当时的环境现做一份；
 /// 读的都是会话、App 模型和 state 里的可观察属性，SwiftUI 版在 body 里读、原生版在 withObservationTracking 里读，都跟着变。
@@ -109,6 +113,52 @@ struct ThreadControlsModel {
     var listening: Bool { model.voice.owner == voiceOwner }
     /// 没写字，也没放附件。
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && thread.draftAttachments.isEmpty }
+
+    // MARK: - skill 点选
+
+    /// 输入框里只打了「/」开头的一个词、还没打空白时，列出这个工作区能加载的 skill 里名字以它开头的，点一个换进输入框；作答时不列。
+    var skillCandidates: [AvailableSkill] {
+        guard answering == nil, let prefix = Self.skillPrefix(thread.draft)?.lowercased() else { return [] }
+        return thread.availableSkills.filter { $0.name.lowercased().hasPrefix(prefix) }
+    }
+
+    var selectedSkill: AvailableSkill? {
+        let candidates = skillCandidates
+        if let selected = state.skillSelection, selected.thread == ObjectIdentifier(thread), selected.text == thread.draft,
+           let skill = candidates.first(where: { $0.name == selected.name }) { return skill }
+        return candidates.first
+    }
+
+    /// 有候选才接管方向键和 Tab；其余时候保留输入框自己的光标与焦点行为。
+    func completeSkill(_ key: SkillCompletionKey) -> Bool {
+        let candidates = skillCandidates
+        guard let selected = selectedSkill, let index = candidates.firstIndex(of: selected) else { return false }
+        switch key {
+        case .complete: pickSkill(selected)
+        case .previous, .next:
+            let next = (index + (key == .next ? 1 : -1) + candidates.count) % candidates.count
+            state.skillSelection = (ObjectIdentifier(thread), thread.draft, candidates[next].name)
+        }
+        return true
+    }
+
+    /// 正在打的 skill 名字：开头是 /、后面还没有空白。
+    static func skillPrefix(_ text: String) -> String? {
+        guard text.hasPrefix("/"), !text.contains(where: \.isWhitespace) else { return nil }
+        return String(text.dropFirst())
+    }
+
+    /// 要列候选时把这个工作区能加载的 skill 读进来；刚读过的不重读，见 WorkThread.loadAvailableSkills。
+    func loadSkillsIfNeeded() {
+        guard answering == nil, Self.skillPrefix(thread.draft) != nil, let client = try? model.activeClient(in: area) else { return }
+        thread.loadAvailableSkills(client: client)
+    }
+
+    /// 点了候选：输入框换成「/名字 」，接着打要说的话。
+    func pickSkill(_ skill: AvailableSkill) {
+        state.skillSelection = nil
+        setFieldText("/\(skill.name) ")
+    }
 
     // MARK: - 附件
 

@@ -15,6 +15,7 @@ import SwiftUI
     var definitionsRequest = UUID()
     var templates: ContextTemplateCatalog?
     var roles: RoleCatalog?
+    var skills: SkillCatalog?
     var modelAccounts: ModelAccountsSnapshot?
     var modelAccountsError: String?
     var readingModelAccounts = false
@@ -25,6 +26,7 @@ import SwiftUI
     var updateRevision = 0
     @ObservationIgnored var templatesRequest: (connection: UUID, task: Task<Void, Error>)?
     @ObservationIgnored var rolesRequest: (connection: UUID, task: Task<Void, Error>)?
+    @ObservationIgnored var skillsRequest: (connection: UUID, task: Task<Void, Error>)?
     @ObservationIgnored var task: Task<Void, Never>?
     var id: String { machine.id }
 

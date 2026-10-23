@@ -13,6 +13,7 @@ final class ComposerField: NSTextField {
     var submit: (() -> Void)?
     /// 字变了（含组字中的字），交给草稿。
     var textChanged: ((String) -> Void)?
+    var skillCompletion: ((SkillCompletionKey) -> Bool)?
     /// 粘贴、拖进来的东西先给它：收下了文件或图片当附件就返回真，否则照常当字处理。
     var attachments: ((NSPasteboard) -> Bool)?
 
@@ -169,7 +170,18 @@ final class ComposerField: NSTextField {
         weak var field: ComposerField?
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            guard commandSelector == #selector(NSResponder.insertNewline(_:)), !textView.hasMarkedText() else { return false }
+            guard !textView.hasMarkedText() else { return false }
+            let modifiers = NSApp.currentEvent?.modifierFlags.intersection([.shift, .control, .option, .command]) ?? []
+            if modifiers.isEmpty {
+                let key: SkillCompletionKey? = switch commandSelector {
+                case #selector(NSResponder.moveUp(_:)): .previous
+                case #selector(NSResponder.moveDown(_:)): .next
+                case #selector(NSResponder.insertTab(_:)): .complete
+                default: nil
+                }
+                if let key, field?.skillCompletion?(key) == true { return true }
+            }
+            guard commandSelector == #selector(NSResponder.insertNewline(_:)) else { return false }
             if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                 textView.insertNewlineIgnoringFieldEditor(nil)
             } else {

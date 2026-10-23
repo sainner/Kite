@@ -3,6 +3,7 @@ import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, re
 import { join, resolve } from 'node:path';
 import { buildPluginHost } from './build-plugin-web.ts';
 import { buildOf, listFiles, unlisted } from '../src/update/files.ts';
+import { SYSTEM_SKILLS } from '../src/harness/context/skills.ts';
 import { PROTOCOL } from '../src/version.ts';
 import pkg from '../package.json';
 
@@ -69,9 +70,8 @@ async function main(): Promise<void> {
     chmodSync(join(runtime, 'bin/rg'), 0o755);
     cpSync(join(root, 'kited/src'), join(kited, 'src'), { recursive: true });
     cpSync(join(root, 'shared'), join(runtime, 'shared'), { recursive: true });
-    const templates = '.claude/skills/kite-onboard/templates';
-    mkdirSync(join(runtime, templates), { recursive: true });
-    for (const file of ['gitignore', 'gitattributes']) copyFileSync(join(root, templates, file), join(runtime, templates, file));
+    // 随 kited 带的 skill 整个文件夹复制到同一相对位置：代理读 SKILL.md，项目模板也从这里 import（kited/src/workspace/projects.ts）。
+    for (const skill of SYSTEM_SKILLS) cpSync(join(root, '.claude/skills', skill), join(runtime, '.claude/skills', skill), { recursive: true, dereference: true });
     for (const file of ['package.json', 'bun.lock']) copyFileSync(join(root, 'kited', file), join(kited, file));
     copyFileSync(join(import.meta.dir, 'install-macos.ts'), join(kited, 'scripts/install-macos.ts'));
     writeFileSync(join(kited, 'bunfig.toml'), '[run]\nshell = "system"\n');

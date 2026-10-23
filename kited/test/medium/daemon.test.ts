@@ -28,7 +28,7 @@ const temp = useTemp();
 
 const token = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 /** Kite 自己的工具，Claude 里用裸名（不带 MCP 前缀），全部常驻。 */
-const expectedTools = ['read', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume',
+const expectedTools = ['read', 'skill', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume',
   'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop',
   'preview_open', 'preview_action', 'preview_inspect', 'preview_read', 'preview_list', 'preview_stop'].sort();
 const tools = (request: Logged): string[] => (request.body.tools ?? []).map((tool: { name: string }) => tool.name);
@@ -68,6 +68,7 @@ async function history(kited: Kited, threadId: string): Promise<History> {
  * 上游行为：SDK MCP 工具在禁用原生工具时仍可调用，原生 resume 要重新接好进程内 MCP 并保留旧结果；
  * 宿主工具不能让默认工具、项目 skill 或 .mcp.json 重新出现。实际请求、回传和 HTTP 历史投影须一起验证。
  * skills: [] 只过滤模型上下文，init.skills 仍列出发现的技能（Claude Code 2.1.280 实测），所以断言实际请求。
+ * 项目 skill 的名字与说明由 Kite 自己的清单（project.skills）合法带进请求，只断言 SKILL.md 正文不出现：Claude 自己的 skill 发现没有加载它。
  * .mcp.json 的命令一启动就留标记，避免工具列表为空却已经启动外部进程的假通过。
  * 进程常驻：回合之间进程不退出，下一回合写进同一进程的输入流；换模型后旧进程退出，用 resume 起新进程。
  * 流式输入下 CLI 每个回合都报一次 system/init（2.1.280 实测），不能用 init 的次数判断是否换了进程，改看进程号。
@@ -107,7 +108,6 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
   const clean = (request: Logged, extra: string[] = []) => {
     const declared = request.body.tools as Array<{ name: string; defer_loading?: boolean }>;
     expect(declared.filter((tool) => !tool.defer_loading).map((tool) => tool.name).sort()).toEqual([...expectedTools, ...extra].sort());
-    expect(JSON.stringify(request.body)).not.toContain(skill);
     expect(JSON.stringify(request.body)).not.toContain('这是一条项目技能指令。');
   };
 

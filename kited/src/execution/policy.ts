@@ -1,5 +1,6 @@
 /** Agent 的初始执行授权；宿主内部数据始终排除在模型文件和命令工具之外。 */
 import { join } from 'node:path';
+import { skillSourceDirectories } from '../harness/context/skills.ts';
 import { gitTry } from '../workspace/git.ts';
 import { applyExecutionGrants, effectiveExecution, type ExecutionChanges, type ProjectExecution } from './grants.ts';
 import { hostPrivatePaths, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
@@ -17,6 +18,8 @@ export async function harnessPolicy(options: {
   if (options.authFile) protectedPaths.push(options.authFile);
   const metadata = await gitTry(options.repository ?? options.cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   if (metadata.code === 0) policy.read.push(metadata.stdout.trim());
+  // 工作目录以外的 skill（系统层随 kited 的运行目录，用户层在数据目录，机器层在用户主目录）：代理要能读里面的文件、跑里面的脚本。
+  policy.read.push(...skillSourceDirectories());
   // Git 元数据只读；快照与采纳继续由可信宿主执行。
   return { ...policy, denyRead: protectedPaths,
     denyWrite: [...protectedPaths, join(options.cwd, '.git'), ...(metadata.code === 0 ? [metadata.stdout.trim()] : [])] };

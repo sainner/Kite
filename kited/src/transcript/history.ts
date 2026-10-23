@@ -101,6 +101,7 @@ export class TranscriptHistory {
         case 'line.notification':
         case 'monitor.changed':
         case 'update.changed':
+        case 'skills.changed':
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':

@@ -10,10 +10,13 @@ export type JsonObject = { [key: string]: Json };
  * （用户自己回答的提问、密钥请求的结果），是用户在界面上做的，交给模型时不加「不是用户说的话」。代理来信必带发信方 from，名称在收下时固定。
  */
 export type InputOrigin =
-  | { source: 'human'; via?: InputVia; attachments?: AttachmentRef[] }
+  | { source: 'human'; via?: InputVia; attachments?: AttachmentRef[]; skill?: InputSkill }
   | { source: 'kite'; notice?: InputNotice; response?: true }
   | { source: 'agent'; from: InputSender };
 export type Input = { id: string; text: string } & InputOrigin;
+
+/** 人发的消息开头用 /名字 点选的 skill：收下时按那一刻的 SKILL.md 固定成正文（见 context/skills.ts 的 loadSkill），随输入交给模型。 */
+export interface InputSkill { name: string; text: string }
 
 /**
  * 人发的消息带的附件，收下时按工作机上存好的那份固定：原件在附件存储里，工作区里另有一份给代理用（见 workspace/attachments.ts）。

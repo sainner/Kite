@@ -3,21 +3,23 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, parse, resolve } from 'node:path';
 import { bindContext } from './assembler.ts';
+import { collectSkills, skillsBinding } from './skills.ts';
 import type { PublicVariable } from './scenes.ts';
-import type { ContextBinding, ContextBlock, ContextDefinition, ContextSource, ContextValues } from './types.ts';
+import type { ContextBinding, ContextBlock, ContextDefinition, ContextPart, ContextSource, ContextValues } from './types.ts';
 
 const paragraph = (id: string, title: string, text: string): ContextBlock => ({
   type: 'paragraph', id, title, parts: [{ type: 'text', text }],
 });
 
-/** 有内容才放进正文的一段材料。 */
-const material = (variable: string, id: string, title: string): ContextBlock => ({
-  type: 'condition', id, title, variable,
-  cases: [{ id: `${id}-absent`, title: `没有${title}`, equals: '', blocks: [] }],
-  otherwise: { id: `${id}-present`, title: `有${title}`, blocks: [
-    { type: 'paragraph', id: `${id}-content`, title, parts: [{ type: 'variable', name: variable }] },
-  ] },
-});
+/** 有内容才放进正文的一段材料；lead 是材料前面的引导语。 */
+const material = (variable: string, id: string, title: string, lead?: string): ContextBlock => {
+  const parts: ContextPart[] = [...(lead ? [{ type: 'text' as const, text: lead }] : []), { type: 'variable', name: variable }];
+  return {
+    type: 'condition', id, title, variable,
+    cases: [{ id: `${id}-absent`, title: `没有${title}`, equals: '', blocks: [] }],
+    otherwise: { id: `${id}-present`, title: `有${title}`, blocks: [{ type: 'paragraph', id: `${id}-content`, title, parts }] },
+  };
+};
 
 export const defaultContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.work', title: '工作', scene: 'thread.create',
@@ -34,6 +36,8 @@ export const defaultContextDefinition: ContextDefinition = {
       '当前目录是 Kite 为这个工作区创建的工作树，同一工作区的其他线程可能同时在改文件。Kite 在工具批次和回合结束后保存快照；提交和推送只由 Kite 做，你不提交也不推送，集成或回退由用户决定。'),
     material('project.rules', 'rules', '项目规则'),
     material('project.memory', 'memory', '记忆索引'),
+    material('project.skills', 'skills', '可用 skill',
+      '下面的 skill 是做某类事的现成步骤和材料，每条给出名字和一句说明。手头的任务被哪条覆盖，就先用 skill 工具按名字加载它，再按里面写的做；没覆盖的不用管。\n'),
   ],
 };
 
@@ -48,6 +52,9 @@ function folders(cwd: string): { folders: string[]; git?: string } {
     folder = dirname(folder);
   }
 }
+
+/** 从仓库根目录到工作目录的各级文件夹，由外到内；skill 的项目层也按这个范围找。 */
+export const projectFolders = (cwd: string): string[] => folders(cwd).folders;
 
 /** 来自文件的公共变量：从仓库根目录到工作目录逐级找到的同名文件。 */
 export const documentVariables = {
@@ -91,13 +98,14 @@ function branch(cwd: string): ContextBinding {
 
 export const today = (): ContextBinding => ({ text: new Date().toISOString().slice(0, 10) });
 
-/** 工作目录本身取得到的变量：路径、分支，以及项目规则与记忆索引。 */
+/** 工作目录本身取得到的变量：路径、分支、项目规则与记忆索引，以及 skill 清单（项目层按同一范围找，再合上系统层）。默认角色模板引用的目录变量都在这里。 */
 export function directoryVariables(cwd: string) {
   return {
     'environment.cwd': () => ({ text: realpathSync(cwd) }),
     'workspace.branch': () => branch(realpathSync(cwd)),
     'project.rules': () => documents(realpathSync(cwd), documentVariables['project.rules']),
     'project.memory': () => documents(realpathSync(cwd), documentVariables['project.memory']),
+    'project.skills': () => skillsBinding(collectSkills(projectFolders(realpathSync(cwd)))),
   } satisfies Partial<Record<PublicVariable, () => ContextBinding>>;
 }
 

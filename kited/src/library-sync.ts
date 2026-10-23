@@ -1,29 +1,30 @@
 /**
- * 资源库（角色、上下文模板、点阵签名、插件包）与项目约束是账号级数据（account-data/），写入先进账号级数据，再更新本机缓存；
+ * 资源库（角色、上下文模板、点阵签名、插件包、skill）与项目约束是账号级数据（account-data/），写入先进账号级数据，再更新本机缓存；
  * 读取一律用缓存。账号级数据有变化（本机写入或从其他工作机同步来）就把缓存对一遍：角色与模板以账号级数据为准，
- * 那里没有的从缓存去掉，内置的退回默认；本机有、那里没有的点阵签名与插件包补写进去。
+ * 那里没有的从缓存去掉，内置的退回默认；skill 的缓存就是数据目录里的文件夹；本机有、那里没有的点阵签名与插件包补写进去。
  */
 import type { ContextTemplates } from './context-templates.ts';
 import type { PluginCatalog } from './plugins/catalog.ts';
 import type { ProjectToolRule, Roles } from './roles.ts';
+import type { Skills } from './skills.ts';
 import type { Store } from './store.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
 import type { AccountData, EntryKind } from './account-data/store.ts';
 import type { ProjectRegistry } from './account-data/registry.ts';
 import type { ProjectExecution } from './execution/grants.ts';
 
-export type LibraryKind = Extract<EntryKind, 'role' | 'template' | 'emblem' | 'plugin'>;
-const synced = new Set<EntryKind>(['role', 'template', 'emblem', 'plugin', 'constraints']);
+export type LibraryKind = Extract<EntryKind, 'role' | 'template' | 'emblem' | 'plugin' | 'skill'>;
+const synced = new Set<EntryKind>(['role', 'template', 'emblem', 'plugin', 'skill', 'constraints']);
 
 /** constraints 列出约束变了的项目及变化前的规则。 */
-export interface LibraryChanges { roles: boolean; templates: boolean; constraints: Array<{ projectId: string; before?: { tools?: ProjectToolRule; execution?: ProjectExecution } }> }
+export interface LibraryChanges { roles: boolean; templates: boolean; skills: boolean; constraints: Array<{ projectId: string; before?: { tools?: ProjectToolRule; execution?: ProjectExecution } }> }
 
 export class LibrarySync {
   private scheduled = false;
   private unsubscribe?: () => void;
 
   constructor(private deps: {
-    data: AccountData; registry: ProjectRegistry; store: Store; roles: Roles; templates: ContextTemplates; catalog: PluginCatalog;
+    data: AccountData; registry: ProjectRegistry; store: Store; roles: Roles; templates: ContextTemplates; catalog: PluginCatalog; skills: Skills;
     changed: (changes: LibraryChanges) => void;
   }) {}
 
@@ -69,13 +70,13 @@ export class LibrarySync {
   }
 
   refresh(): void {
-    const { data, registry, store, roles, templates, catalog } = this.deps;
+    const { data, registry, store, roles, templates, catalog, skills } = this.deps;
     const items = (kind: LibraryKind, omit?: string[]) => new Map(data.list(kind, omit).map((item) => [item.id, item]));
     const accepted = (kind: string, id: string, apply: () => boolean) => {
       try { return apply(); }
       catch (error) { console.warn('[资源库同步] 跳过无法用于本机的内容', kind, id, (error as Error).message); return false; }
     };
-    const changes: LibraryChanges = { roles: false, templates: false, constraints: [] };
+    const changes: LibraryChanges = { roles: false, templates: false, skills: false, constraints: [] };
 
     const accountRoles = items('role');
     for (const item of accountRoles.values()) changes.roles = accepted('role', item.id, () => roles.cache(item.body)) || changes.roles;
@@ -84,6 +85,10 @@ export class LibrarySync {
     const accountTemplates = items('template');
     for (const item of accountTemplates.values()) changes.templates = accepted('template', item.id, () => templates.cache(item.body)) || changes.templates;
     changes.templates = templates.keep(new Set(accountTemplates.keys())) || changes.templates;
+
+    const accountSkills = items('skill');
+    for (const item of accountSkills.values()) changes.skills = accepted('skill', item.id, () => skills.cache(item.body)) || changes.skills;
+    changes.skills = skills.keep(new Set(accountSkills.keys())) || changes.skills;
 
     const accountEmblems = items('emblem');
     for (const item of accountEmblems.values()) {

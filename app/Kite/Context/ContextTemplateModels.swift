@@ -232,7 +232,7 @@ extension AppModel {
     }
 
     /// 资源库的写请求：发出前、回来后都核对还是打开时那一次连接，变了就报 changed。
-    func libraryRequest<T: Decodable>(_ path: String, method: String, body: some Encodable, connection: UUID,
+    func libraryRequest<T: Decodable>(_ path: String, method: String, body: (any Encodable)? = nil, connection: UUID,
                                       changed: String, as type: T.Type) async throws -> (WorkerConnection, T) {
         guard let target = templateConnection(connection), target.connected else { throw KitedError(message: changed) }
         let client = target.client

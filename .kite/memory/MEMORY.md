@@ -32,7 +32,8 @@
 ## 未决事项
 
 - [真机与线上验收](todo-device-validation.md) — 角色、插件、托管账号、跨机目录与 Git 的验收范围
-- [上下文能力](todo-context-capabilities.md) — skill/MCP、观察账本、预览、开场白与个人偏好
+- [上下文能力](todo-context-capabilities.md) — 外部 MCP 接入范围、观察账本、预览、开场白与个人记忆
+- [skill 接入](todo-skills.md) — 四层来源、skill 工具、压缩重附与资源库待真机验收；含窄窗口候选、键盘补全、二进制文件
 - [工作区协作](todo-workspace-collaboration.md) — 后台与内嵌实例的界面呈现、已归档实例的查看与恢复，待设计
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
 - [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口）、资源限制、项目收紧是否停旧命令

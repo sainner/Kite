@@ -32,6 +32,7 @@ const operationTitle = (tool: AgentTool) => Object.values(operationContracts).fi
 /** 代理插件声明的全部工具，带界面上的名称与分组；角色和代理配置按组列出，顺序即界面顺序。协作工具的名称取自操作声明。 */
 export const agentToolCatalog: { name: AgentTool; title: string; group: string }[] = [
   { name: 'read', title: '读取文件', group: '文件与命令' },
+  { name: 'skill', title: '加载 skill', group: '文件与命令' },
   { name: 'patch', title: '修改文件', group: '文件与命令' },
   { name: 'shell', title: '运行命令', group: '文件与命令' },
   { name: 'terminal_list', title: operationTitle('terminal_list'), group: '文件与命令' },

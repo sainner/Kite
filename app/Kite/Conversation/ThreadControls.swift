@@ -48,9 +48,14 @@ struct ThreadControls: View {
             }
         }
         .clipShape(shape)
+        .onChange(of: thread.draft, initial: true) { controls.loadSkillsIfNeeded() }
+        .task(id: model.connectionRevision) { controls.loadSkillsIfNeeded() }
         .onChange(of: thread.waiting?.id, initial: true) { old, new in swapWaiting(from: old, to: new) }
         // 输入框换成另一段字（草稿、某一项提问的「其他」）时交出焦点
-        .onChange(of: controls.answering?.waiting?.id) { typing.wrappedValue = false }
+        .onChange(of: controls.answering?.waiting?.id) {
+            typing.wrappedValue = false
+            controls.loadSkillsIfNeeded()
+        }
         // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
         .contentShape(.interaction, shape)
         .glassEffect(.regular.interactive(), in: shape)
@@ -74,12 +79,24 @@ struct ThreadControls: View {
                     .padding(.horizontal, Metrics.controlInset)
                     .padding(.bottom, ComposerLayout.stripGap - 2)
             }
+            if !controls.skillCandidates.isEmpty {
+                SkillCandidateStrip(controls: controls)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Metrics.controlInset)
+                    .padding(.bottom, ComposerLayout.stripGap - 2)
+            }
             TextField(controls.placeholder, text: answering ? $answers.currentOther : $thread.draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
                 .lineLimit(1...8)
                 .focused(typing)
                 .scrollsOnlyWhileTyping(typing.wrappedValue)
+                .onKeyPress(keys: [.upArrow, .downArrow, .tab], phases: [.down, .repeat]) { press in
+                    guard press.modifiers.intersection([.shift, .control, .option, .command]).isEmpty,
+                          (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return .ignored }
+                    let key: SkillCompletionKey = press.key == .tab ? .complete : press.key == .upArrow ? .previous : .next
+                    return controls.completeSkill(key) ? .handled : .ignored
+                }
                 .onSubmit {
                     // Shift+回车换行，同宽屏的 ComposerField：系统给它的也是 insertNewline，到这里才看得出按了 Shift
                     if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {

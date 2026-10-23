@@ -467,6 +467,23 @@ export function serve(kite: Kite, listen: Listen) {
         const model = parsed.data.model ?? defaultAgentModel;
         return { model, results: await kite.tokenCounts.count(parsed.data.texts, model) };
       }) },
+      '/skills': {
+        GET: bound(() => kite.skillCatalog()),
+        POST: bound(async (req) => kite.createSkill((await body(req)).skill)),
+      },
+      '/skills/:id': {
+        PUT: bound(async (req) => {
+          const b = await body(req);
+          return kite.updateSkill(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.skill);
+        }),
+        DELETE: bound(async (req) => {
+          await kite.deleteSkill(req.params.id, str(new URL(req.url).searchParams.get('expectedRevision'), 'expectedRevision'));
+          return { ok: true };
+        }),
+      },
+      '/skills/:id/reset': { POST: bound(async (req) =>
+        kite.resetSkill(req.params.id, str((await body(req)).expectedRevision, 'expectedRevision'))) },
+      '/workspaces/:id/skills': { GET: bound((req) => kite.availableSkills(req.params.id)) },
       '/roles': {
         GET: bound(() => kite.roleCatalog()),
         POST: bound(async (req) => kite.createRole((await body(req)).role)),

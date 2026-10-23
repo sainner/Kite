@@ -23,6 +23,7 @@ export const contextLayers = {
       { name: 'project.remote', title: '项目远程', description: '项目远程仓库的归一化地址，如 github.com/owner/repo；仓库迁移后变化。' },
       { name: 'project.rules', title: '项目规则', description: '从仓库根目录到工作目录逐级找到的 AGENTS.md 全文，由外到内，每份前面注明路径；一个都没有时为空，文件修改后变化。' },
       { name: 'project.memory', title: '记忆索引', description: '从仓库根目录到工作目录逐级找到的 .kite/memory/MEMORY.md 全文，由外到内，每份前面注明路径；一个都没有时为空，文件修改后变化。' },
+      { name: 'project.skills', title: '可用 skill', description: '可用 skill 的清单，每条一行：名字接一句说明，正文由代理用 skill 工具加载。四层合成：系统层随 kited 提供，用户层是资源库里的，机器层是这台工作机 ~/.agents/skills 与 ~/.claude/skills 里的，项目层是从仓库根目录到工作目录逐级找到的 .claude/skills 与 .agents/skills；同名里层盖外层；一个都没有时为空，skill 文件增删改后变化。' },
     ],
   },
   workspace: {

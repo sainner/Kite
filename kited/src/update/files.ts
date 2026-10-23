@@ -5,6 +5,7 @@
 import { lstatSync, readdirSync, readlinkSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
 import { z } from 'zod';
+import { safePath } from '../paths.ts';
 
 export const fileEntry = z.union([
   z.object({ path: z.string(), sha256: z.string().regex(/^[0-9a-f]{64}$/), size: z.number().int().min(0), executable: z.boolean() }).strict(),
@@ -16,11 +17,6 @@ export type RegularEntry = Extract<FileEntry, { sha256: string }>;
 /** 运行目录里不进 files.json 的两个文件：它们描述清单本身。打包算构建号、拉取方核对构建号都把它们除外。 */
 export const MANIFEST_FILES = ['manifest.json', 'files.json'];
 export const unlisted = (path: string): boolean => MANIFEST_FILES.includes(path);
-
-/** 清单里的路径只能是树内的相对路径，不能借 .. 或绝对路径读写树外的文件。 */
-export function safePath(path: string): boolean {
-  return !!path && !path.startsWith('/') && !path.split('/').some((part) => part === '' || part === '.' || part === '..');
-}
 
 /**
  * 对端给的清单里第一个不安全的条目：路径不在树内，符号链接指向树外，或路径经过清单里的符号链接

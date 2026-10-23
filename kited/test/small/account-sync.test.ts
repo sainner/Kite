@@ -6,14 +6,16 @@
  */
 import { afterEach, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
+import { SYSTEM_SKILLS } from '../../src/harness/context/skills.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
 import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import type { Project, WorkspaceModel } from '../../src/model.ts';
 import type { Role } from '../../src/roles.ts';
+import type { SkillPackage, SkillSnapshot } from '../../src/skills.ts';
 import { emblemTemplate } from '../../src/template-emblems.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import {
@@ -181,7 +183,7 @@ function sharedRole(work: Role, text: string): Role {
 const roleOn = (k: Kited, id: string) => k.daemon.kite.roles.list().find((entry) => entry.role.id === id);
 const templateOn = (k: Kited, id: string) => k.daemon.kite.contextTemplates.list().templates.find((entry) => entry.definition.id === id);
 /** 等 k 对完缓存并通知客户端：收到 type 事件时缓存已满足 check。 */
-const cached = (k: Kited, type: 'roles.changed' | 'context-templates.changed', check: () => boolean) =>
+const cached = (k: Kited, type: 'roles.changed' | 'context-templates.changed' | 'skills.changed', check: () => boolean) =>
   k.waitEvent((event) => event.type === type && check());
 
 // 两台工作机经账号级数据交接资源库：A 写入后 B 从 A 拉到这一条再对缓存；B 按缓存算的版本须与 A 给出的一致，
@@ -286,6 +288,122 @@ test('A 恢复内置角色默认、把模板原样改回默认后账号级数据
   expect(staleTemplate.status).toBe(409);
   expect(b.daemon.kite.accountData.get('role', 'kite.review')).toBeUndefined();
   expect(b.daemon.kite.accountData.get('template', emblemTemplate.id)).toBeUndefined();
+}, 1000);
+
+// 用户层的 skill 是多文件包，经账号级数据同步后每台工作机写进数据目录的 skills/<名字>/，清单从磁盘重新读。
+// 四部分各自都对，合起来才看得出：版本向量合并（AccountData.apply）、同步后对缓存的 microtask 合批（LibrarySync.refresh）、
+// 先写临时目录再 rename 的落盘（Skills.materialize）、collectSkills 从磁盘读清单。要实际跑两台才知道：同步到了但对缓存还没跑时
+// 清单不能列出半个文件夹；落盘后 #! 开头的脚本带可执行位（依赖 fs.chmodSync 在 APFS 上的效果）、SKILL.md 不带；
+// 含零字节与非法 UTF-8 的附件要经 HTTP JSON、账号同步和落盘保留原字节，更新后两边也要换成新内容，不能把 base64 当文本写。
+// 恢复默认与删除都只是账号级数据里的一条删除，同步到另一台后那台要把文件夹删干净、不留临时目录，清单退回系统层。
+test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节一致、脚本带可执行位、清单列为用户层；B 改随 kited 带的 skill 后 A 盖过系统层；A 恢复默认、B 删除后另一台的文件夹删干净、清单退回；随 kited 带的不能删', async () => {
+  const a = startKited();
+  const b = startKited();
+  kiteds.push(a, b);
+  await connect(a, b);
+  const [onA, onB] = await Promise.all([
+    folderWorkspace(a, newDir(a.root, 'project-a', { 'a.txt': 'A\n' })),
+    folderWorkspace(b, newDir(b.root, 'project-b', { 'b.txt': 'B\n' })),
+  ]);
+  const skillDir = (k: Kited, name: string) => join(k.home, 'skills', name);
+  const skillsOn = async (k: Kited) => (await k.call('GET', '/skills')).body.skills as SkillSnapshot[];
+  const available = async (k: Kited, workspaceId: string) => {
+    const r = await k.call('GET', `/workspaces/${workspaceId}/skills`);
+    expect(r.status).toBe(200);
+    return r.body.skills as Array<{ name: string; description: string; layer: string }>;
+  };
+  /** 整包的每个文件都原样落在 k 的数据目录里。 */
+  const written = (k: Kited, skill: SkillPackage) => {
+    for (const file of skill.files) {
+      expect(readFileSync(join(skillDir(k, skill.name), file.path)))
+        .toEqual(Buffer.from(file.content, file.encoding === 'base64' ? 'base64' : 'utf8'));
+    }
+  };
+  const [onboardName] = SYSTEM_SKILLS;
+  const resourcePath = 'assets/logo.bin';
+  const resource = Buffer.from([0x00, 0xff, 0xfe, 0x89, 0x50, 0x00, 0x80]);
+  const changedResource = Buffer.from([0x00, 0x81, 0xfe, 0x01, 0x02]);
+
+  // 1. A 新建 demo-skill：SKILL.md、#! 开头的脚本和二进制附件
+  const demo: SkillPackage = { version: 1, name: 'demo-skill', files: [
+    { path: 'SKILL.md', content: '---\nname: demo-skill\ndescription: 演示\n---\n# 演示\n\n跑 scripts/run.sh。\n' },
+    { path: 'scripts/run.sh', content: '#!/bin/sh\necho demo\n' },
+    { path: resourcePath, content: resource.toString('base64'), encoding: 'base64' },
+  ] };
+  const created = await a.call('POST', '/skills', { skill: demo });
+  expect(created.status).toBe(200);
+  expect(created.body).toEqual({ skill: demo, revision: expect.any(String) });
+
+  // 2. B 同步到：文件夹落地、脚本可执行、列表同一版本、工作区清单列为用户层，随 kited 带的仍是系统层
+  await cached(b, 'skills.changed', () => existsSync(join(skillDir(b, demo.name), 'SKILL.md')));
+  for (const k of [a, b]) {
+    written(k, demo);
+    expect(statSync(join(skillDir(k, demo.name), 'scripts/run.sh')).mode & 0o111).not.toBe(0);
+    expect(statSync(join(skillDir(k, demo.name), 'SKILL.md')).mode & 0o111).toBe(0);
+  }
+  const listedB = await skillsOn(b);
+  expect(listedB).toContainEqual(expect.objectContaining({ skill: demo, revision: created.body.revision }));
+  const onboard = listedB.find((entry) => entry.skill.name === onboardName)!;
+  expect(onboard.revision).toBe(onboard.defaultRevision!);
+  expect(await available(b, onB.workspace.id)).toEqual(expect.arrayContaining([
+    { name: demo.name, description: '演示', layer: 'user' },
+    expect.objectContaining({ name: onboardName, layer: 'system' }),
+  ]));
+
+  // 3. 只更新二进制附件：账号版本与两边的落盘字节都要改变，文本文件仍保留
+  const changedDemo: SkillPackage = { ...demo, files: demo.files.map((file) => file.path === resourcePath
+    ? { ...file, content: changedResource.toString('base64') } : file) };
+  const changed = await a.call('PUT', `/skills/${demo.name}`, { expectedRevision: created.body.revision, skill: changedDemo });
+  expect(changed.status).toBe(200);
+  expect(changed.body.revision).not.toBe(created.body.revision);
+  await cached(b, 'skills.changed', () => readFileSync(join(skillDir(b, demo.name), resourcePath)).equals(changedResource));
+  for (const k of [a, b]) {
+    written(k, changedDemo);
+    expect(await skillsOn(k)).toContainEqual({ skill: changedDemo, revision: changed.body.revision });
+  }
+
+  // 4. B 改随 kited 带的 kite-onboard 正文并加附件；A 同步到后整包落地、清单里它的层变成用户层、版本不再是默认
+  const edited: SkillPackage = { ...onboard.skill, files: [
+    ...onboard.skill.files.map((file) => file.path === 'SKILL.md'
+      ? { ...file, content: `${file.content}\n## B 加的规则\n\n改过的正文。\n` } : file),
+    { path: resourcePath, content: resource.toString('base64'), encoding: 'base64' },
+  ] };
+  expect(edited.files.length).toBeGreaterThan(1);
+  const updated = await b.call('PUT', `/skills/${onboardName}`, { expectedRevision: onboard.revision, skill: edited });
+  expect(updated.status).toBe(200);
+  expect(updated.body).toEqual({ skill: edited, revision: expect.any(String), defaultRevision: onboard.defaultRevision });
+  expect(updated.body.revision).not.toBe(onboard.defaultRevision);
+  await cached(a, 'skills.changed', () => existsSync(join(skillDir(a, onboardName), 'SKILL.md')));
+  written(a, edited);
+  expect(await skillsOn(a)).toContainEqual({ skill: edited, revision: updated.body.revision, defaultRevision: onboard.defaultRevision });
+  expect(await available(a, onA.workspace.id)).toContainEqual(expect.objectContaining({ name: onboardName, layer: 'user' }));
+
+  // 5. A 恢复默认：账号里那条删掉，两边的文件夹和附件都删掉，B 的清单退回系统层
+  const reset = await a.call('POST', `/skills/${onboardName}/reset`, { expectedRevision: updated.body.revision });
+  expect(reset.status).toBe(200);
+  expect(reset.body).toEqual({ skill: onboard.skill, revision: onboard.defaultRevision, defaultRevision: onboard.defaultRevision });
+  expect(a.daemon.kite.accountData.get('skill', onboardName)).toBeUndefined();
+  await until(() => !existsSync(skillDir(a, onboardName)), 'A 恢复默认后本机文件夹删掉', 900);
+  await cached(b, 'skills.changed', () => !existsSync(skillDir(b, onboardName)));
+  expect(b.daemon.kite.accountData.get('skill', onboardName)).toBeUndefined();
+  expect(await skillsOn(b)).toContainEqual(expect.objectContaining({ skill: onboard.skill, revision: onboard.defaultRevision }));
+  expect(await available(b, onB.workspace.id)).toContainEqual(expect.objectContaining({ name: onboardName, layer: 'system' }));
+
+  // 6. B 删除 demo-skill：A 同步到后文件夹与附件删干净（也不留落盘用的临时目录）、列表不再列它
+  const removed = await b.call('DELETE', `/skills/${demo.name}?expectedRevision=${changed.body.revision}`);
+  expect(removed.status).toBe(200);
+  await cached(a, 'skills.changed', () => !existsSync(skillDir(a, demo.name)));
+  await until(() => !existsSync(skillDir(b, demo.name)), 'B 删除后本机文件夹删掉', 900);
+  for (const k of [a, b]) {
+    expect((await skillsOn(k)).map((entry) => entry.skill.name)).toEqual([onboardName]);
+    expect(existsSync(join(k.home, 'skills')) ? readdirSync(join(k.home, 'skills')) : []).toEqual([]);
+    expect(k.daemon.kite.accountData.get('skill', demo.name)).toBeUndefined();
+  }
+
+  // 7. 随 kited 带的只能恢复默认，不能删
+  const forbidden = await a.call('DELETE', `/skills/${onboardName}?expectedRevision=${onboard.defaultRevision}`);
+  expect(forbidden.status).toBe(400);
+  expect((await skillsOn(a)).map((entry) => entry.skill.name)).toEqual([onboardName]);
 }, 1000);
 
 // 真实 bug：首次同步时本机还没有此项目，之后登记已有项目不会再收到约束变更，因而留下无限制缓存。

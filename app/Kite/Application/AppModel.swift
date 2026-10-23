@@ -73,6 +73,10 @@ final class AppModel {
     @ObservationIgnored var lineAreaHint: String?
     /// 资源库里改过还没保存的模板。
     var templateDrafts: [TemplateDraft] = []
+    /// 资源库 Skill 页选中的 skill（名字），见 skillItem。
+    var selectedSkill: String?
+    /// 资源库里改过还没保存的 skill，含还没存过的新建。
+    var skillDrafts: [SkillDraft] = []
     /// 资源库代理上下文页点可用变量弹出的变量弹窗看的变量，见 ContextVariableSheet。
     var contextVariable: ContextScene.Variable?
     /// 变量弹窗各层选过的取值对象，按层，见 contextVariableSource。
@@ -90,6 +94,8 @@ final class AppModel {
         .pane(Pane("context")),
         .split(Split(.vertical, 0.5, .pane(Pane("emblem")), .pane(Pane("settings")))))))
     let templateWindows = WindowLayout(fixed: .pane(Pane("context")))
+    /// 资源库 Skill 页的固定窗口：一个 skill 一个窗口。
+    let skillWindows = WindowLayout(fixed: .pane(Pane("skill")))
     /// 资源库凭据的固定窗口：密钥占左边整列，右边从上到下是 Git 账号、模型 API、语音识别。
     let credentialWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.5,
         .pane(Pane("secrets")),
@@ -484,6 +490,10 @@ final class AppModel {
                 if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
                 return
             }
+            if event.type == "skills.changed" {
+                if connection.skills != nil { Task { try? await self.refreshSkills(of: connection, fresh: true) } }
+                return
+            }
             if event.type == "thread.activity" {
                 // 摘要直接带着新值，不重新读取目录。
                 if let workspaceId = event.workspaceId, let threadId = event.threadId, let activity = event.activity,
@@ -505,6 +515,7 @@ final class AppModel {
                 // 断线期间收不到角色与模板的变化事件，重连后读过的重新读一遍
                 if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
                 if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
+                if connection.skills != nil { Task { try? await self.refreshSkills(of: connection, fresh: true) } }
                 TimingTrace.mark("工作机 \(connection.machine.name) 目录快照已应用")
             } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
         }
