@@ -472,6 +472,7 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => kite.createSkill((await body(req)).skill)),
       },
       '/skills/:id': {
+        GET: bound((req) => kite.skill(req.params.id)),
         PUT: bound(async (req) => {
           const b = await body(req);
           return kite.updateSkill(req.params.id, str(b.expectedRevision, 'expectedRevision'), b.skill);

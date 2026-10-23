@@ -68,6 +68,12 @@ final class WorkArea: Identifiable {
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
     var dockHover: DockHover?
+    /// 这个工作区的代理能加载的 skill，输入框打「/」时列候选用，这个工作区的各个会话共用；见 loadAvailableSkills。
+    private(set) var availableSkills: [AvailableSkill] = []
+    /// 上次读完的时候与成没成；作废后为 nil。
+    @ObservationIgnored private var availableSkillsRead: (at: Date, failed: Bool)?
+    /// 正在读的那一次；作废时清掉，它的结果不再要。
+    @ObservationIgnored private var availableSkillsReading: UUID?
     var tint: Color { Palette.breeze }
     /// 本机改的名、工作机还没列出来：当场按它显示，工作机的列表跟上就去掉，改不成按那次请求收回（见 AppModel.nameWorkspace）。
     private(set) var pendingName: (name: String, request: UUID)?
@@ -133,6 +139,27 @@ final class WorkArea: Identifiable {
             browser.update(instance, client: client)
             return (instance.id, browser)
         })
+    }
+
+    /// 要列 skill 候选时调，读取在 Task 里，视图更新中也能调。读过的一分钟内不重读（项目里的 skill 文件可能变了，没有事件），
+    /// 失败的隔几秒再试；资源库的 skill 变了或重连后由 invalidateAvailableSkills 作废，下次调时重读。
+    func loadAvailableSkills(client: KitedClient) {
+        guard availableSkillsReading == nil else { return }
+        if let read = availableSkillsRead, Date().timeIntervalSince(read.at) < (read.failed ? 5 : 60) { return }
+        let reading = UUID()
+        availableSkillsReading = reading
+        Task {
+            let result = try? await client.request("/workspaces/\(id)/skills", as: AvailableSkills.self)
+            guard availableSkillsReading == reading else { return }
+            availableSkillsReading = nil
+            availableSkillsRead = (Date(), result == nil)
+            if let result, result.skills != availableSkills { availableSkills = result.skills }
+        }
+    }
+
+    func invalidateAvailableSkills() {
+        availableSkillsRead = nil
+        availableSkillsReading = nil
     }
 
     func files(in pane: Pane) -> FileBrowser? {

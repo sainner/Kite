@@ -61,11 +61,11 @@ async function entry(k: Kited, id: string): Promise<Entry> {
   return found;
 }
 
-/** 每收到一条 roles.changed 就读一次目录，直到签名状态满足条件；收不到事件即超时失败。 */
+/** 每收到一条角色列表的 library.changed 就读一次目录，直到签名状态满足条件；收不到事件即超时失败。 */
 async function settle(k: Kited, id: string, since: number, done: (value: Entry) => boolean): Promise<Entry> {
   let seen = since;
   while (true) {
-    const event = await k.waitEvent((e) => e.type === 'roles.changed' && k.events.indexOf(e) >= seen, 900);
+    const event = await k.waitEvent((e) => e.type === 'library.changed' && e.kind === 'role' && k.events.indexOf(e) >= seen, 900);
     seen = k.events.indexOf(event) + 1;
     const current = await entry(k, id);
     if (done(current)) return current;

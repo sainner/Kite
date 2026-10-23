@@ -38,7 +38,7 @@ struct SkillLibrary: View {
 
 /// 一个 skill 的窗口：标题是名字（新建的可以改），副行是来源。上面一行是文件夹里的文件，点哪个改哪个，SKILL.md 排第一，末尾能加文件；
 /// 下面是选中文件的正文，Markdown 按样式显示，存回去的是原文。恢复默认、删除、放弃与保存都在标题栏，底部控制区是编辑工具栏。
-/// 修改即时记成草稿，与工作机上一致时草稿自动消失；账号里的变化经工作机推过来，不用手动刷新。
+/// 修改即时记成草稿，与工作机上一致时草稿自动消失；账号里的变化经工作机推过来，不用手动刷新。列表只有名字与版本，打开时才按名字读整包。
 struct SkillPane: View {
     let name: String
     @Environment(AppModel.self) private var model
@@ -58,12 +58,12 @@ struct SkillPane: View {
     @State private var exportDocument: SkillFileDocument?
     @State private var editor = ContextEditor()
 
-    private var saved: LibrarySkill? { model.savedSkill(name) }
+    private var saved: SkillSummary? { model.savedSkill(name) }
     private var draft: SkillDraft? { model.skillDraft(name) }
     private var skill: SkillPackage? { model.librarySkill(name) }
     private var isNew: Bool { draft?.isNew == true }
     private var canSave: Bool { !saving && model.connected }
-    /// SKILL.md 排第一，其余按路径。
+    /// 上面那一行的文件：SKILL.md 排第一，其余按路径。
     private var files: [SkillPackage.File] {
         (skill?.files ?? []).sorted { a, b in
             if a.path == SkillPackage.mainFile { return true }
@@ -71,7 +71,11 @@ struct SkillPane: View {
             return a.path < b.path
         }
     }
-    private var current: SkillPackage.File? { files.first { $0.path == file } ?? files.first }
+    /// 选中的文件，选的已不在时是 SKILL.md（每个 skill 都有，删不掉）。
+    private var current: SkillPackage.File? {
+        let files = skill?.files ?? []
+        return files.first { $0.path == file } ?? files.first { $0.path == SkillPackage.mainFile }
+    }
     private var subtitle: String {
         if isNew { return "新建，还没保存" }
         return saved?.isBuiltin == true ? "随 Kite 提供" : "自建"
@@ -118,6 +122,11 @@ struct SkillPane: View {
             }
         } controls: { _ in
             if current?.isBinary == false { ContextEditorToolbar(variables: []).disabled(saving) }
+        }
+        // 列表里的版本变了（别处改过、恢复默认）就按新版本再读整包；换了版本或连接、被取消的那次不报错
+        .task(id: "\(model.connectionRevision):\(saved?.revision ?? "")") {
+            do { try await model.loadSkillPackage(name) }
+            catch { if !Task.isCancelled { self.error = "读取失败：\(error.localizedDescription)" } }
         }
         // 没有自己的模型，由工作机按默认模型数 token。
         .contextEditor(editor, counting: model.contextCounting(model: nil, connection: model.activeConnection))

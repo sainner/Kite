@@ -16,6 +16,8 @@ import SwiftUI
     var templates: ContextTemplateCatalog?
     var roles: RoleCatalog?
     var skills: SkillCatalog?
+    /// 打开过的 skill 的整包，按名字；列表只有名字与版本，见 AppModel.loadSkillPackage。
+    var skillPackages: [String: LibrarySkill] = [:]
     var modelAccounts: ModelAccountsSnapshot?
     var modelAccountsError: String?
     var readingModelAccounts = false
@@ -24,9 +26,8 @@ import SwiftUI
     var outdated: VersionMismatch?
     /// 工作机推 update.changed 时加一，版本页据此重新读 /update。
     var updateRevision = 0
-    @ObservationIgnored var templatesRequest: (connection: UUID, task: Task<Void, Error>)?
-    @ObservationIgnored var rolesRequest: (connection: UUID, task: Task<Void, Error>)?
-    @ObservationIgnored var skillsRequest: (connection: UUID, task: Task<Void, Error>)?
+    /// 进行中的目录读取，按请求路径，见 AppModel.refreshCatalog。
+    @ObservationIgnored var catalogRequests: [String: (connection: UUID, task: Task<Void, Error>)] = [:]
     @ObservationIgnored var task: Task<Void, Never>?
     var id: String { machine.id }
 

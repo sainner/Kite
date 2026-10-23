@@ -17,10 +17,6 @@ final class WorkThread: Identifiable {
     var draft = ""
     /// 输入框里待发的附件，按选的先后；发送时连同草稿一起带走。
     private(set) var draftAttachments: [DraftAttachment] = []
-    /// 这个工作区的代理能加载的 skill，输入框打「/」时列候选用；见 loadAvailableSkills。
-    private(set) var availableSkills: [AvailableSkill] = []
-    @ObservationIgnored private var skillsLoadedAt: Date?
-    @ObservationIgnored private var loadingSkills = false
     /// 所属工作区；附件按它上传、读取。
     let workspaceID: String
     /// 草稿里选好的角色；已有代理的角色记在实例配置里。
@@ -338,19 +334,6 @@ final class WorkThread: Identifiable {
     }
 
     func retry(_ message: Message) { deliver(message) }
-
-    /// 读这个工作区能加载的 skill；一分钟内读过的不重读，资源库里的变化下次打「/」时跟上。
-    func loadAvailableSkills(client: KitedClient) {
-        if loadingSkills { return }
-        if let skillsLoadedAt, Date().timeIntervalSince(skillsLoadedAt) < 60 { return }
-        loadingSkills = true
-        Task { @MainActor in
-            defer { loadingSkills = false }
-            guard let result = try? await client.request("/workspaces/\(workspaceID)/skills", as: AvailableSkills.self) else { return }
-            skillsLoadedAt = Date()
-            if result.skills != availableSkills { availableSkills = result.skills }
-        }
-    }
 
     /// 草稿的第一条消息随创建请求发出，请求失败时：还是草稿就撤回消息，字退回输入框，好改了角色或参数再发；
     /// 工作机已经建好代理的，照普通消息标成未确认，点消息重试。

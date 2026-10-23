@@ -2,6 +2,7 @@
  * 资源库（角色、上下文模板、点阵签名、插件包、skill）与项目约束是账号级数据（account-data/），写入先进账号级数据，再更新本机缓存；
  * 读取一律用缓存。账号级数据有变化（本机写入或从其他工作机同步来）就把缓存对一遍：角色与模板以账号级数据为准，
  * 那里没有的从缓存去掉，内置的退回默认；skill 的缓存就是数据目录里的文件夹；本机有、那里没有的点阵签名与插件包补写进去。
+ * 对完后按客户端读取的目录（LibraryList）报出哪几类变了，由宿主推 library.changed。
  */
 import type { ContextTemplates } from './context-templates.ts';
 import type { PluginCatalog } from './plugins/catalog.ts';
@@ -9,15 +10,17 @@ import type { ProjectToolRule, Roles } from './roles.ts';
 import type { Skills } from './skills.ts';
 import type { Store } from './store.ts';
 import type { TemplateEmblem } from './template-emblems.ts';
-import type { AccountData, EntryKind } from './account-data/store.ts';
+import type { AccountData, EntryKind, Item } from './account-data/store.ts';
 import type { ProjectRegistry } from './account-data/registry.ts';
 import type { ProjectExecution } from './execution/grants.ts';
 
 export type LibraryKind = Extract<EntryKind, 'role' | 'template' | 'emblem' | 'plugin' | 'skill'>;
+/** 客户端按类读取的资源库目录，library.changed 事件的 kind：角色列表带着点阵签名，签名变了也算 role。 */
+export type LibraryList = Extract<LibraryKind, 'role' | 'template' | 'skill'>;
 const synced = new Set<EntryKind>(['role', 'template', 'emblem', 'plugin', 'skill', 'constraints']);
 
-/** constraints 列出约束变了的项目及变化前的规则。 */
-export interface LibraryChanges { roles: boolean; templates: boolean; skills: boolean; constraints: Array<{ projectId: string; before?: { tools?: ProjectToolRule; execution?: ProjectExecution } }> }
+/** lists 是缓存有变化的目录；constraints 列出约束变了的项目及变化前的规则。 */
+export interface LibraryChanges { lists: Set<LibraryList>; constraints: Array<{ projectId: string; before?: { tools?: ProjectToolRule; execution?: ProjectExecution } }> }
 
 export class LibrarySync {
   private scheduled = false;
@@ -76,25 +79,22 @@ export class LibrarySync {
       try { return apply(); }
       catch (error) { console.warn('[资源库同步] 跳过无法用于本机的内容', kind, id, (error as Error).message); return false; }
     };
-    const changes: LibraryChanges = { roles: false, templates: false, skills: false, constraints: [] };
-
-    const accountRoles = items('role');
-    for (const item of accountRoles.values()) changes.roles = accepted('role', item.id, () => roles.cache(item.body)) || changes.roles;
-    changes.roles = roles.keep(new Set(accountRoles.keys())) || changes.roles;
-
-    const accountTemplates = items('template');
-    for (const item of accountTemplates.values()) changes.templates = accepted('template', item.id, () => templates.cache(item.body)) || changes.templates;
-    changes.templates = templates.keep(new Set(accountTemplates.keys())) || changes.templates;
-
-    const accountSkills = items('skill', ['files']);
-    for (const item of accountSkills.values()) changes.skills = accepted('skill', item.id, () => skills.cache(item.id, item.revision)) || changes.skills;
-    changes.skills = skills.keep(new Set(accountSkills.keys())) || changes.skills;
+    const changes: LibraryChanges = { lists: new Set(), constraints: [] };
+    /** 一类缓存按账号里的条目对一遍：逐条交给 cache，再去掉账号里没有的，有变化就记下这一类。 */
+    const reconcile = (kind: LibraryList, entries: Map<string, Item>, cache: (item: Item) => boolean, keep: (ids: ReadonlySet<string>) => boolean) => {
+      let changed = false;
+      for (const item of entries.values()) changed = accepted(kind, item.id, () => cache(item)) || changed;
+      if (keep(new Set(entries.keys())) || changed) changes.lists.add(kind);
+    };
+    reconcile('role', items('role'), (item) => roles.cache(item.body), (ids) => roles.keep(ids));
+    reconcile('template', items('template'), (item) => templates.cache(item.body), (ids) => templates.keep(ids));
+    reconcile('skill', items('skill', ['files']), (item) => skills.cache(item.id, item.revision), (ids) => skills.keep(ids));
 
     const accountEmblems = items('emblem');
     for (const item of accountEmblems.values()) {
       if (JSON.stringify(store.templateEmblem(item.id)) === JSON.stringify(item.body)) continue;
       store.saveTemplateEmblem(item.id, item.body as unknown as TemplateEmblem);
-      changes.roles = true;
+      changes.lists.add('role');
     }
     for (const { id, emblem } of store.templateEmblems()) if (!accountEmblems.has(id)) this.write('emblem', id, emblem);
 

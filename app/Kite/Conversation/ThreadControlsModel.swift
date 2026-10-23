@@ -118,9 +118,11 @@ struct ThreadControlsModel {
     // MARK: - skill 点选
 
     /// 输入框里只打了「/」开头的一个词、还没打空白时，列出这个工作区能加载的 skill 里名字以它开头的，点一个换进输入框；作答时不列。
+    /// 各个输入区都经这里取候选，要列时顺带把这个工作区能加载的 skill 读进来，刚读过的不重读（见 WorkArea.loadAvailableSkills）。
     var skillCandidates: [AvailableSkill] {
         guard answering == nil, let prefix = Self.skillPrefix(thread.draft)?.lowercased() else { return [] }
-        return thread.availableSkills.filter { $0.name.lowercased().hasPrefix(prefix) }
+        if let client = try? model.activeClient(in: area) { area.loadAvailableSkills(client: client) }
+        return area.availableSkills.filter { $0.name.lowercased().hasPrefix(prefix) }
     }
 
     /// 候选里键盘选中的那个，没选过时是第一个；candidates 是现算好的 skillCandidates。
@@ -149,12 +151,6 @@ struct ThreadControlsModel {
     static func skillPrefix(_ text: String) -> String? {
         guard text.hasPrefix("/"), !text.contains(where: \.isWhitespace) else { return nil }
         return String(text.dropFirst())
-    }
-
-    /// 要列候选时把这个工作区能加载的 skill 读进来；刚读过的不重读，见 WorkThread.loadAvailableSkills。
-    func loadSkillsIfNeeded() {
-        guard answering == nil, Self.skillPrefix(thread.draft) != nil, let client = try? model.activeClient(in: area) else { return }
-        thread.loadAvailableSkills(client: client)
     }
 
     /// 点了候选：输入框换成「/名字 」，接着打要说的话。

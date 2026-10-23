@@ -320,6 +320,8 @@ struct RemoteEvent: Decodable {
     var modelAccounts: ModelAccountsSnapshot?
     /// monitor.changed 的实例。
     var instanceId: String?
+    /// library.changed 变了的那一类目录，见 LibraryList。
+    var kind: String?
     /// line.notification 带的系统通知。
     var notification: LineNotificationPayload?
 }

@@ -396,8 +396,8 @@ final class AppModel {
     private func stopConnections() {
         for connection in connections.values {
             connection.task?.cancel(); connection.task = nil
-            connection.templatesRequest?.task.cancel(); connection.templatesRequest = nil
-            connection.rolesRequest?.task.cancel(); connection.rolesRequest = nil
+            for request in connection.catalogRequests.values { request.task.cancel() }
+            connection.catalogRequests = [:]
             connection.catalog.reset(); connection.connected = false
             for area in workspaces where area.remote.machine.id == connection.id { area.draftThread.connected = false }
         }
@@ -482,16 +482,8 @@ final class AppModel {
                 if let notification = event.notification { LineNotifications.shared.post(notification) }
                 return
             }
-            if event.type == "context-templates.changed" {
-                if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
-                return
-            }
-            if event.type == "roles.changed" {
-                if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
-                return
-            }
-            if event.type == "skills.changed" {
-                if connection.skills != nil { Task { try? await self.refreshSkills(of: connection, fresh: true) } }
+            if event.type == "library.changed" {
+                if let kind = event.kind.flatMap(LibraryList.init) { self.libraryChanged(kind, on: connection) }
                 return
             }
             if event.type == "thread.activity" {
@@ -512,10 +504,8 @@ final class AppModel {
                 Task { await self.refreshLineInbox() }
                 Task { await self.refreshLocalUpdate(connection) }
                 LineAttention.shared.report()
-                // 断线期间收不到角色与模板的变化事件，重连后读过的重新读一遍
-                if connection.roles != nil { Task { try? await self.refreshRoles(of: connection, fresh: true) } }
-                if connection.templates != nil { Task { try? await self.refreshTemplates(of: connection, fresh: true) } }
-                if connection.skills != nil { Task { try? await self.refreshSkills(of: connection, fresh: true) } }
+                // 断线期间收不到资源库的变化事件，重连后每一类都当变过
+                for kind in LibraryList.allCases { self.libraryChanged(kind, on: connection) }
                 TimingTrace.mark("工作机 \(connection.machine.name) 目录快照已应用")
             } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
         }

@@ -8,6 +8,7 @@ import type { ClaudeState } from './claude/control.ts';
 import type { ModelAccountsSnapshot } from './model-accounts.ts';
 import type { Ask, Waiting } from './waiting.ts';
 import type { LineNotification } from './line/monitor.ts';
+import type { LibraryList } from './library-sync.ts';
 
 export type RuntimeEvent =
   | { type: 'claude.control'; state: ClaudeState }
@@ -30,11 +31,11 @@ export type DomainEvent =
   | { type: 'workspace.changed'; workspaceId: string; status: WorkspaceStatus }
   | { type: 'thread.changed'; workspaceId: string; threadId: string; status: PluginInstance['status'] }
   | { type: 'model-accounts.changed'; modelAccounts: ModelAccountsSnapshot }
-  /** 模板或点阵签名有变化，客户端重新读取模板列表。 */
-  | { type: 'context-templates.changed' }
-  | { type: 'roles.changed' }
-  /** 资源库里的 skill 变了（本机改的或同步来的），客户端重新读取 skill 列表。 */
-  | { type: 'skills.changed' }
+  /**
+   * 资源库里的一类目录变了（本机改的或同步来的），读过的客户端重新读取：role 是角色列表（签名状态与点阵签名的变化也算），
+   * template 是上下文模板，skill 是 skill 列表。
+   */
+  | { type: 'library.changed'; kind: LibraryList }
   /** Line 的收件箱变了：客户端更新标志旁的数目，打开着的收件箱重新读取。 */
   | { type: 'line.inbox' }
   /** Line 找用户：App 发系统通知，点开是收件箱里的那一项。 */

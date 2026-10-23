@@ -57,11 +57,7 @@ extension AppModel {
             return
         }
         guard let saved = roleCatalog?.roles.first(where: { $0.id == id })?.role.context.blocks else { return }
-        if let index = roleDrafts.firstIndex(where: { $0.id == id }) {
-            if blocks == saved { roleDrafts.remove(at: index) } else { roleDrafts[index].blocks = blocks }
-        } else if blocks != saved {
-            roleDrafts.append(RoleDraft(id: id, blocks: blocks, base: saved))
-        }
+        editDraft(\.roleDrafts, id, from: RoleDraft(id: id, blocks: saved, base: saved), { $0.blocks = blocks }) { $0.blocks == saved }
     }
 
     /// 即时生效地改名称或初始配置：新角色改在本机；已有角色先按改后的显示，再排队存到工作机，每次都改在工作机上最新的角色上。

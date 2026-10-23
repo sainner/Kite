@@ -202,6 +202,11 @@ struct LibraryReset: Encodable {
     let expectedRevision: String
 }
 
+/// 客户端按类读取的资源库目录，与工作机 library.changed 事件的 kind 一一对应：角色列表带着点阵签名，签名变了也是 role。
+enum LibraryList: String, CaseIterable {
+    case role, template, skill
+}
+
 /// 新代理连同草稿里的角色与改过的参数一次创建。
 struct CreateThreadRequest: Encodable {
     let prompt: String
@@ -246,36 +251,60 @@ extension AppModel {
         try await refreshTemplates(of: connection)
     }
 
-    /// 目录没读过才读；读过的由 context-templates.changed 事件和重连后的重读保持最新。
+    /// 目录没读过才读；读过的由 library.changed 事件和重连后的重读保持最新（见 libraryChanged）。
     func ensureContextTemplates(in area: WorkArea? = nil) async throws {
         if connection(for: area)?.templates == nil { try await refreshContextTemplates(in: area) }
     }
 
     func refreshTemplates(of connection: WorkerConnection, fresh: Bool = false) async throws {
-        try await refreshCatalog("/context-templates", of: connection, fresh: fresh, request: \.templatesRequest, into: \.templates)
+        try await refreshCatalog("/context-templates", of: connection, fresh: fresh, into: \.templates)
     }
 
-    /// 读取工作机上的目录，同一连接上进行中的请求复用。fresh 时不复用：进行中的请求可能早于这次变化发出，等它完成后再读一次。
+    /// 读取工作机上的目录，同一连接上同一路径进行中的请求复用。fresh 时不复用：进行中的请求可能早于这次变化发出，等它完成后再读一次。
     func refreshCatalog<Value: Decodable & Sendable>(
-        _ path: String, of connection: WorkerConnection, fresh: Bool,
-        request: ReferenceWritableKeyPath<WorkerConnection, (connection: UUID, task: Task<Void, Error>)?>,
-        into value: ReferenceWritableKeyPath<WorkerConnection, Value?>
+        _ path: String, of connection: WorkerConnection, fresh: Bool, into value: ReferenceWritableKeyPath<WorkerConnection, Value?>
     ) async throws {
         let revision = connection.catalog.generation
-        if let pending = connection[keyPath: request], pending.connection == revision {
+        if let pending = connection.catalogRequests[path], pending.connection == revision {
             if fresh { try? await pending.task.value } else { try await pending.task.value; return }
-            if let pending = connection[keyPath: request], pending.connection == revision { try await pending.task.value; return }
+            if let pending = connection.catalogRequests[path], pending.connection == revision { try await pending.task.value; return }
         }
         let client = connection.client
         let task = Task {
-            defer { if connection[keyPath: request]?.connection == revision { connection[keyPath: request] = nil } }
+            defer { if connection.catalogRequests[path]?.connection == revision { connection.catalogRequests[path] = nil } }
             let result = try await client.request(path, as: Value.self)
             try Task.checkCancellation()
             guard revision == connection.catalog.generation, accepts(client) else { throw KitedError(message: "工作机连接已变化") }
             connection[keyPath: value] = result
         }
-        connection[keyPath: request] = (revision, task)
+        connection.catalogRequests[path] = (revision, task)
         try await task.value
+    }
+
+    /// 资源库编辑器的草稿对账：先取已有的草稿，没有就从已保存的 saved 建；改完与已保存的一致（unchanged）就删掉草稿，否则写回。
+    /// 草稿和已保存的都没有时不改。change 改的是一份拷贝，不在改数组的途中调用。
+    func editDraft<Draft: Identifiable>(_ drafts: ReferenceWritableKeyPath<AppModel, [Draft]>, _ id: Draft.ID, from saved: Draft?,
+                                        _ change: (inout Draft) -> Void, unchanged: (Draft) -> Bool) {
+        let index = self[keyPath: drafts].firstIndex { $0.id == id }
+        guard var draft = index.map({ self[keyPath: drafts][$0] }) ?? saved else { return }
+        change(&draft)
+        if let index {
+            if unchanged(draft) { self[keyPath: drafts].remove(at: index) } else { self[keyPath: drafts][index] = draft }
+        } else if !unchanged(draft) {
+            self[keyPath: drafts].append(draft)
+        }
+    }
+
+    /// 工作机上这一类目录变了：读过的重新读；skill 变了，各工作区能加载的 skill 也作废，下次列候选时重读。
+    /// 收到 library.changed 时按它的 kind，目录流重连后每一类都走一遍。
+    func libraryChanged(_ kind: LibraryList, on connection: WorkerConnection) {
+        switch kind {
+        case .role: if connection.roles != nil { Task { try? await refreshRoles(of: connection, fresh: true) } }
+        case .template: if connection.templates != nil { Task { try? await refreshTemplates(of: connection, fresh: true) } }
+        case .skill:
+            if connection.skills != nil { Task { try? await refreshSkills(of: connection, fresh: true) } }
+            for area in workspaces where area.remote.machine.id == connection.id { area.invalidateAvailableSkills() }
+        }
     }
 
     /// 模板只能修改，各场景的模板由工作机提供。

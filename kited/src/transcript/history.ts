@@ -95,13 +95,11 @@ export class TranscriptHistory {
           break;
         case 'checkout.changed':
         case 'model-accounts.changed':
-        case 'context-templates.changed':
-        case 'roles.changed':
+        case 'library.changed':
         case 'line.inbox':
         case 'line.notification':
         case 'monitor.changed':
         case 'update.changed':
-        case 'skills.changed':
         case 'workspace.setup':
         case 'workspace.snapshot':
         case 'workspace.adopt':

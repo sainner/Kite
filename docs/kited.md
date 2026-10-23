@@ -109,7 +109,9 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 - **并发修改。** 每条数据带版本，两台工作机同时改了同一条时以后写的为准，被覆盖的那份另存下来，`/sync/conflicts` 可以找回。删除也是一次修改，与另一台的并发修改相遇时，修改的那份同样另存。
 - **凭据落地加密。** 保密内容用每台工作机自己的密钥加密保存：安装版的 macOS 服务把密钥放登录钥匙串，其他情况放数据目录里只有本人可读的文件。明文只在工作机之间经组网的 WireGuard 传输，收到后用本机密钥重新加密。本机密钥暂时取不到（钥匙串锁着、在等人允许）时，同步照常写入凭据以外的数据、凭据留到下次，新版本的发布不能被凭据卡住，否则没人看着的旧版工作机永远收不到新版。
 
-资源库的写入先进账号级数据，再更新本机缓存；读取用缓存。内置角色和模板只保存自建或修改的内容，未修改项跟随 kited 版本；改回与默认一样或恢复默认时删掉那一条，其他工作机同步后退回默认。写入时按本机缓存给出期望的版本，基于已被删掉或改过的旧内容保存返回 409。插件包装到本机时一并写入，其他工作机同步后用到时再装。skill 是多文件包（SKILL.md 保持 UTF-8 文本，可附带文本、图片、PDF 等文件，整包按原始字节合计不超过 4 MiB），同步到每台工作机后写进数据目录的 `skills/<名字>/`，代理从那里加载；随 kited 带的 skill 同角色，只存改过的那份。
+资源库的写入先进账号级数据，再更新本机缓存；读取用缓存。内置角色和模板只保存自建或修改的内容，未修改项跟随 kited 版本；改回与默认一样或恢复默认时删掉那一条，其他工作机同步后退回默认。写入时按本机缓存给出期望的版本，基于已被删掉或改过的旧内容保存返回 409。插件包装到本机时一并写入，其他工作机同步后用到时再装。skill 是多文件包（SKILL.md 保持 UTF-8 文本，可附带文本、图片、PDF 等文件，整包按原始字节合计不超过 4 MiB），同步到每台工作机后写进数据目录的 `skills/<名字>/`，代理从那里加载；随 kited 带的 skill 同角色，只存改过的那份。skill 的列表只有名字与版本，客户端打开某一个时再按名字取整包。
+
+本机缓存有变化（本机写入或同步来的）时，目录流推 `library.changed`，`kind` 是变了的那一类目录：`role` 是角色列表（签名状态与点阵签名的变化也算），`template` 是后台场景的上下文模板，`skill` 是 skill 列表。读过这一类的客户端重新读取；断线期间收不到，重连后读过的都重读。
 
 项目约束随项目登记表同步，只由用户在 App 里修改。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
 
@@ -140,7 +142,7 @@ GitHub 用 Kite 的 OAuth App 做设备码授权绑定，在工作机上完成�
 
 每个角色可保存一枚可编辑的点阵签名，结构为 `{expression, avatar, positive, negative, form}`：`expression` 与 `avatar` 分别描述签名与头像，颜色和形状配置共用。算式只解析求值、不执行代码；[签名格式](../kited/src/template-emblems.ts) 与 [表达式语法](../kited/src/emblem-expression.ts) 由共享契约约束，App 使用相同语义。
 
-角色保存后用轻任务按角色名称与提示词生成，生成规则来自「点阵签名」模板。自动签名在提示词变化或缺少头像算式时过期，只改工具、模型或预算不会重新生成。普通生成不会覆盖手改签名，包括手改之后才返回的结果；显式 `force` 生成允许覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；生成失败时客户端使用默认图案。角色或签名状态变化推送 `roles.changed`，后台场景模板变化推送 `context-templates.changed`。
+角色保存后用轻任务按角色名称与提示词生成，生成规则来自「点阵签名」模板。自动签名在提示词变化或缺少头像算式时过期，只改工具、模型或预算不会重新生成。普通生成不会覆盖手改签名，包括手改之后才返回的结果；显式 `force` 生成允许覆盖。角色列表中每项带 `emblem`、`emblemState`（`ready`、`stale`、`missing`、`generating`、`failed`）与失败时的 `emblemError`；生成失败时客户端使用默认图案。角色或签名状态变化推送 `kind` 为 `role` 的 `library.changed`，见 [账号级数据](#账号级数据)。
 
 ### 启动服务
 
@@ -344,12 +346,12 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / POST | `/roles` | 列出角色（带签名状态，内置角色另带默认内容的版本 `defaultRevision`，与 `revision` 不同即改过），附代理插件的全部工具及其界面名称与分组（`toolCatalog`）、提示词变量、模型目录，以及角色不设审批模式时新建代理用的 `defaultApproval`；以 `{role}` 新建角色 |
 | PUT | `/roles/:id` | 以 `{expectedRevision, role}` 更新角色；不修改已有代理 |
 | POST | `/roles/:id/reset` | 以 `{expectedRevision}` 把内置角色恢复默认，等同于保存默认内容；自建角色 400 |
-| GET / POST | `/skills` | 列出资源库里的 skill，整包带文件 `{skill: {version, name, files: [{path, content, encoding?}]}, revision, defaultRevision?}`，随 kited 带的另带默认内容的版本 `defaultRevision`；以 `{skill}` 新建，名字不能与随 kited 带的重复 |
-| PUT / DELETE | `/skills/:name` | 以 `{expectedRevision, skill}` 更新；`DELETE ?expectedRevision=` 删除自建的，随 kited 带的只能恢复默认 |
-| POST | `/skills/:name/reset` | 以 `{expectedRevision}` 把随 kited 带的 skill 恢复默认，等同于保存默认内容 |
+| GET / POST | `/skills` | 列出资源库里的 skill，每项只有 `{name, revision, defaultRevision?}`，随 kited 带的另带默认内容的版本 `defaultRevision`，与 `revision` 不同即改过；以 `{skill}` 新建，名字不能与随 kited 带的重复，返回新建的那一项 |
+| GET / PUT / DELETE | `/skills/:name` | `GET` 取整包 `{skill: {version, name, files: [{path, content, encoding?}]}, revision, defaultRevision?}`；以 `{expectedRevision, skill}` 更新，只返回 `{name, revision, defaultRevision?}`；`DELETE ?expectedRevision=` 删除自建的，随 kited 带的只能恢复默认 |
+| POST | `/skills/:name/reset` | 以 `{expectedRevision}` 把随 kited 带的 skill 恢复默认，等同于保存默认内容，返回同 `PUT` |
 | GET | `/workspaces/:id/skills` | 这个工作区的代理能加载的 skill `{skills: [{name, description, layer}]}`，四层合成后的；输入框点选时列出来 |
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
-| POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `roles.changed` 送达；未启用轻任务时 503 |
+| POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `kind` 为 `role` 的 `library.changed` 送达；未启用轻任务时 503 |
 | PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作授权随角色增减，执行授权与审批模式换成角色的；已有对话时返回 409 |
 | GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别及各类通知模板（带默认内容的版本 `defaultRevision`）和场景变量，辅助生成的场景附可选的模型目录（`models`） |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition, model?}` 更新模板；模板由工作机提供，不能新建 |

@@ -200,8 +200,6 @@ final class ControlsBarView: UIView {
         strip.show(thread, items: thread.draftAttachments.map(\.id), environment: environment) {
             DraftAttachmentStrip(thread: thread).fixedSize(horizontal: false, vertical: true)
         }
-        // 打了「/」才读这个工作区能加载的 skill，刚读过的不重读
-        controls.loadSkillsIfNeeded()
         skills.show(thread, items: controls.skillCandidates.map(\.name), environment: environment) { SkillCandidateStrip(controls: controls) }
         primary.label = .symbol(controls.primaryAction.symbol)
         primary.title = controls.primaryAction.title

@@ -88,7 +88,7 @@ import { previewDefinitionId } from './preview/state.ts';
 import { trustedTargets } from './preview/targets.ts';
 import { contentHash, projectSkills } from './harness/context/project.ts';
 import { loadSkill, setSkillSources } from './harness/context/skills.ts';
-import { Skills, type SkillSnapshot } from './skills.ts';
+import { Skills, type SkillSummary } from './skills.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
 import type { Integration } from './account-data/registry.ts';
@@ -460,7 +460,7 @@ export class Kite {
     }
     this.workspaceNames = new WorkspaceNames(store, this.lightTasks, this.contextTemplates, (id) => this.changed(id));
     this.emblems = new TemplateEmblems(store, this.roles, this.contextTemplates, this.lightTasks,
-      () => bus.emit({ type: 'roles.changed' }), (id, emblem) => this.library.write('emblem', id, emblem));
+      () => bus.emit({ type: 'library.changed', kind: 'role' }), (id, emblem) => this.library.write('emblem', id, emblem));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
     this.transcripts = new TranscriptHistory(store, home, bus, this.events);
     this.terminals.recover();
@@ -474,7 +474,7 @@ export class Kite {
     const valid = this.contextTemplates.validate(id, expectedRevision, template);
     this.library.save('template', id, valid, this.contextTemplates.accountRevision(id), this.contextTemplates.isDefault(valid));
     const saved = this.contextTemplates.update(expectedRevision, valid);
-    this.bus.emit({ type: 'context-templates.changed' });
+    this.bus.emit({ type: 'library.changed', kind: 'template' });
     return saved;
   }
   /** 恢复默认就是保存默认内容。 */
@@ -510,13 +510,12 @@ export class Kite {
     return this.catalog.install(value);
   }
   private libraryChanged(changes: LibraryChanges) {
-    if (changes.roles) this.bus.emit({ type: 'roles.changed' });
-    if (changes.templates) this.bus.emit({ type: 'context-templates.changed' });
-    if (changes.skills) this.bus.emit({ type: 'skills.changed' });
+    for (const kind of changes.lists) this.bus.emit({ type: 'library.changed', kind });
     for (const { projectId, before } of changes.constraints) this.configuration.constraintsChanged(projectId, before);
   }
-  /** 资源库里的 skill：系统层的默认加账号里自建或改过的，整包带文件。 */
+  /** 资源库里的 skill：系统层的默认加账号里自建或改过的。列表只带名字与版本，打开时按名字取整包。 */
   skillCatalog() { return { skills: this.skills.list() }; }
+  skill(name: string) { return this.skills.get(name); }
   async createSkill(value: unknown) {
     const skill = this.skills.validateNew(value);
     this.library.write('skill', skill.name, skill, null);
@@ -534,10 +533,11 @@ export class Kite {
     this.skills.validateDelete(name, expectedRevision);
     this.library.remove('skill', name, this.skills.accountRevision(name));
     this.skills.remove(name);
-    this.bus.emit({ type: 'skills.changed' });
+    this.bus.emit({ type: 'library.changed', kind: 'skill' });
   }
-  private skillSaved(saved: SkillSnapshot) {
-    this.bus.emit({ type: 'skills.changed' });
+  /** 保存只回列表里的那一项（名字与版本），内容保存方自己有。 */
+  private skillSaved(saved: SkillSummary) {
+    this.bus.emit({ type: 'library.changed', kind: 'skill' });
     return saved;
   }
   /** 这个工作区的代理能加载的 skill：四层合成后的名字、说明与所在层，输入框点选时列出来。 */
@@ -546,7 +546,7 @@ export class Kite {
   }
   /** 角色保存后通知各端刷新，并随提示词更新点阵签名。 */
   private roleSaved(saved: RoleSnapshot) {
-    this.bus.emit({ type: 'roles.changed' });
+    this.bus.emit({ type: 'library.changed', kind: 'role' });
     this.emblems.roleSaved(saved);
     return this.emblems.decorate(saved);
   }

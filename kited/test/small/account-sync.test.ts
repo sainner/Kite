@@ -15,7 +15,8 @@ import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { Json, ModelItem } from '../../src/harness/types.ts';
 import type { Project, WorkspaceModel } from '../../src/model.ts';
 import type { Role } from '../../src/roles.ts';
-import type { SkillPackage, SkillSnapshot } from '../../src/skills.ts';
+import type { SkillPackage, SkillSnapshot, SkillSummary } from '../../src/skills.ts';
+import type { LibraryList } from '../../src/library-sync.ts';
 import { emblemTemplate } from '../../src/template-emblems.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import {
@@ -182,9 +183,9 @@ function sharedRole(work: Role, text: string): Role {
 
 const roleOn = (k: Kited, id: string) => k.daemon.kite.roles.list().find((entry) => entry.role.id === id);
 const templateOn = (k: Kited, id: string) => k.daemon.kite.contextTemplates.list().templates.find((entry) => entry.definition.id === id);
-/** 等 k 对完缓存并通知客户端：收到 type 事件时缓存已满足 check。 */
-const cached = (k: Kited, type: 'roles.changed' | 'context-templates.changed' | 'skills.changed', check: () => boolean) =>
-  k.waitEvent((event) => event.type === type && check());
+/** 等 k 对完缓存并通知客户端：收到这一类目录的 library.changed 时缓存已满足 check。 */
+const cached = (k: Kited, kind: LibraryList, check: () => boolean) =>
+  k.waitEvent((event) => event.type === 'library.changed' && event.kind === kind && check());
 
 // 两台工作机经账号级数据交接资源库：A 写入后 B 从 A 拉到这一条再对缓存；B 按缓存算的版本须与 A 给出的一致，
 // B 用同步前的版本改才会被拒。插件包在 B 的列表里只有元数据，开窗口时才从账号级数据取出安装，装好后的版本须与 A 一致。
@@ -197,14 +198,14 @@ test('A 建、改的角色同步到 B 后是同一版本，B 用同步前的版�
 
   const created = await a.call('POST', '/roles', { role: sharedRole(work, '第一版：先读需求。') });
   expect(created.status).toBe(200);
-  await cached(b, 'roles.changed', () => roleOn(b, 'test.shared')?.revision === created.body.revision);
+  await cached(b, 'role', () => roleOn(b, 'test.shared')?.revision === created.body.revision);
   expect(roleOn(b, 'test.shared')!.role).toEqual(created.body.role);
 
   const updated = await a.call('PUT', '/roles/test.shared', {
     expectedRevision: created.body.revision, role: sharedRole(work, '第二版：A 改过。'),
   });
   expect(updated.status).toBe(200);
-  await cached(b, 'roles.changed', () => roleOn(b, 'test.shared')?.revision === updated.body.revision);
+  await cached(b, 'role', () => roleOn(b, 'test.shared')?.revision === updated.body.revision);
   expect(roleOn(b, 'test.shared')!.role).toEqual(updated.body.role);
   const stale = await b.call('PUT', '/roles/test.shared', {
     expectedRevision: created.body.revision, role: sharedRole(work, '第三版：B 基于过期版本改。'),
@@ -259,8 +260,8 @@ test('A 恢复内置角色默认、把模板原样改回默认后账号级数据
     expectedRevision: template.revision, definition: edited, model: template.model,
   });
   expect(changedTemplate.status).toBe(200);
-  await cached(b, 'roles.changed', () => roleOn(b, 'kite.review')?.revision === changedRole.body.revision);
-  await cached(b, 'context-templates.changed', () => templateOn(b, emblemTemplate.id)?.revision === changedTemplate.body.revision);
+  await cached(b, 'role', () => roleOn(b, 'kite.review')?.revision === changedRole.body.revision);
+  await cached(b, 'template', () => templateOn(b, emblemTemplate.id)?.revision === changedTemplate.body.revision);
 
   const reset = await a.call('POST', '/roles/kite.review/reset', { expectedRevision: changedRole.body.revision });
   expect(reset.status).toBe(200);
@@ -273,9 +274,9 @@ test('A 恢复内置角色默认、把模板原样改回默认后账号级数据
   expect(a.daemon.kite.accountData.get('role', 'kite.review')).toBeUndefined();
   expect(a.daemon.kite.accountData.get('template', emblemTemplate.id)).toBeUndefined();
 
-  await cached(b, 'roles.changed', () => roleOn(b, 'kite.review')?.revision === role.defaultRevision);
+  await cached(b, 'role', () => roleOn(b, 'kite.review')?.revision === role.defaultRevision);
   expect(roleOn(b, 'kite.review')!.role).toEqual(role.role);
-  await cached(b, 'context-templates.changed', () => templateOn(b, emblemTemplate.id)?.revision === template.defaultRevision);
+  await cached(b, 'template', () => templateOn(b, emblemTemplate.id)?.revision === template.defaultRevision);
   expect(templateOn(b, emblemTemplate.id)!.definition).toEqual(template.definition);
 
   const staleRole = await b.call('PUT', '/roles/kite.review', {
@@ -306,7 +307,7 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
     folderWorkspace(b, newDir(b.root, 'project-b', { 'b.txt': 'B\n' })),
   ]);
   const skillDir = (k: Kited, name: string) => join(k.home, 'skills', name);
-  const skillsOn = async (k: Kited) => (await k.call('GET', '/skills')).body.skills as SkillSnapshot[];
+  const skillsOn = async (k: Kited) => (await k.call('GET', '/skills')).body.skills as SkillSummary[];
   const available = async (k: Kited, workspaceId: string) => {
     const r = await k.call('GET', `/workspaces/${workspaceId}/skills`);
     expect(r.status).toBe(200);
@@ -332,18 +333,15 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
   ] };
   const created = await a.call('POST', '/skills', { skill: demo });
   expect(created.status).toBe(200);
-  expect(created.body).toEqual({ skill: demo, revision: expect.any(String) });
 
-  // 2. B 同步到：文件夹落地、脚本可执行、列表同一版本、工作区清单列为用户层，随 kited 带的仍是系统层
-  await cached(b, 'skills.changed', () => existsSync(join(skillDir(b, demo.name), 'SKILL.md')));
+  // 2. B 同步到：文件夹落地、脚本可执行、工作区清单列为用户层，随 kited 带的仍是系统层
+  await cached(b, 'skill', () => existsSync(join(skillDir(b, demo.name), 'SKILL.md')));
   for (const k of [a, b]) {
     written(k, demo);
     expect(statSync(join(skillDir(k, demo.name), 'scripts/run.sh')).mode & 0o111).not.toBe(0);
     expect(statSync(join(skillDir(k, demo.name), 'SKILL.md')).mode & 0o111).toBe(0);
   }
-  const listedB = await skillsOn(b);
-  expect(listedB).toContainEqual(expect.objectContaining({ skill: demo, revision: created.body.revision }));
-  const onboard = listedB.find((entry) => entry.skill.name === onboardName)!;
+  const onboard = (await b.call('GET', `/skills/${onboardName}`)).body as SkillSnapshot;
   expect(onboard.revision).toBe(onboard.defaultRevision!);
   expect(await available(b, onB.workspace.id)).toEqual(expect.arrayContaining([
     { name: demo.name, description: '演示', layer: 'user' },
@@ -356,11 +354,8 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
   const changed = await a.call('PUT', `/skills/${demo.name}`, { expectedRevision: created.body.revision, skill: changedDemo });
   expect(changed.status).toBe(200);
   expect(changed.body.revision).not.toBe(created.body.revision);
-  await cached(b, 'skills.changed', () => readFileSync(join(skillDir(b, demo.name), resourcePath)).equals(changedResource));
-  for (const k of [a, b]) {
-    written(k, changedDemo);
-    expect(await skillsOn(k)).toContainEqual({ skill: changedDemo, revision: changed.body.revision });
-  }
+  await cached(b, 'skill', () => readFileSync(join(skillDir(b, demo.name), resourcePath)).equals(changedResource));
+  for (const k of [a, b]) written(k, changedDemo);
 
   // 4. B 改随 kited 带的 kite-onboard 正文并加附件；A 同步到后整包落地、清单里它的层变成用户层、版本不再是默认
   const edited: SkillPackage = { ...onboard.skill, files: [
@@ -371,31 +366,27 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
   expect(edited.files.length).toBeGreaterThan(1);
   const updated = await b.call('PUT', `/skills/${onboardName}`, { expectedRevision: onboard.revision, skill: edited });
   expect(updated.status).toBe(200);
-  expect(updated.body).toEqual({ skill: edited, revision: expect.any(String), defaultRevision: onboard.defaultRevision });
   expect(updated.body.revision).not.toBe(onboard.defaultRevision);
-  await cached(a, 'skills.changed', () => existsSync(join(skillDir(a, onboardName), 'SKILL.md')));
+  await cached(a, 'skill', () => existsSync(join(skillDir(a, onboardName), 'SKILL.md')));
   written(a, edited);
-  expect(await skillsOn(a)).toContainEqual({ skill: edited, revision: updated.body.revision, defaultRevision: onboard.defaultRevision });
   expect(await available(a, onA.workspace.id)).toContainEqual(expect.objectContaining({ name: onboardName, layer: 'user' }));
 
   // 5. A 恢复默认：账号里那条删掉，两边的文件夹和附件都删掉，B 的清单退回系统层
   const reset = await a.call('POST', `/skills/${onboardName}/reset`, { expectedRevision: updated.body.revision });
   expect(reset.status).toBe(200);
-  expect(reset.body).toEqual({ skill: onboard.skill, revision: onboard.defaultRevision, defaultRevision: onboard.defaultRevision });
   expect(a.daemon.kite.accountData.get('skill', onboardName)).toBeUndefined();
   await until(() => !existsSync(skillDir(a, onboardName)), 'A 恢复默认后本机文件夹删掉', 900);
-  await cached(b, 'skills.changed', () => !existsSync(skillDir(b, onboardName)));
+  await cached(b, 'skill', () => !existsSync(skillDir(b, onboardName)));
   expect(b.daemon.kite.accountData.get('skill', onboardName)).toBeUndefined();
-  expect(await skillsOn(b)).toContainEqual(expect.objectContaining({ skill: onboard.skill, revision: onboard.defaultRevision }));
   expect(await available(b, onB.workspace.id)).toContainEqual(expect.objectContaining({ name: onboardName, layer: 'system' }));
 
   // 6. B 删除 demo-skill：A 同步到后文件夹与附件删干净（也不留落盘用的临时目录）、列表不再列它
   const removed = await b.call('DELETE', `/skills/${demo.name}?expectedRevision=${changed.body.revision}`);
   expect(removed.status).toBe(200);
-  await cached(a, 'skills.changed', () => !existsSync(skillDir(a, demo.name)));
+  await cached(a, 'skill', () => !existsSync(skillDir(a, demo.name)));
   await until(() => !existsSync(skillDir(b, demo.name)), 'B 删除后本机文件夹删掉', 900);
   for (const k of [a, b]) {
-    expect((await skillsOn(k)).map((entry) => entry.skill.name)).toEqual([onboardName]);
+    expect((await skillsOn(k)).map((entry) => entry.name)).toEqual([onboardName]);
     expect(existsSync(join(k.home, 'skills')) ? readdirSync(join(k.home, 'skills')) : []).toEqual([]);
     expect(k.daemon.kite.accountData.get('skill', demo.name)).toBeUndefined();
   }
@@ -403,7 +394,7 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
   // 7. 随 kited 带的只能恢复默认，不能删
   const forbidden = await a.call('DELETE', `/skills/${onboardName}?expectedRevision=${onboard.defaultRevision}`);
   expect(forbidden.status).toBe(400);
-  expect((await skillsOn(a)).map((entry) => entry.skill.name)).toEqual([onboardName]);
+  expect((await skillsOn(a)).map((entry) => entry.name)).toEqual([onboardName]);
 }, 1000);
 
 // 真实 bug：首次同步时本机还没有此项目，之后登记已有项目不会再收到约束变更，因而留下无限制缓存。

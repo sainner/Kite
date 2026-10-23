@@ -76,19 +76,26 @@ struct SkillFileDocument: FileDocument {
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 }
 
-nonisolated struct LibrarySkill: Decodable, Identifiable, Sendable {
-    var skill: SkillPackage
+/// 资源库列表里的一个 skill：名字与版本，侧栏和窗口据此判断来源、能不能恢复默认；也是保存的结果。整包打开时按名字读（LibrarySkill）。
+nonisolated struct SkillSummary: Decodable, Identifiable, Sendable {
+    var name: String
     var revision: String
     /// 随 kited 带的 skill 默认内容的版本，自建的没有。
     var defaultRevision: String?
-    var id: String { skill.name }
+    var id: String { name }
     var isBuiltin: Bool { defaultRevision != nil }
     /// 随 kited 带的改过才能恢复默认。
     var canReset: Bool { defaultRevision.map { $0 != revision } ?? false }
 }
 
 nonisolated struct SkillCatalog: Decodable, Sendable {
-    var skills: [LibrarySkill]
+    var skills: [SkillSummary]
+}
+
+/// 一个 skill 的整包和它的版本（GET /skills/:name）。
+nonisolated struct LibrarySkill: Decodable, Sendable {
+    var skill: SkillPackage
+    var revision: String
 }
 
 /// 这个工作区的代理能加载的 skill，输入框点选用（GET /workspaces/:id/skills）。
@@ -125,9 +132,15 @@ extension AppModel {
 
     func skillDraft(_ name: String) -> SkillDraft? { skillDrafts.first { $0.id == name } }
 
-    func librarySkill(_ name: String) -> SkillPackage? { skillDraft(name)?.skill ?? savedSkill(name)?.skill }
+    func librarySkill(_ name: String) -> SkillPackage? { skillDraft(name)?.skill ?? savedSkillPackage(name)?.skill }
 
-    func savedSkill(_ name: String) -> LibrarySkill? { skillCatalog?.skills.first { $0.id == name } }
+    func savedSkill(_ name: String) -> SkillSummary? { skillCatalog?.skills.first { $0.id == name } }
+
+    /// 列表里这个 skill 读来的整包（见 loadSkillPackage）；别处改过、新的还没读到时先是旧的那版，带着它自己的版本。
+    func savedSkillPackage(_ name: String) -> LibrarySkill? {
+        guard savedSkill(name) != nil else { return nil }
+        return activeConnection?.skillPackages[name]
+    }
 
     /// Skill 页显示的那个：侧栏选中的，没选过或已不在时是第一个。
     var skillItem: String? {
@@ -138,17 +151,11 @@ extension AppModel {
 
     var skillGroup: PaneGroup? { skillItem.map { .skill($0, skillWindows) } }
 
-    /// 改动资源库里的 skill；改回与工作机上一致时不再算草稿，新建的一直是草稿。
+    /// 改动资源库里的 skill；改回与读来的整包一致时不再算草稿，新建的一直是草稿。草稿记着读来的那版，保存时据此检查冲突。
     func editSkill(_ name: String, _ change: (inout SkillDraft) -> Void) {
-        let saved = savedSkill(name)
-        let index = skillDrafts.firstIndex { $0.id == name }
-        guard var draft = index.map({ skillDrafts[$0] }) ?? saved.map({ SkillDraft(skill: $0.skill, revision: $0.revision) }) else { return }
-        change(&draft)
-        let unchanged = !draft.isNew && (saved.map { draft.skill == $0.skill && draft.revision == $0.revision } ?? false)
-        if let index {
-            if unchanged { skillDrafts.remove(at: index) } else { skillDrafts[index] = draft }
-        } else if !unchanged {
-            skillDrafts.append(draft)
+        let saved = savedSkillPackage(name)
+        editDraft(\.skillDrafts, name, from: saved.map { SkillDraft(skill: $0.skill, revision: $0.revision) }, change) { draft in
+            !draft.isNew && (saved.map { draft.skill == $0.skill && draft.revision == $0.revision } ?? false)
         }
     }
 
@@ -178,33 +185,44 @@ extension AppModel {
         if selectedSkill == name { selectedSkill = newName }
     }
 
-    /// 列表没读过才读；读过的由 skills.changed 事件和重连后的重读保持最新。
+    /// 列表没读过才读；读过的由 library.changed 事件和重连后的重读保持最新（见 libraryChanged）。
     func ensureSkills() async throws {
         guard let connection = activeConnection, connection.connected else { throw KitedError(message: "所属工作机未连接") }
         if connection.skills == nil { try await refreshSkills(of: connection) }
     }
 
     func refreshSkills(of connection: WorkerConnection, fresh: Bool = false) async throws {
-        try await refreshCatalog("/skills", of: connection, fresh: fresh, request: \.skillsRequest, into: \.skills)
+        try await refreshCatalog("/skills", of: connection, fresh: fresh, into: \.skills)
+    }
+
+    /// 打开一个 skill 时按名字读整包：读过的与列表里的版本一致就不再读；列表因为别处的修改换了版本时，窗口凭新版本再调一次。
+    /// fresh：进行中的那次可能是换版本之前发的。
+    func loadSkillPackage(_ name: String) async throws {
+        guard let connection = activeConnection, connection.connected, let saved = connection.skills?.skills.first(where: { $0.id == name }),
+              connection.skillPackages[name]?.revision != saved.revision else { return }
+        try await refreshCatalog("/skills/\(name.pathComponent)", of: connection, fresh: true, into: \.skillPackages[name])
     }
 
     /// 保存：新建的 POST，已有的带着看到的版本 PUT；随 kited 带的改回默认时工作机删掉账号里那份。
+    /// 工作机只回名字与版本，存下的内容就是这份草稿，不再读一遍。
     func saveSkill(_ draft: SkillDraft, connection: UUID) async throws {
         let path = draft.isNew ? "/skills" : "/skills/\(draft.skill.name.pathComponent)"
         let (target, result) = try await libraryRequest(path, method: draft.isNew ? "POST" : "PUT",
-            body: SkillSave(skill: draft.skill, expectedRevision: draft.revision), connection: connection, changed: Self.skillConnectionChanged, as: LibrarySkill.self)
+            body: SkillSave(skill: draft.skill, expectedRevision: draft.revision), connection: connection, changed: Self.skillConnectionChanged, as: SkillSummary.self)
         target.replaceSkill(result)
+        target.skillPackages[result.name] = LibrarySkill(skill: draft.skill, revision: result.revision)
     }
 
-    /// 随 kited 带的 skill 恢复默认：整个文件夹换回默认内容。
-    func resetSkill(_ skill: LibrarySkill, connection: UUID) async throws {
+    /// 随 kited 带的 skill 恢复默认：整个文件夹换回默认内容。读来的旧整包丢掉，窗口按新版本读默认内容，不先显示改过的那份。
+    func resetSkill(_ skill: SkillSummary, connection: UUID) async throws {
         let (target, result) = try await libraryRequest("/skills/\(skill.id.pathComponent)/reset", method: "POST",
-            body: LibraryReset(expectedRevision: skill.revision), connection: connection, changed: Self.skillConnectionChanged, as: LibrarySkill.self)
+            body: LibraryReset(expectedRevision: skill.revision), connection: connection, changed: Self.skillConnectionChanged, as: SkillSummary.self)
         target.replaceSkill(result)
+        target.skillPackages[result.name] = nil
     }
 
     /// 删掉自建的 skill；随 kited 带的只能恢复默认。
-    func deleteSkill(_ skill: LibrarySkill, connection: UUID) async throws {
+    func deleteSkill(_ skill: SkillSummary, connection: UUID) async throws {
         let (target, _) = try await libraryRequest("/skills/\(skill.id.pathComponent)?expectedRevision=\(skill.revision.pathComponent)", method: "DELETE",
             connection: connection, changed: Self.skillConnectionChanged, as: JSON.self)
         target.removeSkill(skill.id)
@@ -215,12 +233,13 @@ extension AppModel {
 
 extension WorkerConnection {
     /// 工作机存好的 skill 换进列表。
-    func replaceSkill(_ skill: LibrarySkill) {
+    func replaceSkill(_ skill: SkillSummary) {
         if let index = skills?.skills.firstIndex(where: { $0.id == skill.id }) { skills?.skills[index] = skill } else { skills?.skills.append(skill) }
         skills?.skills.sort { $0.id < $1.id }
     }
 
     func removeSkill(_ name: String) {
         skills?.skills.removeAll { $0.id == name }
+        skillPackages[name] = nil
     }
 }

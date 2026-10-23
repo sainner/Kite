@@ -83,13 +83,13 @@ extension AppModel {
         try await refreshRoles(of: connection)
     }
 
-    /// 目录没读过才读；读过的由 roles.changed 事件和重连后的重读保持最新。
+    /// 目录没读过才读；读过的由 library.changed 事件和重连后的重读保持最新（见 libraryChanged）。
     func ensureRoles(in area: WorkArea? = nil) async throws {
         if connection(for: area)?.roles == nil { try await refreshRoles(in: area) }
     }
 
     func refreshRoles(of connection: WorkerConnection, fresh: Bool = false) async throws {
-        try await refreshCatalog("/roles", of: connection, fresh: fresh, request: \.rolesRequest, into: \.roles)
+        try await refreshCatalog("/roles", of: connection, fresh: fresh, into: \.roles)
     }
 
     func saveRole(_ role: RoleDefinition, expectedRevision: String?, connection: UUID) async throws -> AgentRole {

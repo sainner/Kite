@@ -48,14 +48,9 @@ struct ThreadControls: View {
             }
         }
         .clipShape(shape)
-        .onChange(of: thread.draft, initial: true) { controls.loadSkillsIfNeeded() }
-        .task(id: model.connectionRevision) { controls.loadSkillsIfNeeded() }
         .onChange(of: thread.waiting?.id, initial: true) { old, new in swapWaiting(from: old, to: new) }
         // 输入框换成另一段字（草稿、某一项提问的「其他」）时交出焦点
-        .onChange(of: controls.answering?.waiting?.id) {
-            typing.wrappedValue = false
-            controls.loadSkillsIfNeeded()
-        }
+        .onChange(of: controls.answering?.waiting?.id) { typing.wrappedValue = false }
         // 交互玻璃的同心形状有高光退回胶囊的复现；玻璃与交互轮廓统一使用明确圆角。
         .contentShape(.interaction, shape)
         .glassEffect(.regular.interactive(), in: shape)

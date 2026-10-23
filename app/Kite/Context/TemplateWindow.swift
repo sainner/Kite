@@ -33,15 +33,8 @@ extension AppModel {
     /// 改动资源库里的模板；改回与工作机上一致时不再算草稿。
     func editTemplate(_ id: String, _ change: (inout TemplateDraft) -> Void) {
         let saved = contextTemplates?.templates.first { $0.id == id }
-        let index = templateDrafts.firstIndex { $0.id == id }
-        guard var draft = index.map({ templateDrafts[$0] })
-            ?? saved.map({ TemplateDraft(definition: $0.definition, model: $0.model, revision: $0.revision) }) else { return }
-        change(&draft)
-        let unchanged = saved.map { draft.definition == $0.definition && draft.model == $0.model && draft.revision == $0.revision } ?? false
-        if let index {
-            if unchanged { templateDrafts.remove(at: index) } else { templateDrafts[index] = draft }
-        } else if !unchanged {
-            templateDrafts.append(draft)
+        editDraft(\.templateDrafts, id, from: saved.map { TemplateDraft(definition: $0.definition, model: $0.model, revision: $0.revision) }, change) { draft in
+            saved.map { draft.definition == $0.definition && draft.model == $0.model && draft.revision == $0.revision } ?? false
         }
     }
 }
