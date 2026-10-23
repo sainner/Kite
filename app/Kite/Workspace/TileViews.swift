@@ -515,6 +515,7 @@ struct PaneHeaderControls {
 }
 
 /// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。
+/// 卡片窄于 narrowPaneWidth 时正文按窄排（narrowTile）；缩在停靠栏里不算，免得缩小时正文跟着换排法。
 struct PaneHeaderEnvironment: ViewModifier {
     let header: PaneCardHeader
     let group: PaneGroup
@@ -528,6 +529,7 @@ struct PaneHeaderEnvironment: ViewModifier {
         content
             .environment(\.paneOverflowActions, controls.inMenu ? paneWindowActions(group: group, pane: pane, model: model) : nil)
             .environment(\.paneHeaderControlsSpace, header)
+            .environment(\.narrowTile, !placement.minimized && placement.width > 0 && placement.width < WorkspacePresentation.narrowPaneWidth)
     }
 }
 

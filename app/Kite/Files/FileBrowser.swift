@@ -48,6 +48,8 @@ final class FileBrowser {
     /// 正在下载时的进度。
     private(set) var download: Progress?
     var showDirectory = true
+    /// 目录和内容并排（FilePane.sideBySide），由窗口设上：这时打开文件、网页不收起目录。
+    var sideBySide = false
     /// 目录树要滚到的目录：展开到它时设上，目录树滚过去后清掉（见 FilePane.directory）。
     var revealed: String?
     /// Markdown、HTML 显示渲染结果还是原文。
@@ -434,7 +436,7 @@ final class FileBrowser {
         }
         focus = reference
         focusID = UUID()
-        showDirectory = false
+        if !sideBySide { showDirectory = false }
         // 作为成果打开时先看渲染结果，指定了行就看原文
         rendered = reference.startLine == nil
     }
@@ -448,7 +450,7 @@ final class FileBrowser {
         if selection.page != page {
             guard await choose(path: nil, page: page) else { throw KitedError(message: directoryError ?? "无法打开网页") }
         }
-        showDirectory = false
+        if !sideBySide { showDirectory = false }
     }
 
     /// files.select 的请求：网页的 port 或 url 和其他参数平铺在一层，选网页时 path 明写 null。

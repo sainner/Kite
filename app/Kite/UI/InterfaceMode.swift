@@ -44,8 +44,16 @@ enum WorkspacePresentation: Equatable {
 
     /// 窄屏触控：空控制区接上拉与横滑只在这时。
     var isCompactTouch: Bool { self == .compact && InputMode.current.isTouch }
+
+    /// 平铺布局里窗口窄于这个宽度时，内容按窄排，见 EnvironmentValues.narrowPane。
+    static let narrowPaneWidth: CGFloat = 600
 }
 
 extension EnvironmentValues {
     @Entry var workspacePresentation: WorkspacePresentation = .tiled
+    /// 平铺布局里这个窗口窄于 narrowPaneWidth，由卡片设上（PaneHeaderEnvironment）。窗口内容读 narrowPane，不直接读它。
+    @Entry var narrowTile = false
+    /// 窗口内容按窄排：紧凑布局里的窗口，和平铺布局里窄的窗口，两种排出来一模一样（docs/视觉风格.md）。
+    /// 窗口内容里分宽窄的地方都读它；横滑换窗口、上拉 action 栏、共用标题栏这些外壳的行为仍按 workspacePresentation。
+    var narrowPane: Bool { workspacePresentation == .compact || narrowTile }
 }

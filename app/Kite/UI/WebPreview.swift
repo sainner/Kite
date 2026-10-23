@@ -162,6 +162,11 @@ struct WebPreview: View {
         }
         object.perform(show)
     }
+
+    /// 在浏览器中打开当前地址。不走环境里的 openURL：本机地址会被它接回 Kite 的窗口（见 ReferenceNavigation）。
+    func openExternally() {
+        if let url { NSWorkspace.shared.open(url) }
+    }
     #endif
 
     private func follow(_ events: some AsyncSequence<WebPage.NavigationEvent, any Error>) {
@@ -510,16 +515,16 @@ struct WebPathField: View {
 }
 
 /// 设备自己的网页视图的控制区，预览的网页画面与浏览共用：左边后退、前进、首页，中间地址栏（由窗口给），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
-/// 紧凑布局里左边只有后退，有下一页时才出现前进，首页挪到地址栏最右边（由地址栏放）；键盘升起时收起键盘顶替左边这组，
-/// 在地址栏里打字时清除输入顶替重新加载，点了地址回到打字前的样子、接着打字。
+/// 窄排（narrowPane）时左边只有后退，有下一页时才出现前进；首页和右边这组合成地址栏最右边的菜单（WebPageMenu，由地址栏放），和最前面的站点图标对称。
+/// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替右边这组（窄排时顶替菜单），点了地址回到打字前的样子、接着打字。
 struct WebPageControls<Address: View>: View {
     let browser: WebBrowser
-    let compact: Bool
     let typing: Bool
     let home: () -> Void
     let reload: () -> Void
     let clear: () -> Void
     @ViewBuilder let address: Address
+    @Environment(\.narrowPane) private var narrow
 
     var body: some View {
         HStack(spacing: Metrics.paneButtonGap) {
@@ -527,11 +532,11 @@ struct WebPageControls<Address: View>: View {
                 PaneHeaderButtonGroup {
                     ActionButton("后退", icon: "chevron.left", action: browser.back)
                         .disabled(!browser.canGoBack)
-                    if !compact || browser.canGoForward {
+                    if !narrow || browser.canGoForward {
                         ActionButton("前进", icon: "chevron.right", action: browser.forward)
                             .disabled(!browser.canGoForward)
                     }
-                    if !compact {
+                    if !narrow {
                         ActionButton("首页", icon: "house", action: home)
                     }
                 }
@@ -539,26 +544,55 @@ struct WebPageControls<Address: View>: View {
                 KeyboardDismissButton()
             }
             address
-            KeyboardSwap(active: typing) {
-                PaneHeaderButtonGroup {
-                    ActionButton("重新加载", icon: "arrow.clockwise", action: reload)
-                    #if os(macOS)
-                    // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
-                    ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
-                    // 不走环境里的 openURL：本机地址会被它接回 Kite 的窗口（见 ReferenceNavigation）。
-                    ActionButton("在浏览器中打开", icon: "arrow.up.right.square") {
-                        if let url = browser.url { NSWorkspace.shared.open(url) }
+            if !narrow {
+                KeyboardSwap(active: typing) {
+                    PaneHeaderButtonGroup {
+                        ActionButton("重新加载", icon: "arrow.clockwise", action: reload)
+                        #if os(macOS)
+                        // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
+                        ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
+                        ActionButton("在浏览器中打开", icon: "arrow.up.right.square") { browser.openExternally() }
+                            .disabled(browser.url == nil)
+                        #endif
                     }
-                    .disabled(browser.url == nil)
-                    #endif
-                }
-            } shown: {
-                PaneHeaderButtonGroup {
-                    ActionButton("清除输入", icon: "xmark", action: clear)
+                } shown: {
+                    PaneHeaderButtonGroup {
+                        ActionButton("清除输入", icon: "xmark", action: clear)
+                    }
                 }
             }
         }
         .containerValue(\.placesKeyboardButton, true)
+    }
+}
+
+/// 窄排时地址栏最右边的菜单：首页、重新加载，Mac 上还有开发者工具、在浏览器中打开。宽排时这些是控制区里的按钮，见 WebPageControls。
+/// 在地址栏里打字、键盘升起时换成清除输入。
+struct WebPageMenu: View {
+    let browser: WebBrowser
+    let typing: Bool
+    let home: () -> Void
+    let reload: () -> Void
+    let clear: () -> Void
+
+    var body: some View {
+        KeyboardSwap(active: typing) {
+            Menu {
+                MenuButton("首页", systemImage: "house", action: home)
+                MenuButton("重新加载", systemImage: "arrow.clockwise", action: reload)
+                #if os(macOS)
+                MenuButton("开发者工具", systemImage: "wrench.and.screwdriver", action: browser.inspect)
+                MenuButton("在浏览器中打开", systemImage: "arrow.up.right.square") { browser.openExternally() }
+                    .disabled(browser.url == nil)
+                #endif
+            } label: {
+                PaneHeaderButtonLabel("网页操作", systemImage: "ellipsis")
+            }
+            .foregroundStyle(Color.primary)
+            .help("网页操作")
+        } shown: {
+            ActionButton("清除输入", icon: "xmark", action: clear)
+        }
     }
 }
 

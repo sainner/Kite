@@ -97,7 +97,7 @@ private struct DeviceWebPreview: View {
     let status: PreviewStatus
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
-    @Environment(\.workspacePresentation) private var presentation
+    @Environment(\.narrowPane) private var narrow
     @State private var browser = WebBrowser()
     @State private var webFailure: String?
     @State private var selectError: String?
@@ -105,7 +105,6 @@ private struct DeviceWebPreview: View {
     /// 清除输入：每点一次，地址栏的路径回到打字前的样子。
     @State private var pathReset = 0
 
-    private var compact: Bool { presentation == .compact }
     private var port: Int? { area.livePort(status.port) }
     private var notice: PaneNotice? {
         if let error = selectError ?? (port == nil ? nil : webFailure) { return .failure(error) }
@@ -130,8 +129,8 @@ private struct DeviceWebPreview: View {
         } controls: { typing in
             WebControls(typing: typing.wrappedValue) {
                 if let port {
-                    WebPageControls(browser: browser, compact: compact, typing: typing.wrappedValue, home: { open("/", on: port) },
-                                    reload: { webFailure = nil; if !browser.reload() { reload = UUID() } }, clear: { pathReset += 1 }) {
+                    WebPageControls(browser: browser, typing: typing.wrappedValue, home: { open("/", on: port) },
+                                    reload: reloadPage, clear: { pathReset += 1 }) {
                         address(port: port, typing: typing)
                     }
                 } else {
@@ -150,12 +149,12 @@ private struct DeviceWebPreview: View {
     }
 
     /// 地址栏：站点图标、localhost:、菜单、路径，端口和路径之间不留空。还没打开端口时只有菜单。
-    /// 紧凑布局里宽度不够，省掉 localhost:，首页放在地址栏最右边。
+    /// 窄排时宽度不够，省掉 localhost:，最右边是网页操作的菜单（WebPageMenu）。
     private func address(port: Int?, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: port != nil) {
             HStack(spacing: Metrics.paneHeaderLogoGap) {
                 WebSiteIcon(icon: port == nil ? nil : browser.icon)
-                if !compact {
+                if !narrow {
                     Text("localhost:")
                         .font(Theme.body)
                         .foregroundStyle(.secondary)
@@ -167,11 +166,18 @@ private struct DeviceWebPreview: View {
                 WebPathField(path: LocalPort.displayPath(of: browser.url), typing: typing, reset: pathReset) { open($0, on: port) }
                     // 路径框压住端口按钮右边那半个按钮间距，端口的悬停高亮仍按整个按钮画
                     .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
-                if compact {
-                    ActionButton("首页", icon: "house") { open("/", on: port) }
+                if narrow {
+                    WebPageMenu(browser: browser, typing: typing.wrappedValue, home: { open("/", on: port) },
+                                reload: reloadPage, clear: { pathReset += 1 })
                 }
             }
         }
+    }
+
+    /// 重新加载；还没打开成功过的重建网页视图。
+    private func reloadPage() {
+        webFailure = nil
+        if !browser.reload() { reload = UUID() }
     }
 
     /// 地址栏里输入的路径、首页，和消息里点的链接一样在页面里打开到它（见 WorkArea.webLinks）。

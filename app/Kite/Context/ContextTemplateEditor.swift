@@ -140,11 +140,11 @@ struct ContextEditing<Content: View>: View {
 }
 
 /// 正文开头的可用变量一节：标题后是工具栏插入变量的同一个图标，按组列出，胶囊和正文里的变量同样子，后面是说明；分割线右端可以收起。
-/// 窄屏上胶囊一行、说明换到下一行，宽屏胶囊与说明并排对齐，各组共用一列宽。插入在工具栏；给了 open 时点胶囊弹出变量弹窗。
+/// 窄排（narrowPane）时胶囊一行、说明换到下一行，宽排时胶囊与说明并排对齐，各组共用一列宽。插入在工具栏；给了 open 时点胶囊弹出变量弹窗。
 struct ContextVariablePreview: View {
     let variables: [ContextScene.Variable]
     var open: ((ContextScene.Variable) -> Void)?
-    @Environment(\.workspacePresentation) private var presentation
+    @Environment(\.narrowPane) private var narrow
     /// 收起与否本机记住，各个模板和角色窗口一致。
     @AppStorage("context.variables.expanded") private var expanded = true
 
@@ -152,7 +152,7 @@ struct ContextVariablePreview: View {
         if !variables.isEmpty {
             ContextSection("可用变量", icon: ContextScene.Variable.icon, expanded: $expanded) {
                 Group {
-                    if presentation == .compact {
+                    if narrow {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(variables.grouped) { group in
                                 header(group.title)
