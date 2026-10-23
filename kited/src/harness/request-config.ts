@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { executionGrantsSchema } from '../execution/grants.ts';
 import { pluginToolSourceSchema } from '../plugins/tools.ts';
 import { contextSnapshotSchema, restoreContext } from './context/assembler.ts';
-import type { RequestSettings, RequestSnapshot, ThreadNotification, ToolDefinition } from './types.ts';
+import type { RequestSettings, RequestSnapshot, SkillMark, ThreadNotification, ToolDefinition } from './types.ts';
 
 const name = z.string().min(1);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -30,6 +30,8 @@ export const notificationSchema: z.ZodType<ThreadNotification> = z.object({
   }
 });
 export const toolDefinitionSchema = z.object({ name, description: z.string(), parameters: z.record(z.string(), z.json()) }).strict();
+/** 工具结果与通知上的 skill 标记，见 SkillMark。 */
+export const skillMarkSchema: z.ZodType<SkillMark> = z.object({ name }).strict();
 const configurationSchema = z.object({
   settings: requestSettingsSchema,
   tools: z.array(toolDefinitionSchema),

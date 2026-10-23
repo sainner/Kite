@@ -10,8 +10,8 @@ import { notificationSchema, requestSnapshot } from './request-config.ts';
 import { AUTO_COMPACT_RATIO, compactInstructions, compactionItems, compactTemplate, summaryText } from './compaction.ts';
 import type { ContextAssembly } from './context/types.ts';
 import type {
-  CompactionRequest, ContextItem, HarnessRequest, Input, JournalEvent, JournalRecord, JsonObject, ModelItem, Outcome, Phase,
-  RequestSnapshot, StopRequest, HarnessEvent, HarnessOptions, ThreadRunner, ThreadState, Tool, ToolDefinition, ToolImage,
+  CompactionRequest, ContextItem, HarnessRequest, Input, InputMaterial, JournalEvent, JournalRecord, JsonObject, ModelItem, Outcome, Phase,
+  RequestSnapshot, StopRequest, HarnessEvent, HarnessOptions, ThreadRunner, ThreadState, Tool, ToolDefinition,
 } from './types.ts';
 
 const quote = (text: string) => {
@@ -66,10 +66,11 @@ export class HarnessRunner implements ThreadRunner {
 
   get lifecycle(): 'open' | 'closing' | 'closed' { return this.closed ? 'closed' : this.closing ? 'closing' : 'open'; }
 
-  /** images 是附件里的图片交给模型的样子，由宿主在收下时给出，随这条输入记下。 */
-  async send(input: Input, images?: ToolImage[]): Promise<boolean> {
+  /** material 由宿主在收下时给出，随这条输入记下，见 InputMaterial。 */
+  async send(input: Input, material: InputMaterial = {}): Promise<boolean> {
     this.assertOpen();
     if (!inputSchema.safeParse(input).success) throw new Error('输入 id、正文和来源必须有效');
+    if (material.skill !== undefined && (input.source !== 'human' || !input.skill || !material.skill)) throw new Error('skill 正文只能随点选了 skill 的人发消息一起收下');
     const previous = this.history.inputs.get(input.id);
     if (previous) {
       if (!sameInput(previous, input)) throw new Error(`输入 id 冲突：${input.id}`);
@@ -77,7 +78,8 @@ export class HarnessRunner implements ThreadRunner {
     }
     if (this.stopping) throw new Error('会话正在停止，请稍后发送');
     if (this.history.recovery) throw new Error('会话需要先确认恢复');
-    this.record({ type: 'input.received', input, ...(images?.length ? { images } : {}) });
+    const { images, skill } = material;
+    this.record({ type: 'input.received', input, ...(images?.length ? { images } : {}), ...(skill ? { skill } : {}) });
     this.kick();
     return true;
   }

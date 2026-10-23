@@ -8,6 +8,8 @@ import { localTools, type ShellBackground, type ShellOutside } from '../executio
 import type { SecretProvider } from '../secrets.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
+import { SkillCatalog } from './context/project.ts';
+import { systemSkillSources } from './context/skills.ts';
 import type { HarnessRequest, JournalEvent, JournalRecord, RequestSettings, HarnessOptions, ThreadRunner, Tool } from './types.ts';
 
 export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'startPaused' | 'compactionFiles'> {
@@ -23,6 +25,8 @@ export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'aft
   background?: ShellBackground;
   /** 沙箱外运行的判断与申请，见 ShellOutside；独立终端没有，命令总在沙箱里。 */
   outside?: ShellOutside;
+  /** 工具用的 skill 清单，每次请求前刷新后再调 prepareRequest；不给时只有系统层与项目层。 */
+  skills?: SkillCatalog;
   prepareRequest(tools: Tool[], cursor: { afterNotification: number }): HarnessRequest;
   /** 独立终端的配置来源；kited 使用实例配置，不在 metadata 重复保存。 */
   settings?: RequestSettings;
@@ -109,8 +113,9 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
     journal = new FileJournal(join(directory, 'journal.jsonl'));
     const env = commandEnvironment(options.env);
     const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(cwd, env);
+    const skills = options.skills ?? new SkillCatalog(cwd, systemSkillSources);
     const tools = localTools({
-      cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env,
+      cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env, skills,
       ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
       ...(options.background ? { background: options.background } : {}),
       ...(options.outside ? { outside: options.outside } : {}),
@@ -121,7 +126,7 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
       onProcess(pid, running) { if (running) active.add(pid); else active.delete(pid); save(processFile, [...active]); },
     });
     const runner = new HarnessRunner({
-      cwd, journal, prepareRequest: (cursor) => options.prepareRequest(tools, cursor),
+      cwd, journal, prepareRequest: (cursor) => { skills.refresh(); return options.prepareRequest(tools, cursor); },
       onEvent: options.onEvent,
       startPaused: options.startPaused,
       afterTools: options.afterTools, afterTurn: options.afterTurn, beforeStop: options.beforeStop,

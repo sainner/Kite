@@ -48,7 +48,7 @@ import {
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
 import { defaultApprovalMode, effectiveExecution, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
-import { agentPolicy, harnessPolicy } from './execution/policy.ts';
+import { agentPolicy, harnessPolicy, withSkillReads } from './execution/policy.ts';
 import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
 import { InstanceOperations } from './operations/operations.ts';
@@ -86,8 +86,8 @@ import { Previews } from './preview/previews.ts';
 import { Simulators } from './preview/simulators.ts';
 import { previewDefinitionId } from './preview/state.ts';
 import { trustedTargets } from './preview/targets.ts';
-import { contentHash, projectSkills } from './harness/context/project.ts';
-import { loadSkill, setSkillSources } from './harness/context/skills.ts';
+import { contentHash, projectSkills, SkillCatalog } from './harness/context/project.ts';
+import { loadSkill, systemSkillsDirectory, type SkillSources } from './harness/context/skills.ts';
 import { Skills, type SkillSummary } from './skills.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
@@ -184,6 +184,8 @@ export class Kite {
   readonly contextTemplates: ContextTemplates;
   readonly roles: Roles;
   readonly skills: Skills;
+  /** skill 的来源：系统层随 kited，用户层在数据目录，机器层在用户主目录；清单、工具与沙箱放行都按它，见 SkillSources。 */
+  readonly skillSources: SkillSources;
   /** 账号级数据（资源库、项目登记与约束、凭据、各工作机的目录摘要），在工作机之间同步，见 docs/分布式架构.md。 */
   readonly accountData: AccountData;
   readonly registry: ProjectRegistry;
@@ -317,8 +319,9 @@ export class Kite {
       (home) => readModelAccounts(home, { usage: store, apiKeys: () => this.credentials.apiKeys() }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
     // 用户层的 skill 落在数据目录；机器层是这台工作机用户主目录里 Codex 与 Claude Code 的个人 skill。清单与沙箱放行都按这里的位置。
-    setSkillSources({ user: join(home, 'skills'), machine: [join(userHome(), '.agents/skills'), join(userHome(), '.claude/skills')] });
-    this.skills = new Skills(join(home, 'skills'), this.accountData);
+    const userSkills = join(home, 'skills');
+    this.skillSources = { system: systemSkillsDirectory, user: userSkills, machine: [join(userHome(), '.agents/skills'), join(userHome(), '.claude/skills')] };
+    this.skills = new Skills(userSkills, this.accountData);
     this.roles = new Roles(store);
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate, commitMessageTemplate,
@@ -339,7 +342,7 @@ export class Kite {
     this.reports = new AgentReports({
       template: (scene) => this.contextTemplates.get({ 'agent.report': agentReportContextDefinition, 'agent.workspace': agentWorkspaceContextDefinition }[scene].id,
         scene).definition,
-      variables: (threadId) => storedThreadVariables(store, threadId),
+      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources),
       open: (instanceId) => store.instance(instanceId)?.status === 'open',
       title: (instanceId) => store.instance(instanceId)?.title ?? instanceId,
       reply: async (threadId) => (await this.reply(threadId)).reply?.text,
@@ -350,7 +353,7 @@ export class Kite {
     this.monitor = new LineMonitor({ store, peers: this.peers,
       line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
-      variables: (threadId) => storedThreadVariables(store, threadId),
+      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources),
       focused: () => this.attention.devices().length > 0,
       notify: (notification) => bus.emit({ type: 'line.notification', notification }),
       changed: () => bus.emit({ type: 'line.inbox' }) });
@@ -360,12 +363,15 @@ export class Kite {
     this.monitors = new Monitors({ store, home, env: commandEnvironment(process.env),
       policy: async (target) => {
         const { workspace, checkout } = this.workspace(target.workspaceId);
-        return agentPolicy(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }), workspace.cwd,
+        // monitor 的命令与代理共用沙箱，同样读得到 skill 的文件夹；每次启动命令时按此刻的清单。
+        const base = withSkillReads(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }),
+          new SkillCatalog(workspace.cwd, this.skillSources).readable);
+        return agentPolicy(base, workspace.cwd,
           instanceExecutionChanges(target), store.workspaceConstraints(target.workspaceId)?.execution, this.secretFiles(checkout.projectId));
       },
       deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
-      variables: (threadId) => storedThreadVariables(store, threadId),
+      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources),
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       updated: (workspaceId, instanceId) => bus.emit({ type: 'monitor.changed', workspaceId, instanceId }),
@@ -424,7 +430,7 @@ export class Kite {
       collect: (instance) => this.instances.collect(instance),
       deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(terminalExitContextDefinition.id, 'terminal.exit').definition,
-      variables: (threadId) => storedThreadVariables(store, threadId),
+      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources),
       forward: (ports) => this.serving?.network?.forward(ports),
       ...(options.terminalShell ? { shell: options.terminalShell } : {}),
       ...(options.terminalPortScanMs !== undefined ? { portScanMs: options.terminalPortScanMs } : {}) });
@@ -454,11 +460,11 @@ export class Kite {
         }))),
       });
       this.titles = new ThreadTitles(store, this.lightTasks, this.contextTemplates, {
-        history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
+        skills: this.skillSources, history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
         renamed: (id) => this.workspaceNames.follow(id),
       });
     }
-    this.workspaceNames = new WorkspaceNames(store, this.lightTasks, this.contextTemplates, (id) => this.changed(id));
+    this.workspaceNames = new WorkspaceNames(store, this.lightTasks, this.contextTemplates, this.skillSources, (id) => this.changed(id));
     this.emblems = new TemplateEmblems(store, this.roles, this.contextTemplates, this.lightTasks,
       () => bus.emit({ type: 'library.changed', kind: 'role' }), (id, emblem) => this.library.write('emblem', id, emblem));
     for (const w of store.workspaces()) if (w.status === 'preparing') store.setWorkspaceStatus(w.id, 'failed');
@@ -542,7 +548,7 @@ export class Kite {
   }
   /** 这个工作区的代理能加载的 skill：四层合成后的名字、说明与所在层，输入框点选时列出来。 */
   availableSkills(workspaceId: string) {
-    return { skills: projectSkills(this.workspace(workspaceId).workspace.cwd).map(({ name, description, layer }) => ({ name, description, layer })) };
+    return { skills: projectSkills(this.workspace(workspaceId).workspace.cwd, this.skillSources).map(({ name, description, layer }) => ({ name, description, layer })) };
   }
   /** 角色保存后通知各端刷新，并随提示词更新点阵签名。 */
   private roleSaved(saved: RoleSnapshot) {
@@ -1282,12 +1288,13 @@ export class Kite {
       if (!prompt.trim() && !attachments.length) throw new KiteError('第一条消息不能为空');
       if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
       this.assertNotResolving(workspaceId);
-      const input = this.withSkill(this.withAttachments({ id: messageId ?? randomUUID(), text: prompt, source: 'human' }, workspaceId, attachments), workspace.cwd);
+      const { input, skill } = this.withSkill(this.withAttachments({ id: messageId ?? randomUUID(), text: prompt, source: 'human' }, workspaceId, attachments),
+        workspace.cwd);
       await this.snapshot(workspace, [], '线程开始');
       const t = this.newThread(workspaceId, promptText(input), choice);
       this.store.addAgent(t, this.instances.newWindow(t, windowId));
       this.threadChanged(t);
-      await this.sendInput(this.context(t.id), input);
+      await this.sendInput(this.context(t.id), input, undefined, skill);
       return this.thread(t.id);
     });
   }
@@ -1443,9 +1450,9 @@ export class Kite {
 
   agentConfig(id: string) { return this.configuration.agentConfig(id); }
   agentCapabilities(id: string) { return this.configuration.agentCapabilities(id); }
-  contextVariable(scope: VariableScope, name: string) { return previewVariable(this.store, scope, name); }
+  contextVariable(scope: VariableScope, name: string) { return previewVariable(this.store, scope, name, this.skillSources); }
   writeContextVariableFile(workspaceId: string, name: string, input: { path: string; content: string; expectedSha256: string | null }) {
-    return writeVariableFile(this.store, workspaceId, name, input);
+    return writeVariableFile(this.store, workspaceId, name, input, this.skillSources);
   }
   agentOptions(workspaceId: string) { return this.configuration.agentOptions(workspaceId); }
   configureAgent(id: string, expectedRevision: string, value: unknown) {
@@ -1558,7 +1565,7 @@ export class Kite {
     const { id, workspaceId, workspace, title } = t;
     await this.transcripts.load(t);
     const r = await openRuntime(t, {
-      home: this.home, credentials: this.credentials, repository: t.checkout.path, options: this.options,
+      home: this.home, skills: this.skillSources, credentials: this.credentials, repository: t.checkout.path, options: this.options,
       chatgptLimits: (headers) => this.modelAccounts.observeChatGPT(headers),
       events: {
         emit: (event) => {
@@ -1700,7 +1707,8 @@ export class Kite {
     return this.controlThread(id, async () => {
       check();
       const t = this.openThread(id);
-      await this.sendInput(t, this.withSkill(this.withAttachments({ id: inputId, text, ...origin }, t.workspaceId, attachments), t.workspace.cwd), check);
+      const { input, skill } = this.withSkill(this.withAttachments({ id: inputId, text, ...origin }, t.workspaceId, attachments), t.workspace.cwd);
+      await this.sendInput(t, input, check, skill);
       return { id: inputId };
     });
   }
@@ -1729,17 +1737,17 @@ export class Kite {
     this.attachments.remove(workspaceId, this.workspace(workspaceId).workspace.cwd, id);
   }
   /**
-   * 人发的消息开头是 /名字、名字是这个工作区能加载的 skill 时，按此刻的 SKILL.md 把正文固定在输入上，随消息交给模型；
-   * 不是 skill 名字的照普通文字交给模型。
+   * 人发的消息开头是 /名字、名字是这个工作区能加载的 skill 时，输入上记下名字，按此刻的 SKILL.md 固定正文（skill），
+   * 随消息交给模型（见 InputMaterial）；不是 skill 名字的照普通文字交给模型。
    */
-  private withSkill(input: Input, cwd: string): Input {
-    if (input.source !== 'human') return input;
+  private withSkill(input: Input, cwd: string): { input: Input; skill?: string } {
+    if (input.source !== 'human') return { input };
     const match = /^\/([a-z0-9][a-z0-9._-]*)(?=\s|$)/i.exec(input.text);
-    if (!match) return input;
+    if (!match) return { input };
     let skill;
-    try { skill = projectSkills(cwd).find((entry) => entry.name === match[1]); } catch { return input; }
-    if (!skill) return input;
-    return { ...input, skill: { name: skill.name, text: loadSkill(skill) } };
+    try { skill = projectSkills(cwd, this.skillSources).find((entry) => entry.name === match[1]); } catch { return { input }; }
+    if (!skill) return { input };
+    return { input: { ...input, skill: skill.name }, skill: loadSkill(skill) };
   }
   /** 给人发的消息挂上附件，按存好的那份固定名字、类型与尺寸。 */
   private withAttachments(input: Input, workspaceId: string, ids: string[]): Input {
@@ -1747,7 +1755,8 @@ export class Kite {
     if (input.source !== 'human') throw new KiteError('只有人发的消息能带附件');
     return { ...input, attachments: this.attachments.refs(workspaceId, ids) };
   }
-  private async sendInput(thread: ThreadContext, input: Input, check: () => void = () => {}): Promise<void> {
+  /** skill 是点选的 skill 收下时固定的正文，见 withSkill。 */
+  private async sendInput(thread: ThreadContext, input: Input, check: () => void = () => {}, skill?: string): Promise<void> {
     this.assertNotResolving(thread.workspaceId, thread.id);
     const runner = await this.runner(thread);
     check();
@@ -1756,7 +1765,7 @@ export class Kite {
     // 先登记交代方再交给线程：回合可能在 send 返回之前就收尾。
     const undo = this.reports.received(thread.id, input);
     let accepted: boolean;
-    try { accepted = await runner.send(input); }
+    try { accepted = await runner.send(input, skill); }
     catch (error) { undo(); throw error; }
     // 同一 ID 重发（操作重试）不是新的交代，收下时该做的第一次已经做过。
     if (!accepted) { undo(); return; }
@@ -1894,7 +1903,7 @@ export class Kite {
       if (pending.length) throw new ChildrenPending(pending.map((child) => ({ id: child.id, name: child.name })));
       const proposing = !!project.remote && this.registry.get(project.id)?.integration === 'pullRequest';
       // 提交说明要等辅助模型，在检出锁外起草，不挡同一项目的其他工作区。
-      const message = await draftCommit({ tasks: this.lightTasks, templates: this.contextTemplates, model });
+      const message = await draftCommit({ tasks: this.lightTasks, templates: this.contextTemplates, skills: this.skillSources, model });
       const merged = await this.serial(`checkout:${checkout.id}`, (): Promise<AdoptResult | Proposal> => proposing
         ? this.pushProposal(model, message, afterResolution) : this.mergeIntoMainline(w, checkout, message, afterResolution));
       // PR 的起草与开 PR 要等辅助模型与 GitHub，放在检出锁外，不挡同一项目的其他工作区。
@@ -1977,7 +1986,7 @@ export class Kite {
     if (repo && pull.number === undefined) {
       // 起草要等辅助模型：没绑定 GitHub 时 openPullRequest 不会调用它
       const opened = await this.github.openPullRequest(repo.owner, repo.repo, { head: pull.branch, base },
-        () => draftPullRequest({ tasks: this.lightTasks, templates: this.contextTemplates, base: target, model }));
+        () => draftPullRequest({ tasks: this.lightTasks, templates: this.contextTemplates, base: target, skills: this.skillSources, model }));
       if (opened) this.store.setWorkspacePullRequest(id, pull = { ...pull, ...opened });
     }
     this.changed(id);

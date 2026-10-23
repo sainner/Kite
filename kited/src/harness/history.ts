@@ -1,6 +1,6 @@
 /** Journal 的同步投影：请求、工具与压缩段共享同一份历史状态。 */
 import { restoreContext } from './context/assembler.ts';
-import { roughTokens } from './compaction.ts';
+import { roughTokens, SKILL_LOADED } from './compaction.ts';
 import { sameInput } from './input.ts';
 import type { ContextItem, Input, JournalRecord, ModelItem, Outcome, Recovery, ToolDefinition, ToolImage, ToolResult } from './types.ts';
 
@@ -62,10 +62,16 @@ export function replayUnits(records: readonly JournalRecord[]): ContextUnit[] {
 /** 输入在上下文里的条目，带着收下时定下的附件图片。 */
 export const inputItem = (input: Input, images?: ToolImage[]): ContextItem => ({ type: 'input', input, ...(images?.length ? { images } : {}) });
 
+/** /名字 点选的 skill 收下时固定的正文：跟在那条输入后面的一条观察通知，带 skill 标记，压缩按它重附。 */
+export const skillItem = (inputId: string, name: string, text: string): ContextItem => ({ type: 'notification', text, skill: { name },
+  notification: { id: `${inputId}:skill`, kind: SKILL_LOADED, source: 'host.input', authority: 'observation' } });
+
 export class HarnessHistory {
   readonly inputs = new Map<string, Input>();
   /** 收下输入时定下的附件图片，见 ContextItem 的 input。 */
   readonly images = new Map<string, ToolImage[]>();
+  /** 收下输入时固定的 skill 正文，见 InputMaterial。 */
+  readonly skills = new Map<string, string>();
   readonly pending = new Set<string>();
   readonly requests = new Map<string, SavedRequest>();
   /** 完整快照留在 journal；运行中只保留固定前缀和当前有效正文。 */
@@ -115,6 +121,7 @@ export class HarnessHistory {
         if (this.inputs.has(row.input.id)) throw new Error('记录包含重复输入');
         this.inputs.set(row.input.id, structuredClone(row.input));
         if (row.images?.length) this.images.set(row.input.id, row.images);
+        if (row.skill) this.skills.set(row.input.id, row.skill);
         this.pending.add(row.input.id);
         if (!this.recovery) this.waitingForResume = false;
         return;
@@ -343,7 +350,7 @@ export class HarnessHistory {
       if ('feedback' in segment) { units.push({ items: [{ type: 'feedback', text: segment.feedback }] }); continue; }
       if ('imported' in segment) { units.push({ items: segment.imported, imported: segment.source }); continue; }
       const items: ContextItem[] = [...segment.notifications];
-      for (const input of segment.inputs) items.push(inputItem(input, this.images.get(input.id)));
+      for (const input of segment.inputs) items.push(...this.inputItems(input));
       for (const item of segment.items) items.push({ type: 'output', item });
       for (const item of segment.items) {
         if (!item.call) continue;
@@ -355,11 +362,18 @@ export class HarnessHistory {
     return units;
   }
 
+  /** 输入在上下文里的条目；点选了 skill 的，后面跟着收下时固定的正文。 */
+  private inputItems(input: Input): ContextItem[] {
+    const skill = this.skills.get(input.id);
+    return [inputItem(input, this.images.get(input.id)),
+      ...(skill && input.source === 'human' && input.skill ? [skillItem(input.id, input.skill, skill)] : [])];
+  }
+
   /** 实测用量加之后新增内容的粗估；压缩或撤销之后还没有实测时，整段粗估。 */
   estimate(instructions: string, tools: ToolDefinition[], extra: ContextItem[]): number {
     const changed = this.contextChanged?.seq ?? 0;
     const measured = this.segments.findLast((segment): segment is SavedRequest => 'usage' in segment && segment.usage !== undefined && segment.seq > changed);
-    const pending = [...this.pending].map((id) => inputItem(this.inputs.get(id)!, this.images.get(id)));
+    const pending = [...this.pending].flatMap((id) => this.inputItems(this.inputs.get(id)!));
     if (!measured) return roughTokens(instructions) + roughTokens(JSON.stringify(tools)) + roughTokens([...this.items(), ...pending, ...extra]);
     const results = measured.items.flatMap((item): ContextItem[] => {
       const result = item.call && measured.results.get(item.call.id);

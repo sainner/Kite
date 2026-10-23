@@ -2,7 +2,6 @@
 import { randomUUID } from 'node:crypto';
 import { assembleContext, bindContext, sceneValues } from './context/assembler.ts';
 import { fileChangesContext } from './context/notifications.ts';
-import { isSkillText, skillBlocks } from './context/skills.ts';
 import type { ContextDefinition, ContextValues } from './context/types.ts';
 import type { ContextItem, ModelItem } from './types.ts';
 
@@ -33,8 +32,10 @@ const IMAGE_TOKENS = 1_000;
 /** 压缩后重附已加载的 skill 正文：每个最多这么多 token，合计不超过总额；与 Claude Code 的做法一致。 */
 const SKILL_REATTACH_TOKENS = 5_000;
 const SKILL_REATTACH_TOTAL = 25_000;
-/** 重附通知的种类；嵌套压缩时它也是「加载过哪些 skill」的来源。 */
-export const SKILLS_LOADED = 'skills.loaded';
+/** 一段 skill 正文作为通知交给模型时的种类：/名字 点选跟在输入后面的，与压缩后重附的；都带 skill 标记。 */
+export const SKILL_LOADED = 'skill.loaded';
+/** 重附的正文前面那条说明。 */
+const SKILLS_REATTACHED = 'skills.reattached';
 
 /** 粗略估算：按 UTF-8 字节的三分之一计，偏向高估；图片按固定值，加密推理不计入。 */
 export function roughTokens(value: string | ContextItem[]): number {
@@ -62,44 +63,36 @@ function truncate(text: string, tokens: number, note = '\n……（后文已截�
 }
 
 /**
- * 范围里加载过的 skill 正文，同名取最近一次：skill 工具加载正文的成功结果（按 file 读单个文件的不算）、人发消息开头 /名字 点选带上的正文，
- * 以及上一次压缩重附的（嵌套压缩时旧通知在范围里）。按最近加载的在前。
+ * 范围里交给过模型的 skill 正文，同名取最近一次，按最近的在前。只看 skill 标记（SkillMark）：带标记的成功工具结果（skill 工具加载的）
+ * 与带标记的通知（/名字 点选跟在输入后面的、上一次压缩重附的），正文就是那一条的文字。
  */
 function loadedSkills(range: ContextItem[]): Array<{ name: string; text: string }> {
-  const calls = new Map<string, string>();
   const latest = new Map<string, string>();
   const touch = (name: string, text: string) => { latest.delete(name); latest.set(name, text); };
   for (const item of range) {
-    if (item.type === 'output' && item.item.call?.name === 'skill') {
-      const args = item.item.call.arguments;
-      if (args && typeof args === 'object' && !Array.isArray(args) && typeof args.name === 'string' && args.file === undefined) calls.set(item.item.call.id, args.name);
-    } else if (item.type === 'tool_result') {
-      const name = calls.get(item.callId);
-      if (name && item.result.status === 'success' && isSkillText(item.result.output)) touch(name, item.result.output);
-    } else if (item.type === 'input') {
-      if (item.input.source === 'human' && item.input.skill) touch(item.input.skill.name, item.input.skill.text);
-    } else if (item.type === 'notification' && item.notification.kind === SKILLS_LOADED) {
-      // 上次重附的按最近的在前排着，倒过来登记才保持先后。
-      for (const block of skillBlocks(item.text).reverse()) touch(block.name, block.text);
-    }
+    if (item.type === 'tool_result' && item.result.skill && item.result.status === 'success') touch(item.result.skill.name, item.result.output);
+    else if (item.type === 'notification' && item.skill) touch(item.skill.name, item.text);
   }
   return [...latest].reverse().map(([name, text]) => ({ name, text }));
 }
 
-/** 重附通知的正文：最近加载的优先，每个截到单个上限，总额用完就不再附。没有加载过时为 undefined。 */
-function skillsReattachment(range: ContextItem[]): string | undefined {
-  const skills = loadedSkills(range);
-  if (!skills.length) return undefined;
-  const blocks: string[] = [];
+/**
+ * 重附的通知：一条说明，接着每个 skill 一条带标记的正文，嵌套压缩时照样认得出。最近加载的优先占预算，每个截到单个上限，
+ * 总额用完就不再附；正文按原来加载的先后排，嵌套压缩再认时先后不变。没有加载过时为空。
+ */
+function skillsReattachment(range: ContextItem[]): ContextItem[] {
+  const notification = (kind: string) => ({ id: randomUUID(), kind, source: 'host.compaction', authority: 'observation' as const });
+  const bodies: ContextItem[] = [];
   let budget = SKILL_REATTACH_TOTAL;
-  for (const skill of skills) {
+  for (const skill of loadedSkills(range)) {
     const allowance = Math.min(SKILL_REATTACH_TOKENS, budget);
     if (allowance <= 0) break;
-    const text = truncate(skill.text, allowance, '\n……（正文过长，后面截掉了；要看全文再用 skill 工具加载）\n</skill>');
-    blocks.push(text);
+    const text = truncate(skill.text, allowance, '\n……（正文过长，后面截掉了；要看全文再用 skill 工具加载）');
+    bodies.unshift({ type: 'notification', notification: notification(SKILL_LOADED), text, skill: { name: skill.name } });
     budget -= roughTokens(text);
   }
-  return ['以下 skill 在被压缩的那段对话里加载过，正文重附在这里。这些是你之前已经读过的材料，不要因为再看到就重新执行一遍，手头的任务按摘要接着做。', ...blocks].join('\n\n');
+  return bodies.length ? [{ type: 'notification', notification: notification(SKILLS_REATTACHED),
+    text: '以下 skill 在被压缩的那段对话里加载过，正文重附在后面。这些是你之前已经读过的材料，不要因为再看到就重新执行一遍，手头的任务按摘要接着做。' }, ...bodies] : [];
 }
 
 /** 摘要请求只取消息正文；适配器格式以订阅 Responses 为准。 */
@@ -158,8 +151,7 @@ export function compactionItems(options: {
   if (options.files) items.push({ type: 'notification',
     text: assembleContext(fileChangesContext(options.files.changes, '包括 agent 自己与其他来源的改动', values, options.files.definition)).instructions,
     notification: { id: randomUUID(), kind: 'files.changed', source: 'host.compaction', authority: 'observation' } });
-  const skills = skillsReattachment(range);
-  if (skills) items.push({ type: 'notification', text: skills, notification: { id: randomUUID(), kind: SKILLS_LOADED, source: 'host.compaction', authority: 'observation' } });
+  items.push(...skillsReattachment(range));
   const later = new Set(after.flatMap((item) => item.type === 'notification' ? [item.notification.kind] : []));
   const latest = new Map<string, ContextItem>();
   for (const item of range) {

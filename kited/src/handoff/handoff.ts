@@ -15,11 +15,11 @@ import { engineAttachmentTypes } from '../claude/context-filter/hooks/register.t
 import { acquireClaudeLock } from '../claude/host.ts';
 import { readClaudeControl, saveClaudeControl, type ClaudeControl } from '../claude/control.ts';
 import { CLAUDE_TOOL_SEARCH, claudeImage, claudeToolResult, claudeToolResultContent, claudeUserContent, structuredClaudeTool } from '../claude/tools.ts';
-import { modelText } from '../harness/input.ts';
+import { modelText, withSkillText } from '../harness/input.ts';
 import { TOOL_SEARCH } from '../harness/tool-search.ts';
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
-import { inputItem, outcomeFeedback, recoveryFeedback, replayUnits } from '../harness/history.ts';
+import { inputItem, outcomeFeedback, recoveryFeedback, replayUnits, skillItem } from '../harness/history.ts';
 import { messageTexts } from '../harness/responses.ts';
 import { appendThreadJournal } from '../harness/thread-host.ts';
 import type { ContextItem, Input, Json, JsonObject, JournalRecord, ModelItem, ToolImage, ToolResult } from '../harness/types.ts';
@@ -119,6 +119,13 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
   // Kite 发出的输入，原生行的 uuid（回合中途是排队附件的 source_uuid）就是发送时的 sdkId；
   // 对不上的是上游自己以 user 角色送达模型的内容（中断说明等），没有包装，按 Kite 来源保留。
   const input = (sdkId: string, text: string, human: boolean): Input => inputs.get(sdkId) ?? { id: sdkId, text, source: human ? 'human' : 'kite' };
+  // 点选了 skill 的输入，Claude 的原生行里正文接在输入后面；换回 harness 时照 harness 的样子另起一条跟在输入后面。
+  const skills = new Map(control.inputs.flatMap((entry) => entry.skill ? [[entry.sdkId, entry.skill] as const] : []));
+  const received = (sdkId: string, text: string, human: boolean, images: ToolImage[]): ContextItem[] => {
+    const value = input(sdkId, text, human);
+    const skill = skills.get(sdkId);
+    return [inputItem(value, images), ...(skill && value.source === 'human' && value.skill ? [skillItem(value.id, value.skill, skill)] : [])];
+  };
   const calls = new Map<string, string>();
   const translate = (entry: ClaudeEntry): ContextItem[] => {
     const items: ContextItem[] = [];
@@ -140,7 +147,7 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
         else throw new Error(`不能翻译 Claude 用户消息中的 ${String(block.type)} 内容`);
       }
       // 上游的中断说明等也以 user 角色送达模型，没有宿主输入记录的按 Kite 来源保留。
-      if (texts.length) items.push(inputItem(input(entry.uuid!, texts.join(''), object(entry.origin).kind === 'human'), images));
+      if (texts.length) items.push(...received(entry.uuid!, texts.join(''), object(entry.origin).kind === 'human', images));
     } else if (entry.type === 'assistant') {
       // API 错误是本地记录，不进入模型请求。
       if (entry.isApiErrorMessage) return items;
@@ -166,7 +173,7 @@ export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, 
         // 带图片的排队消息，prompt 是正文块后面跟图片块。
         const blocks = Array.isArray(attachment.prompt) ? attachment.prompt.map(object) : [{ type: 'text', text: String(attachment.prompt) }];
         const text = blocks.filter((block) => block.type === 'text').map((block) => String(block.text)).join('');
-        items.push(inputItem(input(String(attachment.source_uuid ?? entry.uuid), text, object(attachment.origin).kind === 'human'),
+        items.push(...received(String(attachment.source_uuid ?? entry.uuid), text, object(attachment.origin).kind === 'human',
           blocks.filter((block) => block.type === 'image').map((block) => claudeImage(block, '排队消息'))));
       } else if (!skippedAttachments.has(attachment.type)) throw new Error(`不能翻译 Claude 附件 ${String(attachment.type)}`);
     } else if (entry.type === 'system') {
@@ -191,11 +198,11 @@ type ClaudeTarget = { nativeId: string; cwd: string; model: string; parent: stri
 
 /**
  * 输入在 Claude 会话里的原生条目：回合开头是 user 消息，回合中途（跟在工具结果之后）是排队的命令附件；正文按来源包装，
- * 附件里的图片跟在正文后面（排队命令的 prompt 同样可以是内容块）。
+ * 点选的 skill 正文与 Claude 宿主一样接在后面，附件里的图片跟在正文后面（排队命令的 prompt 同样可以是内容块）。
  */
-function claudeInput(input: Input, midTurn: boolean, images?: ToolImage[]): { type: string; [key: string]: unknown } {
+function claudeInput(input: Input, midTurn: boolean, images?: ToolImage[], skill?: string): { type: string; [key: string]: unknown } {
   const origin = input.source === 'human' ? { origin: { kind: 'human' } } : {};
-  const content = claudeUserContent(modelText(input), images);
+  const content = claudeUserContent(withSkillText(modelText(input), skill), images);
   return midTurn
     ? { type: 'attachment', attachment: { type: 'queued_command', prompt: content, source_uuid: randomUUID(), commandMode: 'prompt',
       ...origin, humanTurn: input.source === 'human' } }
@@ -376,6 +383,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
   const importId = randomUUID();
   const inputs = new Map<string, Input>();
   const images = new Map<string, ToolImage[]>();
+  const skills = new Map<string, string>();
   const contexts = new Map<string, string>();
   let notificationCursor = 0;
   let instructions: string | undefined;
@@ -383,6 +391,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
     if (row.type === 'input.received') {
       inputs.set(row.input.id, row.input);
       if (row.images) images.set(row.input.id, row.images);
+      if (row.skill) skills.set(row.input.id, row.skill);
     }
     if (row.type === 'context.prepared') contexts.set(row.snapshot.id, restoreContext(row.snapshot).instructions);
     if (row.type === 'context.imported') notificationCursor = Math.max(notificationCursor, row.notificationCursor);
@@ -436,7 +445,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add(claudeInput(input, false, images.get(id)));
+            add(claudeInput(input, false, images.get(id), skills.get(id)));
           }
           for (const note of notes) notice('UserPromptSubmit', note);
         } else {
@@ -444,7 +453,7 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
           for (const id of row.inputIds) {
             const input = inputs.get(id)!;
             inputIds.push(id);
-            add(claudeInput(input, true, images.get(id)));
+            add(claudeInput(input, true, images.get(id), skills.get(id)));
           }
         }
         request = { id: row.requestId, blocks: [], results: new Map() };

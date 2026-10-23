@@ -3,6 +3,7 @@ import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { diffReferenceSchema } from '../workspace/file-diffs.ts';
 import { loadedText } from '../harness/tool-search.ts';
+import { skillMarkSchema } from '../harness/request-config.ts';
 import type { Json, Tool, ToolImage, ToolResult } from '../harness/types.ts';
 
 /** Claude Code 内置的按需加载工具，结果是加载到的工具引用。 */
@@ -40,17 +41,19 @@ export function claudeToolResult(block: Record<string, any>, structured: boolean
   const images = parts.filter((part) => part.type === 'image').map((part) => claudeImage(part, '工具结果'));
   let status: ToolResult['status'] = block.is_error ? 'error' : 'success';
   let diff: ToolResult['diff'];
+  let skill: ToolResult['skill'];
   if (structured) {
     try {
       const result = object(JSON.parse(output));
       if (typeof result.output === 'string') {
         output = result.output;
         diff = diffReferenceSchema.safeParse(result.diff).data;
+        skill = skillMarkSchema.safeParse(result.skill).data;
         if (['success', 'error', 'not_executed', 'unknown'].includes(result.status)) status = result.status;
       }
     } catch { /* 参数校验失败时保留上游错误文本。 */ }
   }
-  return { status, output, ...(diff ? { diff } : {}), ...(images.length ? { images } : {}) };
+  return { status, output, ...(diff ? { diff } : {}), ...(skill ? { skill } : {}), ...(images.length ? { images } : {}) };
 }
 
 /**

@@ -6,6 +6,7 @@
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
 import { workspaceVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
+import type { SkillSources } from './harness/context/skills.ts';
 import type { ContextTemplates } from './context-templates.ts';
 import type { LightTasks } from './light-tasks.ts';
 import type { AgentInstance } from './model.ts';
@@ -42,7 +43,7 @@ export class WorkspaceNames {
   private closed = false;
 
   /** tasks 为空时（没启用轻任务）只做一个代理时的跟随。 */
-  constructor(private store: Store, private tasks: LightTasks | undefined, private templates: ContextTemplates,
+  constructor(private store: Store, private tasks: LightTasks | undefined, private templates: ContextTemplates, private skills: SkillSources,
     private changed: (workspaceId: string) => void) {}
 
   /**
@@ -108,7 +109,7 @@ export class WorkspaceNames {
     // 每次生成读取已保存的模板；本次展开后固定，不受后续编辑影响。
     const template = this.templates.get(workspaceNameTemplate.id, 'workspace.naming');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...workspaceVariables(model),
+      ...workspaceVariables(model, this.skills),
       ...sceneValues<'workspace.naming'>({ 'naming.current': JSON.stringify(fresh ? '' : model.workspace.name),
         'naming.agents': JSON.stringify(agents.map((agent) => agent.title)) }),
     }));

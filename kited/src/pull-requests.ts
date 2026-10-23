@@ -1,6 +1,7 @@
 /** 提交 PR 时的标题与说明：启用了辅助生成时按模板起草，没有启用或起草失败时用工作区名称，见 docs/项目与远程仓库.md「工作区与集成」。 */
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
+import type { SkillSources } from './harness/context/skills.ts';
 import type { ContextTemplates } from './context-templates.ts';
 import { workspaceVariables } from './context-variables.ts';
 import type { LightTasks } from './light-tasks.ts';
@@ -27,7 +28,7 @@ export const pullRequestTemplate: ContextDefinition = {
 export const clip = (text: string, limit = 6_000) => text.length > limit ? `${text.slice(0, limit)}\n…` : text;
 
 /** base 是 PR 的目标（远程主线的引用）；工作树的 HEAD 已合好主线。 */
-export async function draftPullRequest(options: { tasks?: LightTasks; templates: ContextTemplates; base: string;
+export async function draftPullRequest(options: { tasks?: LightTasks; templates: ContextTemplates; base: string; skills: SkillSources;
   model: { machine: Machine; project: Project; workspace: Workspace } }): Promise<{ title: string; body: string }> {
   const fallback = { title: options.model.workspace.name, body: '' };
   if (!options.tasks) return fallback;
@@ -37,7 +38,7 @@ export async function draftPullRequest(options: { tasks?: LightTasks; templates:
       git(worktree, ['diff', '--stat=120', `${options.base}...HEAD`])]);
     const template = options.templates.get(pullRequestTemplate.id, 'workspace.pull_request');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...workspaceVariables(options.model),
+      ...workspaceVariables(options.model, options.skills),
       ...sceneValues<'workspace.pull_request'>({ 'pull_request.commits': clip(commits.trim() || '（没有）'), 'pull_request.files': clip(files.trim() || '（没有）') }),
     }));
     const { text } = await options.tasks.generateText({ purpose: 'workspace.pull_request', model: template.model!, instructions, input: input!,

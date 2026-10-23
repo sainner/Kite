@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { diffReferenceSchema } from '../workspace/file-diffs.ts';
 import { contextSnapshotSchema } from './context/assembler.ts';
 import { inputSchema } from './input.ts';
-import { notificationSchema, requestSnapshotSchema, toolDefinitionSchema } from './request-config.ts';
+import { notificationSchema, requestSnapshotSchema, skillMarkSchema, toolDefinitionSchema } from './request-config.ts';
 import type { Journal, JournalEvent, JournalRecord } from './types.ts';
 
 const id = z.string().min(1);
@@ -16,7 +16,7 @@ const call = z.object({ id, name: id, arguments: z.json() });
 const item = z.object({ id, raw, format: z.enum(['anthropic', 'deepseek']).optional(), call: call.optional() });
 const images = z.array(z.object({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']), data: z.string().min(1) })).optional();
 const result = z.object({ status: z.enum(['success', 'error', 'not_executed', 'unknown']), output: z.string(), diff: diffReferenceSchema.optional(),
-  images, tools: z.array(toolDefinitionSchema).optional() });
+  images, tools: z.array(toolDefinitionSchema).optional(), skill: skillMarkSchema.optional() });
 const outcome = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
   z.object({ kind: z.literal('failed'), message: z.string() }),
@@ -28,10 +28,10 @@ const contextItem = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tool_result'), callId: id, result }),
   z.object({ type: z.literal('feedback'), text: z.string() }),
   z.object({ type: z.literal('notification'), text: z.string(), notification: z.object({ id, sequence: z.number().int().optional(), kind: id,
-    source: id, authority: z.enum(['instruction', 'observation']) }) }),
+    source: id, authority: z.enum(['instruction', 'observation']) }), skill: skillMarkSchema.optional() }),
 ]);
 const event = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('input.received'), input, images }),
+  z.object({ type: z.literal('input.received'), input, images, skill: z.string().min(1).optional() }),
   z.object({ type: z.literal('input.cancelled'), inputId: id }),
   z.object({ type: z.literal('thread.stopped'), id, returned: z.array(input) }),
   z.object({ type: z.literal('turn.started'), turnId: id }),

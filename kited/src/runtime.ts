@@ -16,7 +16,8 @@ import { harnessModel } from './harness/adapters.ts';
 import { openThreadHost } from './harness/thread-host.ts';
 import { agentPolicy, harnessPolicy } from './execution/policy.ts';
 import { effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
-import { projectContext } from './harness/context/project.ts';
+import { projectContext, SkillCatalog } from './harness/context/project.ts';
+import { skillsBinding, type SkillSources } from './harness/context/skills.ts';
 import { threadVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
@@ -36,7 +37,8 @@ export interface Runtime {
   readonly state: RunnerState | Phase;
   readonly busy: boolean;
   readonly recovery?: Recovery;
-  send(input: Input): Promise<boolean>;
+  /** skill 是 /名字 点选的 skill 收下时固定的正文（名字在 input.skill），见 InputMaterial。 */
+  send(input: Input, skill?: string): Promise<boolean>;
   interrupt(request?: StopRequest): Promise<Input[]>;
   shutdown(): Promise<void>;
   resume?(): Promise<void>;
@@ -83,6 +85,8 @@ export interface RuntimeEvents {
 
 export interface RuntimeHost {
   home: string;
+  /** Kite 的 skill 来源（用户层与机器层的位置），见 SkillSources。 */
+  skills: SkillSources;
   credentials?: Credentials;
   /** 检出主目录，用来解析 Git 元数据。 */
   repository: string;
@@ -134,6 +138,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const { id, nativeId, title, runtime, project: { id: projectId }, workspace: { cwd, id: workspaceId } } = s;
   if (runtime !== 'claude' && runtime !== 'harness') throw new KiteError(`不支持的会话后端：${runtime}`, 409);
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
+  // 两个宿主在请求边界刷新它；工具、沙箱放行和这里给代理的清单用同一份。
+  const skills = new SkillCatalog(cwd, host.skills);
+  const variables = (current: ThreadContext) => ({ ...threadVariables(current, host.toolConstraint(), host.executionConstraint(), host.skills),
+    'project.skills': () => skillsBinding(skills.skills) });
   const policy = () => agentPolicy(basePolicy, cwd, instanceExecutionChanges(host.current()), host.executionConstraint(), host.secretFiles());
   const credentials = host.credentials;
   const secrets = credentials ? {
@@ -146,7 +154,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const attachments = new Attachments(home);
   const images = (input: Input) => input.source === 'human' && input.attachments ? attachments.images(workspaceId, input.attachments) : [];
   if (runtime === 'claude') {
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork, images,
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork, images, skills,
       ...(host.background ? { background: host.background } : {}),
       ...(host.outside ? { outside: host.outside } : {}),
       prepare(afterNotification) {
@@ -154,28 +162,28 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const { agent, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
         const updates = host.notifications(afterNotification);
-        const variables = threadVariables(current, host.toolConstraint(), host.executionConstraint());
-        const instructions = assembleContext(projectContext(agent.context, variables)).instructions;
-        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, variables, host.contextUpdateTemplate())).instructions,
+        const values = variables(current);
+        const instructions = assembleContext(projectContext(agent.context, values)).instructions;
+        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, values, host.contextUpdateTemplate())).instructions,
           tools: [...operations.tools, ...plugins], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
       compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range),
-        variables: () => threadVariables(host.current(), host.toolConstraint(), host.executionConstraint()) },
+        variables: () => variables(host.current()) },
     });
   }
   const inputs = new Map<string, string>();
   let busy = false;
   const thread = await openThreadHost({
-    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, askNetwork: host.askNetwork,
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, askNetwork: host.askNetwork, skills,
     ...(host.background ? { background: host.background } : {}),
     ...(host.outside ? { outside: host.outside } : {}),
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
       const execution = effectiveExecution(instanceExecutionChanges(current), host.executionConstraint()).grants;
       const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
-      const variables = threadVariables(current, host.toolConstraint(), host.executionConstraint());
+      const values = variables(current);
       // 声明顺序取代理插件的工具目录，与实例配置一致。
       const available = [...tools, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
@@ -189,7 +197,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下。
         blocked: (name) => (agentTools as readonly string[]).includes(name) && !constraintAllows(host.toolConstraint(), name) ? `项目约束已禁用 ${name}` : undefined,
         toolDefinitions: [...declared, search].map(({ name, description, parameters }) => ({ name, description, parameters })),
-        instructions: projectContext(agent.context, variables), variables,
+        instructions: projectContext(agent.context, values), variables: values,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
         settings: { model: agent.model, contextWindow,
@@ -227,7 +235,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   return {
     get state() { return thread.runner.state.phase; }, get busy() { return thread.runner.state.busy; },
     get recovery() { return thread.runner.state.recovery; },
-    send: (input) => thread.runner.send(input, images(input)),
+    send: (input, skill) => thread.runner.send(input, { images: images(input), ...(skill ? { skill } : {}) }),
     interrupt: (request) => thread.runner.interrupt(request), shutdown: () => thread.close(),
     resume: async () => {
       if (thread.runner.state.recovery) throw new KiteError('请先确认旧执行已停止，再恢复会话', 409);

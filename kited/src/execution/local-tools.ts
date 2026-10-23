@@ -6,11 +6,12 @@ import { applyDiff } from '@openai/agents-core/utils';
 import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
 import { within } from '../paths.ts';
-import { projectSkills } from '../harness/context/project.ts';
-import { loadSkill } from '../harness/context/skills.ts';
+import { SkillCatalog } from '../harness/context/project.ts';
+import { loadSkill, systemSkillSources } from '../harness/context/skills.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
+import { withSkillReads } from './policy.ts';
 import { assertFileAccess, canonicalPath, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { secretBindings, secretRequest, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
@@ -64,34 +65,37 @@ diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
 
 const skillDescription = '加载一个 skill：按名字取它的 SKILL.md 正文（去掉头部元数据），连同文件夹位置和里面的文件清单，之后按正文做；'
-  + '同一个 skill 内容没变时再加载只回一句已加载过。文件夹里的其他文件用 read 按绝对路径读，脚本用 shell 跑。可用的 skill 见基础上下文里的清单。';
+  + '上下文里已经有这个 skill 的完整正文时不用再加载。文件夹里的其他文件用 read 按绝对路径读，脚本用 shell 跑。可用的 skill 见基础上下文里的清单。';
 
 const readDescription = `读取当前工作目录内的文件，或 skill 文件夹里的文件（用 skill 工具给出的文件夹拼绝对路径），按内容自动区分：
 文本按行返回并带行号，offset 从 1 开始，默认最多 200 行。
 图片（PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC）附给你直接查看，过大时先缩放。
 PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数和续读的 pages。没有文本层的扫描页给出 OCR 结果并附上页面图片。`;
 
+/**
+ * skills 是宿主的 skill 清单（每次请求前刷新，见 SkillCatalog）：skill 工具、read 认的 skill 文件夹和沙箱的只读放行都按它；
+ * 不给时只有系统层与项目层，按建工具时扫的那一份。
+ */
 export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials' | 'background'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy);
-  secrets?: SecretProvider; background?: ShellBackground; outside?: ShellOutside }): Tool[] {
+  secrets?: SecretProvider; background?: ShellBackground; outside?: ShellOutside; skills?: SkillCatalog }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
+  const skills = options.skills ?? new SkillCatalog(root, systemSkillSources);
   /** read 的范围：工作目录，或这个工作目录能加载的某个 skill 的文件夹（绝对路径落在里面时），按那个文件夹的边界解析。 */
   const readScope = (path: string): { files: WorkspaceFiles; path: string } => {
     const target = resolve(root, path);
     if (within(target, root)) return { files, path };
     // skill 的文件夹是真实路径；经软链接写的路径（如 ~/.claude/skills 本身链到别处）按真实位置认。
     const real = canonicalPath(target);
-    const skill = projectSkills(root).find((entry) => within(real, entry.directory));
+    const skill = skills.skills.find((entry) => within(real, entry.directory));
     return skill ? { files: new WorkspaceFiles(skill.directory), path: relative(skill.directory, real) } : { files, path };
   };
-  const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env);
+  const policy = () => withSkillReads(typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env), skills.readable);
   const diffs = new FileDiffStore(options.diffDir ?? join(options.logDir, 'diffs'));
   const limit = options.outputLimit ?? 20_000;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('工具输出限制必须为正整数');
   // 只记录本次运行中读取或修改后已知的版本；不代表整文件仍在模型上下文里。
   const versions = new Map<string, string>();
-  // 本次运行里加载过的 skill 正文的摘要：内容没变就不再整段给一遍。压缩后重附的正文仍在上下文里，所以不必清。
-  const loadedSkills = new Map<string, string>();
   const pdfs = new PdfReader(commandEnvironment(options.env));
   const hash = (content: string) => createHash('sha256').update(content).digest('hex');
   const make = <T extends z.ZodType>(name: string, description: string, schema: T,
@@ -137,16 +141,13 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       return { status: 'success', output: `共 ${result.totalLines} 行\n${output}` };
     }, true),
     make('skill', skillDescription, skillArgs, async ({ name }) => {
-      const skills = projectSkills(root);
-      const skill = skills.find((entry) => entry.name === name);
+      const available = skills.skills;
+      const skill = available.find((entry) => entry.name === name);
       if (!skill) {
-        return { status: 'error', output: skills.length ? `没有叫 ${name} 的 skill；可用的：${skills.map((entry) => entry.name).join('、')}` : `没有叫 ${name} 的 skill，现在一个 skill 都没有` };
+        return { status: 'error', output: available.length ? `没有叫 ${name} 的 skill；可用的：${available.map((entry) => entry.name).join('、')}` : `没有叫 ${name} 的 skill，现在一个 skill 都没有` };
       }
-      const text = loadSkill(skill);
-      const digest = hash(text);
-      if (loadedSkills.get(name) === digest) return { status: 'success', output: `skill「${name}」已经加载过，内容没变，按前面已有的正文做。` };
-      loadedSkills.set(name, digest);
-      return { status: 'success', output: text };
+      // 每次都给全文、不按「加载过」去重：上下文压缩可能截掉或丢下了先前的正文，是否还在上下文里只有上下文本身说得准。
+      return { status: 'success', output: loadSkill(skill), skill: { name } };
     }, true),
     make('patch', patchDescription, patchArgs, async ({ operations }) => {
       // 同一工作区的线程并行时，整批的读、算、写在一个同步段里完成：同一进程里别的线程的 patch 插不进来，

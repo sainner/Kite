@@ -2,6 +2,7 @@
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
 import { threadVariables } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
+import type { SkillSources } from './harness/context/skills.ts';
 import type { AgentInstance } from './model.ts';
 import type { Store } from './store.ts';
 import type { DisplayRecord, History } from './transcript/protocol.ts';
@@ -86,6 +87,8 @@ export class ThreadTitles {
   private closed = false;
 
   constructor(private store: Store, private tasks: LightTasks, private templates: ContextTemplates, private host: {
+    /** Kite 的 skill 来源，模板引用 skill 清单时用。 */
+    skills: SkillSources;
     history(id: string): Promise<History>;
     changed(thread: AgentInstance): void;
     /** 生成的标题与原来的不同；原样返回的只推进生成进度，不算改名。 */
@@ -154,7 +157,8 @@ export class ThreadTitles {
     // 每次生成读取已保存的模板；本次展开后固定，不受后续编辑影响。
     const template = this.templates.get(titleTemplate.id, 'thread.title');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId)?.tools, this.store.workspaceConstraints(thread.workspaceId)?.execution),
+      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId)?.tools, this.store.workspaceConstraints(thread.workspaceId)?.execution,
+        this.host.skills),
       ...sceneValues<'thread.title'>({ 'title.current': JSON.stringify(title.title), 'title.messages': content.input }),
     }));
     let text: string;

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, parse, resolve } from 'node:path';
 import { bindContext } from './assembler.ts';
-import { collectSkills, skillsBinding, type Skill } from './skills.ts';
+import { collectSkills, skillReadPaths, skillsBinding, systemSkillSources, type Skill, type SkillSources } from './skills.ts';
 import type { PublicVariable } from './scenes.ts';
 import type { ContextBinding, ContextBlock, ContextDefinition, ContextPart, ContextSource, ContextValues } from './types.ts';
 
@@ -56,8 +56,26 @@ function folders(cwd: string): { folders: string[]; git?: string } {
 /** 从仓库根目录到工作目录的各级文件夹，由外到内；skill 的项目层也按这个范围找。 */
 export const projectFolders = (cwd: string): string[] => folders(cwd).folders;
 
-/** 工作目录能加载的 skill：项目层按 projectFolders 的范围找，再合上系统、用户与机器层；清单、skill 工具和 /名字 点选都按它。 */
-export const projectSkills = (cwd: string): Skill[] => collectSkills(projectFolders(realpathSync(cwd)));
+/** 工作目录能加载的 skill：项目层按 projectFolders 的范围找，再合上 sources 给的系统、用户与机器层。 */
+export const projectSkills = (cwd: string, sources: SkillSources): Skill[] => collectSkills(projectFolders(realpathSync(cwd)), sources);
+
+/**
+ * 一个线程宿主用的 skill 清单：refresh 时按来源重扫一次，之间都用这一份。基础上下文里的清单、skill 工具、read 认的 skill 文件夹
+ * 和沙箱的只读放行都读它，模型在清单里看到、加载过的 skill 才读得到、跑得了；宿主在每次请求前 refresh，
+ * 请求之间增删改的 skill 到下一次请求生效。
+ */
+export class SkillCatalog {
+  private current: { skills: Skill[]; readable: string[] } = { skills: [], readable: [] };
+  constructor(private readonly cwd: string, private readonly sources: SkillSources) { this.refresh(); }
+  refresh(): void {
+    const folders = projectFolders(realpathSync(this.cwd));
+    const skills = collectSkills(folders, this.sources);
+    this.current = { skills, readable: skillReadPaths(this.sources, folders, skills) };
+  }
+  get skills(): Skill[] { return this.current.skills; }
+  /** 沙箱要另外放行只读的位置，见 skillReadPaths。 */
+  get readable(): string[] { return this.current.readable; }
+}
 
 /** 来自文件的公共变量：从仓库根目录到工作目录逐级找到的同名文件。 */
 export const documentVariables = {
@@ -101,14 +119,17 @@ function branch(cwd: string): ContextBinding {
 
 export const today = (): ContextBinding => ({ text: new Date().toISOString().slice(0, 10) });
 
-/** 工作目录本身取得到的变量：路径、分支、项目规则与记忆索引，以及 skill 清单（项目层按同一范围找，再合上系统层）。默认角色模板引用的目录变量都在这里。 */
-export function directoryVariables(cwd: string) {
+/**
+ * 工作目录本身取得到的变量：路径、分支、项目规则与记忆索引，以及 skill 清单（项目层按同一范围找，再合上 skills 给的几层，
+ * 不给时只有系统层）。默认角色模板引用的目录变量都在这里。
+ */
+export function directoryVariables(cwd: string, skills: SkillSources = systemSkillSources) {
   return {
     'environment.cwd': () => ({ text: realpathSync(cwd) }),
     'workspace.branch': () => branch(realpathSync(cwd)),
     'project.rules': () => documents(realpathSync(cwd), documentVariables['project.rules']),
     'project.memory': () => documents(realpathSync(cwd), documentVariables['project.memory']),
-    'project.skills': () => skillsBinding(projectSkills(cwd)),
+    'project.skills': () => skillsBinding(projectSkills(cwd, skills)),
   } satisfies Partial<Record<PublicVariable, () => ContextBinding>>;
 }
 

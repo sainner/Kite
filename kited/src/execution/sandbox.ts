@@ -86,10 +86,12 @@ export function canonicalPath(path: string): string {
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+/** 沙箱收的路径：上游支持 glob，此入口只接收宿主授权的确切路径，不能把文件名解释成授权表达式。 */
+export const exactPath = (value: string): boolean => isAbsolute(value) && !/[*?\[\]{}\0\n\r]/.test(value);
+
 function paths(values: string[]): string[] {
   return [...new Set(values.map((value) => {
-    // 上游支持 glob；此入口只接收宿主授权的确切路径，不能把文件名解释成授权表达式。
-    if (!isAbsolute(value) || /[*?\[\]{}\0\n\r]/.test(value)) throw new Error(`沙箱路径必须是无通配符的绝对路径：${value}`);
+    if (!exactPath(value)) throw new Error(`沙箱路径必须是无通配符的绝对路径：${value}`);
     return canonicalPath(value);
   }))];
 }

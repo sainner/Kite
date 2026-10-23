@@ -8,15 +8,30 @@ export type JsonObject = { [key: string]: Json };
  * 输入的来源，由宿主按调用身份填写，只用于显示、去重、回报和交给模型时的包装，不改变权限；校验与包装见 input.ts。
  * 人发的可带 via：经 Line 照原文转达的用户原话。Kite 发的可带 notice 说是哪种通知；可带 response：Kite 转交的用户回应
  * （用户自己回答的提问、密钥请求的结果），是用户在界面上做的，交给模型时不加「不是用户说的话」。代理来信必带发信方 from，名称在收下时固定。
+ * 人发的开头用 /名字 点选了 skill 时带 skill：那个 skill 的名字，供显示；正文不在输入上，见 InputMaterial。
  */
 export type InputOrigin =
-  | { source: 'human'; via?: InputVia; attachments?: AttachmentRef[]; skill?: InputSkill }
+  | { source: 'human'; via?: InputVia; attachments?: AttachmentRef[]; skill?: string }
   | { source: 'kite'; notice?: InputNotice; response?: true }
   | { source: 'agent'; from: InputSender };
 export type Input = { id: string; text: string } & InputOrigin;
 
-/** 人发的消息开头用 /名字 点选的 skill：收下时按那一刻的 SKILL.md 固定成正文（见 context/skills.ts 的 loadSkill），随输入交给模型。 */
-export interface InputSkill { name: string; text: string }
+/** 宿主收下一条输入时固定、随收下的记录保存的材料，交给模型时用，不显示。 */
+export interface InputMaterial {
+  /** 附件里的图片交给模型的样子，附在这条输入上。 */
+  images?: ToolImage[];
+  /**
+   * /名字 点选的 skill（名字在 input.skill）按收下那一刻的 SKILL.md 固定的正文（context/skills.ts 的 loadSkill），
+   * 作为跟在这条输入后面的条目交给模型，见 history.ts 的 inputItems。
+   */
+  skill?: string;
+}
+
+/**
+ * 交给模型的一段 skill 正文出自哪个 skill：skill 工具的结果、/名字 点选时跟在输入后面的正文、压缩后重附的正文都带着它，
+ * 压缩只按它认出加载过哪些 skill（compaction.ts），不认工具名、不解析文本。正文就是这一条交给模型的文字，不另存一份。
+ */
+export interface SkillMark { name: string }
 
 /**
  * 人发的消息带的附件，收下时按工作机上存好的那份固定：原件在附件存储里，工作区里另有一份给代理用（见 workspace/attachments.ts）。
@@ -66,6 +81,8 @@ export interface ToolResult {
   images?: ToolImage[];
   /** tool_search 加载的工具定义，适配器把结果作为 tool_search_output 交回；见 tool-search.ts。 */
   tools?: ToolDefinition[];
+  /** skill 工具加载的正文出自哪个 skill，output 就是正文。 */
+  skill?: SkillMark;
 }
 
 export interface ToolImage {
@@ -80,7 +97,8 @@ export type ContextItem =
   | { type: 'output'; item: ModelItem }
   | { type: 'tool_result'; callId: string; result: ToolResult }
   | { type: 'feedback'; text: string }
-  | { type: 'notification'; notification: Omit<ThreadNotification, 'context'>; text: string };
+  /** skill 是这条通知的正文所出自的 skill（/名字 点选与压缩重附的），见 SkillMark。 */
+  | { type: 'notification'; notification: Omit<ThreadNotification, 'context'>; text: string; skill?: SkillMark };
 
 /** 宿主按线程归属投递；sequence 来自持久来源，内核生成的上下文更新不占用来源游标。 */
 export interface ThreadNotification {
@@ -178,7 +196,7 @@ export interface Recovery { message: string }
 export interface StopRequest { id: string; inputs?: Input[]; by?: { kind: 'agent'; instance: string } | InputVia }
 
 export type JournalEvent =
-  | { type: 'input.received'; input: Input; images?: ToolImage[] }
+  | ({ type: 'input.received'; input: Input } & InputMaterial)
   | { type: 'input.cancelled'; inputId: string }
   /** 停止收据同时撤回队列、登记未确认输入，迟到重试不得重新入队。 */
   | { type: 'thread.stopped'; id: string; returned: Input[] }
@@ -259,8 +277,8 @@ export type CompactionRequest = { id: string } & ({ from: string; through: strin
 export interface ThreadRunner {
   readonly state: ThreadState;
   readonly lifecycle: 'open' | 'closing' | 'closed';
-  /** 收下返回 true；同一 ID 已收下过（重试）时不再处理，返回 false。images 是附件里的图片交给模型的样子，随输入记下。 */
-  send(input: Input, images?: ToolImage[]): Promise<boolean>;
+  /** 收下返回 true；同一 ID 已收下过（重试）时不再处理，返回 false。material 是宿主收下时固定、随输入记下交给模型的材料。 */
+  send(input: Input, material?: InputMaterial): Promise<boolean>;
   cancel(inputId: string): Promise<void>;
   interrupt(request?: StopRequest): Promise<Input[]>;
   /** 显式继续错误或恢复后的会话；可以在没有新输入时继续已有上下文。 */

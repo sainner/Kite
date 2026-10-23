@@ -1,6 +1,7 @@
 /** 集成时工作树里没提交的改动的提交说明：启用了辅助生成时按 diff 起草，没有启用或起草失败时用工作区名称，见 docs/项目与远程仓库.md「工作区与集成」。 */
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
+import type { SkillSources } from './harness/context/skills.ts';
 import type { ContextTemplates } from './context-templates.ts';
 import { workspaceVariables } from './context-variables.ts';
 import type { LightTasks } from './light-tasks.ts';
@@ -38,7 +39,7 @@ export const commitMessageTemplate: ContextDefinition = {
  * 工作树停在合并中途时提交沿用合并的说明，没有改动时不提交，这两种都不起草。调用方持有工作区锁、线程全部空闲，改动不会再变。
  * 起草前把改动全部暂存好，新文件也进 diff；工作树的索引只有宿主在用，之后的提交照样从这份索引提交。
  */
-export async function draftCommit(options: { tasks?: LightTasks; templates: ContextTemplates;
+export async function draftCommit(options: { tasks?: LightTasks; templates: ContextTemplates; skills: SkillSources;
   model: { machine: Machine; project: Project; workspace: Workspace } }): Promise<string> {
   const { workspace } = options.model;
   const fallback = workspace.name;
@@ -56,7 +57,7 @@ export async function draftCommit(options: { tasks?: LightTasks; templates: Cont
     const diff = clip(patch.trim(), DIFF_CHARS);
     const template = options.templates.get(commitMessageTemplate.id, 'workspace.commit');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...workspaceVariables(options.model),
+      ...workspaceVariables(options.model, options.skills),
       ...sceneValues<'workspace.commit'>({ 'commit.recent': recent || '（没有）', 'commit.files': files, 'commit.diff': diff }),
     }));
     const { text } = await options.tasks.generateText({ purpose: 'workspace.commit', model: template.model!, instructions, input: input!,

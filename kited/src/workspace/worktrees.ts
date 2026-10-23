@@ -86,7 +86,7 @@ export function removeSecretFile(worktree: string, path: string): void {
 
 /**
  * 跑工作树里的 .kite/setup，没有这个文件返回 null。只看退出码，脚本不写状态文件。输出写进 logPath，另外留下最后 4000 个字符给事件用。
- * 与模型的 shell 共用沙箱：工作树可写、工具链可读，宿主数据受保护，Git 元数据（含检出）只读；
+ * 与模型的 shell 共用沙箱：工作树可写、工具链可读，宿主数据受保护，Git 元数据（含检出）只读，skill 的文件夹不放行（只给代理）；
  * 环境只带开发工具的基础设置。网络在项目级网络授权落地前放行。
  */
 export async function runSetup(checkout: string, worktree: string, logPath: string, home: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {

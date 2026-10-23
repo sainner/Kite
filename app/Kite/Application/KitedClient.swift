@@ -139,13 +139,9 @@ struct RemoteInput: Codable {
     var from: From? = nil
     /// 人发的消息带的附件。
     var attachments: [Attachment]? = nil
-    /// 开头 /名字 点选的 skill，工作机收下时固定的；App 只用名字拆出命令显示。
-    var skill: Skill? = nil
-    var message: Message { Message(id: id, text: text, skill: skill?.name, attachments: attachments ?? [], midTurn: midTurn ?? false) }
-
-    struct Skill: Codable {
-        let name: String
-    }
+    /// 开头 /名字 点选的 skill 的名字，工作机收下时认出的；App 用它拆出命令显示。
+    var skill: String? = nil
+    var message: Message { Message(id: id, text: text, skill: skill, attachments: attachments ?? [], midTurn: midTurn ?? false) }
 
     struct From: Codable {
         let kind: String

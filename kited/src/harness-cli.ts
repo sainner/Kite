@@ -9,7 +9,8 @@ import { deepseekKey, harnessModel } from './harness/adapters.ts';
 import { defaultAuthFile, readSubscriptionCredentials } from './harness/auth.ts';
 import { openThreadHost, readThreadMetadata } from './harness/thread-host.ts';
 import { harnessPolicy } from './execution/policy.ts';
-import { defaultContextDefinition, directoryVariables, projectContext, today } from './harness/context/project.ts';
+import { defaultContextDefinition, directoryVariables, projectContext, SkillCatalog, today } from './harness/context/project.ts';
+import { systemSkillSources } from './harness/context/skills.ts';
 import type { HarnessEvent } from './harness/types.ts';
 import { defaultAgentModel, vendorOfModel } from './agents/models.ts';
 
@@ -88,9 +89,10 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   };
   const settings = { model: { model: modelName, reasoning }, contextWindow };
   // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量；不提供 skill 发现（docs/kited.md「终端试用」），清单为空。
-  const variables = { 'environment.date': today, ...directoryVariables(cwd), 'project.skills': () => ({ text: '' }) };
+  // skill 来源只有系统层，skill 工具按名字还能加载系统层与项目层的。
+  const variables = { 'environment.date': today, ...directoryVariables(cwd, systemSkillSources), 'project.skills': () => ({ text: '' }) };
   const host = await openThreadHost({
-    cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings,
+    cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings, skills: new SkillCatalog(cwd, systemSkillSources),
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),
     prepareRequest: (tools) => ({ model, tools, instructions: projectContext(defaultContextDefinition, variables), variables, settings }),
   });

@@ -14,7 +14,8 @@ import { localTools, type ShellBackground, type ShellOutside } from '../executio
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
 import type { CompactionRequest, Input, Outcome, Phase, StopRequest, Tool, ToolImage } from '../harness/types.ts';
-import { modelText, returnedOnStop, sameInput } from '../harness/input.ts';
+import { modelText, returnedOnStop, sameInput, withSkillText } from '../harness/input.ts';
+import type { SkillCatalog } from '../harness/context/project.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
 import { HarnessRunner } from '../harness/runner.ts';
 import { withThreadJournal } from '../harness/thread-host.ts';
@@ -56,6 +57,8 @@ export function openClaudeHost(options: {
   events: RuntimeEvents;
   /** 人发的消息带的附件里的图片交给模型的样子，交给进程时现取；见 workspace/attachments.ts。 */
   images?(input: Input): ToolImage[];
+  /** 工具用的 skill 清单，回合开始与每个请求边界刷新，与同时取的基础上下文对得上；见 SkillCatalog。 */
+  skills: SkillCatalog;
   /** 压缩所需的模板与净文件变化；不提供时不开放压缩。 */
   compaction?: {
     templates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
@@ -107,7 +110,7 @@ export function openClaudeHost(options: {
   };
   if (data.processes.some(processGroupAlive)) data.recovery = { message: 'Claude 的命令进程组仍可能运行，请先核查再恢复。' };
   const tools = localTools({ cwd: options.cwd, diffDir: options.diffDir, logDir: join(options.directory, 'commands'),
-    env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets,
+    env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets, skills: options.skills,
     ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
     ...(options.background ? { background: options.background } : {}),
     ...(options.outside ? { outside: options.outside } : {}),
@@ -118,6 +121,7 @@ export function openClaudeHost(options: {
   });
   const waitTools = () => activeTools.size ? new Promise<void>((resolve) => { drainWaiters.add(resolve); }) : Promise.resolve();
   const boundaryContext = () => {
+    options.skills.refresh();
     const prepared = options.prepare(data.through);
     const update = (data.context ?? data.initialContext) !== prepared.instructions ? prepared.contextUpdate : '';
     const text = [update, prepared.through > data.through ? prepared.notificationText : ''].filter(Boolean).join('\n\n');
@@ -266,7 +270,7 @@ export function openClaudeHost(options: {
     // 回合进行中的新消息沿原生输入流插话。
     if (driver && phase === 'running') { submitQueued(driver); return; }
     let prepared: ReturnType<typeof options.prepare>;
-    try { prepared = options.prepare(data.through); } catch (error) {
+    try { options.skills.refresh(); prepared = options.prepare(data.through); } catch (error) {
       data.outcome = { kind: 'failed', message: String(error) }; data.paused = true; save(); return;
     }
     data.initialContext ??= prepared.instructions;
@@ -363,13 +367,14 @@ export function openClaudeHost(options: {
   const submitQueued = (running: Runner) => {
     for (const entry of data.inputs.filter((item) => item.status === 'queued')) {
       entry.status = 'submitted'; save();
-      running.send({ id: entry.sdkId, text: modelText(entry.input), human: entry.input.source === 'human', images: options.images?.(entry.input) });
+      running.send({ id: entry.sdkId, text: withSkillText(modelText(entry.input), entry.skill), human: entry.input.source === 'human',
+        images: options.images?.(entry.input) });
     }
   };
   publish();
   return {
     get state() { return phase; }, get busy() { return phase !== 'idle' || !!compacting; }, get recovery() { return data.recovery; },
-    async send(input) {
+    async send(input, skill) {
       requireStorage();
       const existing = data.inputs.find((entry) => entry.input.id === input.id);
       if (existing) { if (!sameInput(existing.input, input)) throw new KiteError('消息 ID 已用于其他内容', 409); return false; }
@@ -380,7 +385,7 @@ export function openClaudeHost(options: {
         throw new KiteError('有交接结果未知的输入，等用户继续或撤回后再发', 409);
       }
       for (const entry of data.inputs) if (entry.status === 'unconfirmed') entry.status = 'queued';
-      data.inputs.push({ input, sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: phase === 'running' });
+      data.inputs.push({ input, ...(skill ? { skill } : {}), sdkId: randomUUID(), at: Date.now(), status: 'queued', delivered: false, midTurn: phase === 'running' });
       data.paused = false; save(); pump();
       return true;
     },

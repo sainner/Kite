@@ -25,7 +25,7 @@ export type DisplayBlock =
 export function inputBlock(input: Input, midTurn: boolean): DisplayBlock {
   switch (input.source) {
     case 'human': return { type: 'human', id: input.id, text: input.text, midTurn, ...(input.attachments ? { attachments: input.attachments } : {}),
-      ...(input.skill ? { skill: input.skill.name } : {}) };
+      ...(input.skill ? { skill: input.skill } : {}) };
     case 'agent': return { type: 'agent', id: input.id, text: input.text, sender: { name: senderName(input.from), instance: input.from.instance } };
     case 'kite': return { type: 'kite', text: input.text, ...(input.notice ? { notice: input.notice } : {}), ...(input.response ? { response: true } : {}) };
   }

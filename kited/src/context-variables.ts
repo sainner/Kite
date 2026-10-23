@@ -9,6 +9,7 @@ import {
   contentHash, directoryVariables, documentFiles, documentLimit, documentPaths, documentVariables, today, type DocumentFile, type DocumentVariable,
 } from './harness/context/project.ts';
 import { contextLayers, isPublicVariable, type ContextLayer, type LayerVariable, type PublicVariable } from './harness/context/scenes.ts';
+import type { SkillSources } from './harness/context/skills.ts';
 import type { ContextBinding, ContextValues } from './harness/context/types.ts';
 import type { Machine, Project, ThreadContext, Workspace } from './model.ts';
 import { pluginToolBindings } from './plugins/tools.ts';
@@ -25,9 +26,9 @@ export function environmentVariables(machine: Machine) {
 
 const text = (value: () => string) => (): ContextBinding => ({ text: value() });
 
-/** 环境层加项目层：项目规则与记忆索引从 cwd 往上找，按检出取时 cwd 是项目文件夹。 */
-function projectVariables(machine: Machine, project: Project, cwd: string) {
-  const directory = directoryVariables(cwd);
+/** 环境层加项目层：项目规则与记忆索引从 cwd 往上找，按检出取时 cwd 是项目文件夹；skill 清单合上 skills 给的几层。 */
+function projectVariables(machine: Machine, project: Project, cwd: string, skills: SkillSources) {
+  const directory = directoryVariables(cwd, skills);
   return {
     ...environmentVariables(machine),
     'project.name': text(() => project.name),
@@ -38,11 +39,11 @@ function projectVariables(machine: Machine, project: Project, cwd: string) {
   } satisfies Record<LayerVariable<'environment' | 'project'>, () => ContextBinding>;
 }
 
-/** 环境、项目与工作区三层，项目规则与记忆索引从工作目录往上找。 */
-export function workspaceVariables(model: { machine: Machine; project: Project; workspace: Workspace }) {
-  const directory = directoryVariables(model.workspace.cwd);
+/** 环境、项目与工作区三层，项目规则与记忆索引从工作目录往上找。skills 是 Kite 的 skill 来源。 */
+export function workspaceVariables(model: { machine: Machine; project: Project; workspace: Workspace }, skills: SkillSources) {
+  const directory = directoryVariables(model.workspace.cwd, skills);
   return {
-    ...projectVariables(model.machine, model.project, model.workspace.cwd),
+    ...projectVariables(model.machine, model.project, model.workspace.cwd, skills),
     'environment.cwd': directory['environment.cwd'],
     'workspace.branch': directory['workspace.branch'],
     'workspace.name': text(() => model.workspace.name),
@@ -53,10 +54,11 @@ export function workspaceVariables(model: { machine: Machine; project: Project; 
  * thread 是取值时的状态：生成通知时传入变化之后的配置，变量取新值。每个值在模板引用时才取。
  * constraint 是项目的工具约束，允许的工具按它过滤，与配置通知一致。
  */
-export function threadVariables(thread: ThreadContext, constraint: ProjectToolRule | undefined, execution?: ProjectExecution): ContextValues {
+export function threadVariables(thread: ThreadContext, constraint: ProjectToolRule | undefined, execution: ProjectExecution | undefined,
+  skills: SkillSources): ContextValues {
   const agent = () => instanceAgent(thread);
   return {
-    ...workspaceVariables(thread),
+    ...workspaceVariables(thread, skills),
     'agent.title': text(() => thread.title),
     // 角色的名称随提示词拷进实例，之后修改角色不影响。
     'agent.role': text(() => agent().context.title),
@@ -71,11 +73,11 @@ export function threadVariables(thread: ThreadContext, constraint: ProjectToolRu
 }
 
 /** 按线程当前保存的状态取值。 */
-export function storedThreadVariables(store: Store, id: string): ContextValues {
+export function storedThreadVariables(store: Store, id: string, skills: SkillSources): ContextValues {
   const thread = store.threadContext(id);
   if (!thread) throw new Error(`没有这个线程：${id}`);
   const constraints = store.workspaceConstraints(thread.workspaceId);
-  return threadVariables(thread, constraints?.tools, constraints?.execution);
+  return threadVariables(thread, constraints?.tools, constraints?.execution, skills);
 }
 
 /**
@@ -91,28 +93,28 @@ const layerOf = (name: PublicVariable) =>
   (Object.keys(contextLayers) as ContextLayer[]).find((layer) => contextLayers[layer].variables.some((variable) => variable.name === name))!;
 
 /** 范围能取到的层、各变量的取值，以及来自文件的变量往上找的起点。 */
-function scopeValues(store: Store, scope: VariableScope): { layers: ContextLayer[]; values: ContextValues; cwd?: string } {
+function scopeValues(store: Store, scope: VariableScope, skills: SkillSources): { layers: ContextLayer[]; values: ContextValues; cwd?: string } {
   switch (scope.kind) {
     case 'machine':
       return { layers: ['environment'], values: environmentVariables(store.machine) };
     case 'workspace': {
       const model = store.workspaceModel(scope.id);
       if (!model) throw new KiteError(`没有这个工作区：${scope.id}`, 404);
-      return { layers: ['environment', 'project', 'workspace'], cwd: model.workspace.cwd, values: workspaceVariables(model) };
+      return { layers: ['environment', 'project', 'workspace'], cwd: model.workspace.cwd, values: workspaceVariables(model, skills) };
     }
     case 'instance': {
       const thread = store.threadContext(scope.id);
       if (!thread) throw new KiteError(`没有这个线程：${scope.id}`, 404);
       const constraints = store.workspaceConstraints(thread.workspaceId);
       return { layers: ['environment', 'project', 'workspace', 'agent'], cwd: thread.workspace.cwd,
-        values: threadVariables(thread, constraints?.tools, constraints?.execution) };
+        values: threadVariables(thread, constraints?.tools, constraints?.execution, skills) };
     }
   }
 }
 
-export function previewVariable(store: Store, scope: VariableScope, name: string): VariablePreview {
+export function previewVariable(store: Store, scope: VariableScope, name: string, skills: SkillSources): VariablePreview {
   if (!isPublicVariable(name)) throw new KiteError(`${name} 不是公共变量，场景材料只在生成时才有`, 404);
-  const { layers, values, cwd } = scopeValues(store, scope);
+  const { layers, values, cwd } = scopeValues(store, scope, skills);
   const layer = layerOf(name);
   if (!layers.includes(layer)) throw new KiteError(`${name} 在${contextLayers[layer].title}层，这里取不到`);
   try {
@@ -132,7 +134,7 @@ export function previewVariable(store: Store, scope: VariableScope, name: string
  * expectedSha256 是读到时的摘要，新建时为 null，文件在别处改过就拒绝。这个工作区里的代理下一次请求组装时生效。
  */
 export function writeVariableFile(store: Store, workspaceId: string, name: string,
-  input: { path: string; content: string; expectedSha256: string | null }): VariablePreview {
+  input: { path: string; content: string; expectedSha256: string | null }, skills: SkillSources): VariablePreview {
   if (!Object.hasOwn(documentVariables, name)) throw new KiteError(`${name} 不来自文件，不能这样修改`);
   const workspace = store.workspace(workspaceId);
   if (!workspace) throw new KiteError(`没有这个工作区：${workspaceId}`, 404);
@@ -144,5 +146,5 @@ export function writeVariableFile(store: Store, workspaceId: string, name: strin
   if (current !== input.expectedSha256) throw new KiteError('文件已在别处修改，请重新读取', 409);
   mkdirSync(dirname(input.path), { recursive: true });
   writeFileSync(input.path, input.content);
-  return previewVariable(store, { kind: 'workspace', id: workspaceId }, name);
+  return previewVariable(store, { kind: 'workspace', id: workspaceId }, name, skills);
 }

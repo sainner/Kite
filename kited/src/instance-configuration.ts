@@ -25,7 +25,7 @@ import { trustedTargets } from './preview/targets.ts';
 /** 实例上记住的预置脚本内容最多留这么多份。 */
 const MAX_TRUSTED_TARGETS = 50;
 
-type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history' | 'terminals'>;
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'skillSources' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history' | 'terminals'>;
 
 interface ConfigurationControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -155,7 +155,8 @@ export class InstanceConfiguration {
     const effective = effectiveExecution(instanceExecutionChanges(thread), project).grants;
     return {
       id: randomUUID(), kind: 'execution.permissions.changed', source, authority: 'instruction',
-      context: assembleContext(executionPermissionsContext(executionRevision(effective), threadVariables(thread, this.projectRule(thread.workspaceId), project),
+      context: assembleContext(executionPermissionsContext(executionRevision(effective),
+        threadVariables(thread, this.projectRule(thread.workspaceId), project, this.kite.skillSources),
         this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
     } as const;
   }
@@ -197,7 +198,7 @@ export class InstanceConfiguration {
   }
   /** 通知里的公共变量取 thread 给出的变化之后的状态。 */
   private variables(thread: ThreadContext) {
-    return threadVariables(thread, this.projectRule(thread.workspaceId), this.projectExecution(thread.workspaceId));
+    return threadVariables(thread, this.projectRule(thread.workspaceId), this.projectExecution(thread.workspaceId), this.kite.skillSources);
   }
   /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
@@ -242,7 +243,7 @@ export class InstanceConfiguration {
     return {
       id: randomUUID(), kind: 'agent.configuration.changed', source, authority: 'instruction',
       context: assembleContext(agentConfigurationContext(agentRevision(agent),
-        threadVariables({ ...thread, config: { ...thread.config, agent } }, project, this.projectExecution(thread.workspaceId)),
+        threadVariables({ ...thread, config: { ...thread.config, agent } }, project, this.projectExecution(thread.workspaceId), this.kite.skillSources),
         this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
     } as const;
   }
