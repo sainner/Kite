@@ -1,6 +1,6 @@
 ---
 name: todo-preview-plugin
-description: 预览的目标模型（.kite/preview/、实例随进程）、模拟器改用 Xcode 自带的，10-22 已实现、10-23 本机已装待手测；10-23 浏览并进文件插件、能开外网，协议 14 已装；别的工作机升级前要清 agent 里的旧工具名；Xcode 批准待用户跑命令、DeviceHub 窗口裁不出屏幕；我自己定的实现取舍与已知问题
+description: 预览的目标模型（.kite/preview/、实例随进程）、模拟器改用 Xcode 自带的，10-22 已实现、待手测；10-23 浏览并进文件插件、能开外网，待手测；别的工作机升级前要清 agent 里的旧工具名；Xcode 批准待用户跑命令、DeviceHub 窗口裁不出屏幕；我自己定的实现取舍与已知问题
 metadata:
   node_type: memory
   type: todo
@@ -10,7 +10,7 @@ metadata:
 
 **来源：** 2026-10-21 讨论终端的预置脚本时延伸出来；10-22 用户重新讨论预览给谁用，定为「目标」模型加独立的浏览、模拟器改用 Xcode 自带的、设备从列表里选（真机只装包、agent 装真机每次审批）。10-23 用户定浏览并进文件插件、插件改名「浏览」（浏览互联网与本机的文件），这次就能开外网。设计在 [成果查看与位置 · 预览](../../docs/成果查看与位置.md#预览) 与 [实例操作 · 预览](../../docs/实例操作.md#预览)，是现行文档，这里不重复。
 
-**状态：** 10-22 按文档实现（kited 与 App 一起，协议号 12 → 13），`.kite/check` 通过，未提交；第三步原有的 App 窗口、Safari、分发包代码并进来一起。kited 侧用临时冒烟验过：起目标、出网页画面、再起返回同一个、restart 在同一实例里重起、agent 的 open/action/并排一格截图/read/list/stop、找不到目标或设备时错误里列出可选的、浏览窗口新建；Xcode 批准流程验到给出命令为止。10-23 已在这台 Mac mini 装上（App 与 kited 协议 13）。10-23 浏览合并实现（协议 13 → 14），当晚装上（含外网链接在浏览里开），未手测：kited 冒烟验过选网址、选在跑的端口、选回文件，以及停掉的端口、本机网址、文件网页同选、旧 kite.browser 与 browser.select 都被拒。
+**状态：** 10-22 按文档实现（kited 与 App 一起，协议号 12 → 13），`.kite/check` 通过，未提交；第三步原有的 App 窗口、Safari、分发包代码并进来一起。kited 侧用临时冒烟验过：起目标、出网页画面、再起返回同一个、restart 在同一实例里重起、agent 的 open/action/并排一格截图/read/list/stop、找不到目标或设备时错误里列出可选的、浏览窗口新建；Xcode 批准流程验到给出命令为止。10-23 浏览合并实现（协议 13 → 14，含外网链接在浏览里开），未手测：kited 冒烟验过选网址、选在跑的端口、选回文件，以及停掉的端口、本机网址、文件网页同选、旧 kite.browser 与 browser.select 都被拒。
 
 **别的工作机升到协议 13 前：** 已有 agent 的 config.grants 里的 terminal.run、preview.close 会让新版 kited 启动时读授权报错退出（安装器自动回滚），config.agent.tools 里的 terminal_run、preview_close 会让切换模型等报「agent 配置无效」。按 [[feedback-stale-data]] 征得同意后从这些 agent 里去掉这几项。这台 10-23 已清，改前的库备份在 ~/.kite/kite.db.before-protocol13。
 

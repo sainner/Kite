@@ -28,12 +28,13 @@
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
 - [旧数据出错就删](feedback-stale-data.md) — 旧数据读不了就删、不兼容；方案取舍不把已有会话角色对不上当代价；删前确认
+- [不记安装状态](feedback-no-install-state.md) — 不写哪台机器装了哪一版、装没装上；版本读 /machine
 
 ## 未决事项
 
 - [真机与线上验收](todo-device-validation.md) — 角色、插件、托管账号、跨机目录与 Git 的验收范围
 - [上下文能力](todo-context-capabilities.md) — 外部 MCP 已合回待真机手测、观察账本、预览、开场白与个人记忆
-- [skill 接入](todo-skills.md) — 四层来源、skill 工具、压缩重附与资源库待真机验收；含窄窗口候选、键盘补全、二进制文件
+- [skill 接入](todo-skills.md) — 四层来源、skill 工具、压缩重附、资源库、窄窗口候选与键盘补全待真机验收
 - [工作区协作](todo-workspace-collaboration.md) — 后台与内嵌实例的界面呈现、已归档实例的查看与恢复，待设计
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
 - [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口、上级目录）、资源限制、项目收紧是否停旧命令
@@ -43,7 +44,7 @@
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；预置脚本已移到预览的目标；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
-- [预览插件收尾](todo-preview-plugin.md) — 10-23 本机装了协议 13；浏览并进文件、能开外网（协议 14）已装待手测；旧工具名要清；Xcode 批准待跑；DeviceHub 裁不出
+- [预览插件收尾](todo-preview-plugin.md) — 目标模型与浏览并进文件、能开外网待手测；旧工具名要清；Xcode 批准待跑；DeviceHub 裁不出
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
 - [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退
