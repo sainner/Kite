@@ -23,7 +23,7 @@ import { instanceAgent } from '../agents/definition.ts';
 import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
-type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile'
+type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile' | 'writeFile'
   | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveTarget' | 'approveDevice' | 'previews'>;
 
 export interface OperationToolSelection {
@@ -149,8 +149,13 @@ export class InstanceOperations {
     if (!source || source.status !== 'open' || source.workspaceId !== workspaceId) throw new OperationError('调用方不属于此工作区或已归档', 'denied', 403);
     if (name.startsWith('files.') && typeof args.path === 'string') {
       const files = new WorkspaceFiles(workspace.cwd);
-      try { assertFileAccess(files.resolve(args.path), 'read', { read: [files.root], write: [], network: [], denyRead: hostPrivatePaths(this.kite.home) }); }
-      catch { throw new OperationError('插件不能读取宿主内部数据或工作区外文件', 'denied', 403); }
+      const writing = name === 'files.write';
+      const hidden = hostPrivatePaths(this.kite.home);
+      try {
+        assertFileAccess(files.resolve(args.path), writing ? 'write' : 'read',
+          { read: [files.root], write: writing ? [files.root] : [], network: [], denyRead: hidden, denyWrite: hidden });
+      }
+      catch { throw new OperationError(`插件不能${writing ? '改写' : '读取'}宿主内部数据或工作区外文件`, 'denied', 403); }
     }
     if (target?.id === source.id && name.startsWith('agent.')) throw new OperationError('实例不能通过协作操作控制自己', 'denied', 403);
     if (name === 'agent.merge' && target?.workspaceId === source.workspaceId) {
@@ -346,6 +351,7 @@ export class InstanceOperations {
       case 'files.diff': return new FileDiffStore(join(this.kite.home, 'diffs', workspaceId)).read(args.diffId as string);
       case 'files.state': return fileSelection(this.kite.store.instance(args.instanceId as string)!.state);
       case 'files.select': return this.kite.selectFile(args as OperationInput<'files.select'>, check);
+      case 'files.write': return this.kite.writeFile(args as OperationInput<'files.write'>, check);
       case 'files.list':
       case 'files.search':
       case 'files.history':

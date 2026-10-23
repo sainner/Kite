@@ -40,16 +40,36 @@ import Foundation
 
 typealias PlatformImage = NSImage
 
+// 资源引用合同不涉及代码语言解析，保持不提供高亮语言的最小替身。
+enum CodeLanguage {
+    static func forPath(_ path: String) -> CodeLanguage? { nil }
+}
+
 // 工作机替身只提供当前文件和两份历史 diff，按真实接口的路径和字段应答。
 final class KitedClient: Equatable {
     static func == (lhs: KitedClient, rhs: KitedClient) -> Bool { lhs === rhs }
-    // 按字节读取（FileContentCache）只给图片、PDF 这类格式用，这里的文本与 diff 不会走到
     let machineID: String? = "fixture-machine"
     let address = "http://fixture"
     var isLocal: Bool { false }
     func download(_ path: String, method: String = "GET", headers: [String: String] = [:], segmented: Bool = false,
                   progress: (@Sendable (Progress) -> Void)? = nil) async throws -> (file: URL?, response: HTTPURLResponse) {
-        throw KitedError(message: "未预期的下载：" + path)
+        guard let url = URL(string: address + path),
+              let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.path == "/workspaces/fixture-workspace/files/content",
+              parts.queryItems == [URLQueryItem(name: "path", value: "README.md")],
+              method == "GET" || method == "HEAD" else {
+            throw KitedError(message: "未预期的下载：" + method + " " + path)
+        }
+        let bytes = Data(current.utf8)
+        let status = headers["If-None-Match"] == "fixture" ? 304 : 200
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: [
+            "Content-Type": "text/markdown; charset=utf-8", "Content-Length": String(bytes.count), "ETag": "fixture",
+        ])!
+        if method == "HEAD" || status == 304 { return (nil, response) }
+        // 子进程的工作目录就是本次合同的临时目录，异常退出也由外层统一清理。
+        let file = URL(filePath: FileManager.default.currentDirectoryPath).appending(path: "download-" + UUID().uuidString)
+        try bytes.write(to: file)
+        return (file, response)
     }
     let current: String
     let diffs: [String: (before: String, after: String)]

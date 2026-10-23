@@ -6,8 +6,8 @@ import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import { localTools } from '../../src/execution/local-tools.ts';
 import type { Json, ToolResult } from '../../src/harness/types.ts';
 import { WorkspaceFiles } from '../../src/workspace/files.ts';
-import { call, folderWorkspace, machine, openWorkspace, startKited, type Kited } from '../harness.ts';
-import { ENV, makeTemp, newDir, newRepo, writeFiles } from '../util.ts';
+import { call, folderWorkspace, listSnapshots, machine, openWorkspace, startKited, type Kited } from '../harness.ts';
+import { ENV, makeTemp, newDir, newRepo, read, writeFiles } from '../util.ts';
 
 const operationPath = (workspaceId: string, name: string) => `/workspaces/${workspaceId}/operations/${name}`;
 
@@ -376,5 +376,69 @@ test('不是 Git 仓库的工作区逐层查找文件和目录，嵌在里面的
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+}, 1000);
+
+/*
+ * 浏览里保存要几部分配合，看代码确认不了：files.write 写盘后在快照锁里打一枚快照（真实 git 把工作区的新内容收进快照树），
+ * files.history 沿快照链按路径列出这一版，current 拿工作区现在的内容去比、指向它；保存回应的 version 要和 files.read
+ * 给的同一算法，客户端拿它当下一次的 baseVersion。回应丢了重试时 baseVersion 还是打开时那个，内容已相同就不能报冲突、
+ * 也不能再打一枚。被拒（409）之后同一工作区的锁要放开，紧接着带 force 的保存才能写进去、打上快照。
+ */
+test('浏览保存后快照链多一枚「编辑 文件名」、历史版本以它为最新且 current 指向它，同样内容重试照旧成功不多打快照；文件被别人改过时旧版本号保存被拒（409）、不写不打快照，带 force 覆盖并打快照', async () => {
+  const k = startKited();
+  try {
+    const path = 'docs/说明 文档.md';
+    const label = '编辑 说明 文档.md';
+    const { id, cwd } = await workspace(k, newRepo(k.root, 'project', { [path]: '原来的内容\n' }, null));
+    const { instanceId } = await openFiles(k, id);
+    const operation = (name: string, body: object) => k.call('POST', operationPath(id, name), { instanceId, path, ...body });
+    const version = async () => {
+      const r = await operation('files.read', {});
+      if (r.status !== 200) throw new Error(`读取失败：${r.status} ${JSON.stringify(r.body)}`);
+      return r.body.version as string;
+    };
+    const history = async () => {
+      const r = await operation('files.history', {});
+      if (r.status !== 200) throw new Error(`取历史版本失败：${r.status} ${JSON.stringify(r.body)}`);
+      return r.body as { versions: Array<{ commit: string; at: number; label: string; threadId?: string }>; current: string | null };
+    };
+    const opened = await version();
+    const start = await listSnapshots(k, id);
+
+    const text = '改过的内容\n第二行\n';
+    const saved = await operation('files.write', { text, baseVersion: opened });
+    expect([saved.status, saved.body]).toEqual([200, { path, version: await version() }]);
+    expect(read(join(cwd, path))).toBe(text);
+    const edited = await listSnapshots(k, id);
+    expect(edited.slice(1)).toEqual(start);
+    expect(edited[0]).toMatchObject({ label });
+    expect(edited[0]!.threadId).toBeUndefined();
+    const listed = await history();
+    expect(listed.versions[0]).toEqual({ commit: edited[0]!.commit, at: edited[0]!.at, label });
+    expect(listed.current).toBe(edited[0]!.commit);
+
+    // 回应丢了，客户端拿打开时的版本号重发同一份内容
+    const retried = await operation('files.write', { text, baseVersion: opened });
+    expect([retried.status, retried.body]).toEqual([200, saved.body]);
+    expect(await listSnapshots(k, id)).toEqual(edited);
+
+    // 保存之后别人又改了这个文件，客户端还拿着上次保存回的版本号
+    writeFileSync(join(cwd, path), '别人改的\n');
+    const mine = '我的改动\n';
+    const rejected = await operation('files.write', { text: mine, baseVersion: saved.body.version });
+    expect(rejected.status).toBe(409);
+    expect(read(join(cwd, path))).toBe('别人改的\n');
+    expect(await listSnapshots(k, id)).toEqual(edited);
+
+    const forced = await operation('files.write', { text: mine, baseVersion: saved.body.version, force: true });
+    expect([forced.status, forced.body]).toEqual([200, { path, version: await version() }]);
+    expect(read(join(cwd, path))).toBe(mine);
+    const overwritten = await listSnapshots(k, id);
+    expect(overwritten.slice(1)).toEqual(edited);
+    expect(overwritten[0]).toMatchObject({ label });
+    expect((await history()).current).toBe(overwritten[0]!.commit);
+  } finally {
+    await k.stop();
   }
 }, 1000);

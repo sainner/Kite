@@ -4,7 +4,7 @@ import { AgentReports, agentReportContextDefinition, agentWorkspaceContextDefini
 import { randomUUID } from 'node:crypto';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { ChildrenPending, GitLoginRequired, KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome, type SyncResult } from './events.ts';
 import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainline, mainRefs, mergeMainline, type Mainline } from './workspace/mainline.ts';
@@ -1399,6 +1399,24 @@ export class Kite {
       this.store.setInstanceState(current.id, state);
       this.changed(current.workspaceId);
       return state;
+    });
+  }
+
+  /** 浏览里保存文件（files.write）：写成了打一枚快照，时间线里多一版；内容没变（重试）时不写、不打。 */
+  writeFile(input: OperationInput<'files.write'>, check: () => void) {
+    const instance = this.store.instance(input.instanceId)!;
+    return this.control(instance.workspaceId, async () => {
+      check();
+      const { workspace } = this.workspace(instance.workspaceId);
+      if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
+      let saved;
+      try { saved = new WorkspaceFiles(workspace.cwd).write(input); }
+      catch (error) {
+        if (error instanceof KiteError) throw error;
+        throw new KiteError(`保存文件失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (saved.written) await this.snapshot(workspace, [], `编辑 ${basename(saved.path)}`);
+      return { path: saved.path, version: saved.version };
     });
   }
 

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 #if os(macOS)
@@ -52,6 +53,14 @@ final class FileBrowser {
     /// 时间线读不到的原因。
     private(set) var historyError: String?
     private var historyRequest = UUID()
+    /// 原文编辑器里的这份文件；不看原文、读不成 UTF-8 文本时是 nil，退回按页看。
+    private(set) var document: SourceDocument?
+    /// 没保存就换去看别的文件时留下的改动，按路径；回到那个文件接着改。只在这台设备上，App 退出就没了。
+    private var drafts: [String: (text: String, version: String)] = [:]
+    private(set) var saving = false
+    /// 保存时工作机说文件在打开以后被改过，等窗口问是覆盖还是放弃自己的修改。
+    var saveConflict = false
+    private(set) var saveError: String?
     var showDirectory = true
     /// 目录和内容并排（FilePane.sideBySide），由窗口设上：这时打开文件、网页不收起目录。
     var sideBySide = false
@@ -104,6 +113,7 @@ final class FileBrowser {
             diff = nil
             diffRows = []
             focus = nil
+            closeDocument()
             resetContent()
             loadingText = false
         }
@@ -113,7 +123,11 @@ final class FileBrowser {
     private func receive(_ value: FileSelection) {
         guard selection != value else { return }
         endFind()
-        if selection.path != value.path || selection.diffId != value.diffId || selection.version != value.version { focus = nil }
+        // 还是同一份文件（别处又选了一次、或带着定位重新打开）时编辑器留着，改动不丢
+        if selection.path != value.path || selection.diffId != value.diffId || selection.version != value.version {
+            focus = nil
+            closeDocument()
+        }
         if selection.path != value.path {
             historyRequest = UUID()
             history = nil
@@ -211,7 +225,7 @@ final class FileBrowser {
         searchingFiles = false
     }
 
-    /// 在所选文件里找：历史差异逐行找；文本按页读，这里另取整份文件来找。
+    /// 在所选文件里找：历史差异逐行找；原文编辑器里的按编辑器现在的文字找；其余另取整份文件来找。
     func find(_ query: String) async {
         let request = UUID()
         findRequest = request
@@ -220,19 +234,29 @@ final class FileBrowser {
             matches = diffRows.flatMap { row in TextSearch.ranges(of: query, in: row.text).indices.map { FileMatch(line: row.id, occurrence: $0) } }
             return
         }
+        if let document {
+            // 原文编辑器里的按编辑器现在的文字找，改过没存的也算
+            let text = document.current
+            matches = await Task.detached(priority: .userInitiated) { Self.matches(of: query, in: text) }.value
+            return
+        }
         guard let path = selection.path, let client else { return }
         do {
             let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path, version: selection.version)
             // 读整份、逐行找放到后台，大文件不卡界面。
             let found = try await Task.detached(priority: .userInitiated) {
-                try String(contentsOf: file.url, encoding: .utf8).components(separatedBy: "\n").enumerated().flatMap { index, line in
-                    TextSearch.ranges(of: query, in: line).indices.map { FileMatch(line: index + 1, occurrence: $0) }
-                }
+                Self.matches(of: query, in: try String(contentsOf: file.url, encoding: .utf8))
             }.value
             guard findRequest == request, !Task.isCancelled else { return }
             matches = found
         } catch {
             if findRequest == request && !Task.isCancelled { textError = error.localizedDescription }
+        }
+    }
+
+    private nonisolated static func matches(of query: String, in text: String) -> [FileMatch] {
+        text.components(separatedBy: "\n").enumerated().flatMap { index, line in
+            TextSearch.ranges(of: query, in: line).indices.map { FileMatch(line: index + 1, occurrence: $0) }
         }
     }
 
@@ -329,14 +353,98 @@ final class FileBrowser {
             await loadDiff(id)
         } else {
             switch format {
-            case .text: await read(offset: focus?.startLine ?? 1)
+            case .text: await loadSource()
             case .markdown, .html:
-                if rendered { await fetch() } else { await read(offset: focus?.startLine ?? 1) }
+                if rendered {
+                    closeDocument()
+                    await fetch()
+                } else { await loadSource() }
             case .pdf, .quickLook: await fetch()
             case .other: await describe()
             }
         }
         await versions
+    }
+
+    /// 原文：整篇读进编辑器，现在的内容可以改，历史版本只读。先按页读一次，太大、不是文本的由工作机挡下（只列文件信息）；
+    /// 读不成 UTF-8 的留在按页看。已经开着同一份时不重开，只在没改过时跟上工作机上的新内容。
+    func loadSource() async {
+        await read(offset: 1)
+        guard page != nil, let path = selection.path, let client else { return }
+        let request = textRequest
+        loadingText = true
+        defer { if textRequest == request { loadingText = false; download = nil } }
+        do {
+            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path,
+                                                              version: selection.version) { [weak self] progress in
+                Task { @MainActor in if self?.textRequest == request { self?.download = progress } }
+            }
+            guard textRequest == request, !Task.isCancelled,
+                  let data = try? Data(contentsOf: file.url), let text = String(data: data, encoding: .utf8) else { return }
+            let version = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            let editable = selection.version == nil
+            if let document, document.path == path, document.editable == editable {
+                if !document.dirty, document.version != version { document.replace(text, version: version) }
+            } else if editable, let draft = drafts[path] {
+                document = SourceDocument(path: path, editable: true, text: draft.text, version: draft.version, dirty: true)
+            } else {
+                document = SourceDocument(path: path, editable: editable, text: text, version: version)
+            }
+            contentRevision = UUID()
+        } catch {
+            if textRequest == request && !Task.isCancelled { textError = error.localizedDescription }
+        }
+    }
+
+    /// 不再看这份原文：没保存的改动留进草稿。
+    private func closeDocument() {
+        if let document, document.dirty { drafts[document.path] = (document.current, document.version) }
+        document = nil
+        saveConflict = false
+        saveError = nil
+    }
+
+    /// 保存原文编辑器里的改动；force 时不管文件在打开以后有没有被改过（工作机核对版本，见 files.write）。
+    func save(force: Bool = false) async {
+        guard let document, document.editable, document.dirty, !saving else { return }
+        let text = document.current
+        saving = true
+        saveError = nil
+        defer { saving = false }
+        do {
+            struct Write: Encodable { let instanceId: String; let path: String; let text: String; let baseVersion: String; let force: Bool? }
+            struct Written: Decodable { let version: String }
+            let written = try await operation("write", body: Write(instanceId: instanceID, path: document.path, text: text,
+                                                                   baseVersion: document.version, force: force ? true : nil), as: Written.self)
+            document.saved(text, version: written.version)
+            drafts[document.path] = nil
+        } catch let error as KitedError where error.status == 409 {
+            if self.document === document { saveConflict = true }
+        } catch {
+            if self.document === document { saveError = "保存失败：\(error.localizedDescription)" }
+        }
+    }
+
+    /// 放弃没保存的改动，换回工作机上现在的内容。
+    func discard() async {
+        guard let document else { return }
+        drafts[document.path] = nil
+        self.document = nil
+        saveConflict = false
+        saveError = nil
+        await loadSource()
+    }
+
+    /// 工作区打了新快照（agent 改了文件、别的设备保存了）：重读时间线，原文没改过时跟上新内容。
+    func workspaceChanged() async {
+        guard selection.path != nil, selection.diffId == nil else { return }
+        await loadHistory()
+        guard let document, !document.dirty, selection.version == nil, let path = selection.path, let client,
+              let file = try? await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path),
+              self.document === document, !document.dirty,
+              let data = try? Data(contentsOf: file.url), let text = String(data: data, encoding: .utf8) else { return }
+        let version = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        if version != document.version { document.replace(text, version: version) }
     }
 
     /// 读所选文件的时间线：内容变过的工作区快照，新的在前。读不到时记下原因，时间线里说明。
@@ -539,6 +647,53 @@ final class FileBrowser {
             directoryError = error.localizedDescription
             return false
         }
+    }
+}
+
+/// 原文编辑器里的一份文件：打开时的文字与版本（全文 sha256，保存时交给工作机核对，见 files.write），改没改过。
+/// 改动中的文字在编辑器的文字存储里（storage），保存时取；工作机上的新内容、保存后的结果经 replace、saved 换进来。
+@Observable
+final class SourceDocument {
+    let path: String
+    let editable: Bool
+    let language: CodeLanguage?
+    /// 工作机上那一份的版本：打开时的，或上次保存后的。
+    private(set) var version: String
+    /// 交给编辑器的文字；revision 变了时编辑器换成它。
+    private(set) var text: String
+    private(set) var revision = 0
+    private(set) var dirty: Bool
+    /// 编辑器的文字存储，见 CodeEditor。
+    @ObservationIgnored weak var storage: NSTextStorage?
+
+    init(path: String, editable: Bool, text: String, version: String, dirty: Bool = false) {
+        self.path = path
+        self.editable = editable
+        self.text = text
+        self.version = version
+        self.dirty = dirty
+        language = CodeLanguage.forPath(path)
+    }
+
+    /// 编辑器里现在的文字。
+    var current: String { storage?.string ?? text }
+
+    /// 用户在编辑器里改了字。
+    func edited() { if !dirty { dirty = true } }
+
+    /// 换成工作机上的新内容。
+    func replace(_ text: String, version: String) {
+        self.text = text
+        self.version = version
+        dirty = false
+        revision += 1
+    }
+
+    /// 保存好了：保存期间又打了字的仍算改过。
+    func saved(_ text: String, version: String) {
+        self.version = version
+        self.text = text
+        dirty = current != text
     }
 }
 

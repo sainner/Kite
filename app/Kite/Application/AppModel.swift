@@ -498,6 +498,14 @@ final class AppModel {
                 }
                 return
             }
+            if event.type == "workspace.snapshot" {
+                // 工作区打了新快照（agent 改了文件、别处保存了）：浏览窗口重读时间线，没改过的原文跟上新内容
+                if let workspaceId = event.workspaceId,
+                   let area = self.workspaces.first(where: { $0.id == workspaceId && $0.remote.machine.id == connection.id }) {
+                    for browser in area.files.values { Task { await browser.workspaceChanged() } }
+                }
+                return
+            }
             guard ["catalog.snapshot", "checkout.changed", "workspace.changed", "thread.changed"].contains(event.type) else { return }
             guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
             if event.type == "catalog.snapshot" {

@@ -1,0 +1,25 @@
+diff --git a/app/Kite/Application/KiteApp.swift b/app/Kite/Application/KiteApp.swift
+index 60bcc04..3b75e08 100644
+--- a/app/Kite/Application/KiteApp.swift
++++ b/app/Kite/Application/KiteApp.swift
+@@ -33,8 +33,10 @@ struct KiteApp: App {
+     var body: some Scene {
+         #if os(macOS)
+         Window("Kite", id: "main") {
++            if EditorProbe.isRequested { EditorProbeView() } else {
+             AppRoot().dockPreview().connectsToService().modifier(PortForwarding()).cardActionsPreview()
+                 .environment(model).readsWindowChrome().keepsLayoutEngine().toastHost().appAppearance()
++            }
+         }
+         .kiteWindowStyle()
+         .defaultSize(width: 1272, height: 792)
+@@ -51,7 +53,9 @@ struct KiteApp: App {
+ 
+         #else
+         WindowGroup {
++            if EditorProbe.isRequested { EditorProbeView() } else {
+             AppRoot().dockPreview().connectsToService().modifier(PortForwarding()).cardActionsPreview().environment(model).toastHost().appAppearance()
++            }
+         }
+         // iPad 外接键盘的快捷键
+         .commands { KiteCommands(model: model) }

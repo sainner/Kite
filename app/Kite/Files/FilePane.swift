@@ -29,6 +29,8 @@ struct FilePane: View {
     @State private var query = ""
     /// 当前是第几个匹配。
     @State private var matchIndex = 0
+    /// 确认放弃原文编辑器里没保存的改动。
+    @State private var confirmDiscard = false
     /// Markdown 预览报上来的每个匹配在第几块，见 MarkdownMatches。
     @State private var markdownMatches: [Int] = []
     /// PDF 里找到几个。
@@ -118,7 +120,8 @@ struct FilePane: View {
 
     /// 信息区：失败优先，其次是窗口现在的情况（见 status），再是指定行定位不到这类关于文件的说明。
     private var notice: PaneNotice? {
-        let contentError = browser.displayingFile ? browser.textError ?? browser.pageError : browser.displayingWeb ? browser.pageError : nil
+        let contentError = browser.displayingFile ? browser.saveError ?? browser.textError ?? browser.pageError
+            : browser.displayingWeb ? browser.pageError : nil
         if let error = contentError ?? browser.directoryError { return .failure(error) }
         if let status { return status }
         let unversioned = browser.selection.diffId == nil && ((browser.content?.info ?? browser.info)?.unversioned ?? false)
@@ -170,7 +173,7 @@ struct FilePane: View {
         .task(id: directoryTerm) { await searchDirectory() }
         // 文本的当前匹配不在这一页时，先读到它所在的地方
         .task(id: currentMatch) {
-            guard searchTarget == .text, let line = currentMatch?.line, let page = browser.page,
+            guard searchTarget == .text, browser.document == nil, let line = currentMatch?.line, let page = browser.page,
                   line < page.offset || line >= page.nextOffset ?? page.totalLines + 1 else { return }
             await browser.read(offset: max(1, line - 50))
         }
@@ -182,6 +185,14 @@ struct FilePane: View {
         }
         .onChange(of: browser.showDirectory) { _, shown in if !shown { directoryQuery = "" } }
         .onChange(of: sideBySide, initial: true) { browser.sideBySide = sideBySide }
+        .discardAlert("放弃未保存的修改？", isPresented: $confirmDiscard) { Task { await browser.discard() } }
+        .alert("文件在你打开以后被改过", isPresented: Bindable(browser).saveConflict) {
+            Button("覆盖", role: .destructive) { Task { await browser.save(force: true) } }
+            Button("放弃我的修改") { Task { await browser.discard() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("覆盖会盖掉别人的改动；放弃会换成现在的内容。")
+        }
         .onChange(of: browser.selection.port) { area.portChanged(browser.instanceID, to: browser.selection.port) }
     }
 
@@ -367,6 +378,15 @@ struct FilePane: View {
                 .init(id: "preview", title: "预览", systemImage: "eye"),
             ], current: browser.rendered ? "preview" : "source") { [browser] in browser.rendered = $0 == "preview" }
         }
+        // 原文改过：放弃修改、保存
+        if fileVisible, let document = browser.document, document.editable, document.dirty {
+            actions.groups.append([
+                PaneHeaderAction(title: "放弃修改", systemImage: "xmark", disabled: browser.saving) { confirmDiscard = true },
+                PaneHeaderAction(title: "保存", systemImage: "checkmark", help: "保存（⌘S）", busy: browser.saving) {
+                    Task { await browser.save() }
+                },
+            ])
+        }
         return actions
     }
 
@@ -374,7 +394,8 @@ struct FilePane: View {
     private var fileBar: some View {
         HStack(spacing: Metrics.paneButtonGap) {
             if !searching {
-                if fileVisible, let page = browser.page, browser.selection.diffId == nil, !(browser.format.renderable && browser.rendered) {
+                if fileVisible, browser.document == nil, let page = browser.page, browser.selection.diffId == nil,
+                   !(browser.format.renderable && browser.rendered) {
                     PaneHeaderButtonGroup {
                         ActionButton("上一页", icon: "chevron.left") { Task { await browser.read(offset: max(1, page.offset - 200)) } }
                             .disabled(page.offset <= 1)
@@ -769,9 +790,20 @@ struct FilePane: View {
                     withAnimation { proxy.scrollTo(MarkdownView.blockID(markdownMatches[matchIndex]), anchor: .center) }
                 }
             }
+        } else if let document = browser.document {
+            sourceEditor(document)
         } else {
             textPreview
         }
+    }
+
+    /// 原文编辑器：引用指定的行选中滚过去，在文件里找时选中当前的匹配，⌘S 保存。
+    private func sourceEditor(_ document: SourceDocument) -> some View {
+        CodeEditor(document: document,
+                   focus: browser.focus?.startLine.map { CodeEditor.Focus(lines: $0...max($0, browser.focus?.endLine ?? $0), id: browser.focusID) },
+                   match: currentMatch.flatMap { match in fileQuery.map { CodeEditor.Match(query: $0, line: match.line, occurrence: match.occurrence) } },
+                   save: { [browser] in Task { await browser.save() } })
+            .id(ObjectIdentifier(document))
     }
 
     private var textPreview: some View {

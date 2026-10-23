@@ -1,6 +1,6 @@
 /** 文件插件与 agent 共用工作目录边界和文本读取；不提供操作系统沙箱。 */
 import { createHash } from 'node:crypto';
-import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
@@ -43,21 +43,26 @@ function page<T extends { name: string; kind: EntryKind }, R>(entries: T[], offs
     nextOffset: offset + limit < entries.length ? offset + limit : null };
 }
 
+/** 当文本读写的上限。 */
+const TEXT_LIMIT = 2 * 1024 * 1024;
+
 /** 当文本读的内容：超过 2 MiB 或含 NUL 的不读，查看器改按字节看。按版本读的同样处理，见 file-versions.ts。 */
 export function textContent(size: number, read: () => string): string {
-  if (size > 2 * 1024 * 1024) throw new KiteError('文件超过 2 MiB，请用 shell 按范围读取', 413);
+  if (size > TEXT_LIMIT) throw new KiteError('文件超过 2 MiB，请用 shell 按范围读取', 413);
   const content = read();
   if (content.includes('\0')) throw new KiteError('文件不是可直接处理的文本', 415);
   return content;
 }
+
+/** 文本内容的版本：完整内容的 sha256，读一页（textPage）和保存（WorkspaceFiles.write）用同一个。 */
+export const textVersion = (content: string): string => createHash('sha256').update(content).digest('hex');
 
 /** 文本的一页：从 offset 行起最多 limit 行；version 是完整内容的摘要。 */
 export function textPage(path: string, content: string, offset = 1, limit = 200) {
   const lines = content.split('\n');
   const end = Math.min(offset - 1 + limit, lines.length);
   return { path, text: lines.slice(offset - 1, end).join('\n'), offset,
-    totalLines: lines.length, nextOffset: end < lines.length ? end + 1 : null,
-    version: createHash('sha256').update(content).digest('hex') };
+    totalLines: lines.length, nextOffset: end < lines.length ? end + 1 : null, version: textVersion(content) };
 }
 
 export class WorkspaceFiles {
@@ -98,6 +103,24 @@ export class WorkspaceFiles {
   read({ path, offset = 1, limit = 200 }: z.infer<typeof readFileArgs>) {
     const target = this.resolve(path);
     return textPage(relative(this.root, target), this.text(target), offset, limit);
+  }
+
+  /**
+   * 把一个已有的文本文件改成 text：只改普通文件、不新建，上限同读（2 MiB、不含 NUL），现在读不成文本的也不改。
+   * 文件已是这份内容时不写（重试幂等，written 为 false）；现在的内容和打开时（baseVersion）不同又没带 force 时拒绝，免得盖掉别人的改动。
+   * 原地写入，保留权限与 inode。
+   */
+  write({ path, text, baseVersion, force = false }: { path: string; text: string; baseVersion: string; force?: boolean }) {
+    if (Buffer.byteLength(text) > TEXT_LIMIT) throw new KiteError('内容超过 2 MiB，不能按文本保存', 413);
+    if (text.includes('\0')) throw new KiteError('内容含 NUL，不能按文本保存', 415);
+    const target = this.resolve(path);
+    const current = textVersion(this.text(target));
+    const version = textVersion(text);
+    const saved = { path: relative(this.root, target), version };
+    if (current === version) return { ...saved, written: false };
+    if (current !== baseVersion && !force) throw new KiteError('文件在你打开以后被改过，保存会盖掉别人的改动', 409);
+    writeFileSync(target, text);
+    return { ...saved, written: true };
   }
 
   list(path = '.', offset = 0, limit = 200) {

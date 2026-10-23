@@ -126,6 +126,15 @@ export const operationContracts = {
     tool: null, effect: 'read', retry: 'read', input: readFileArgs.extend({ instanceId: id, version: snapshotCommit.optional() }).strict(),
     output: z.object({ path: id, text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable(), version: id }).strict(),
   },
+  'files.write': {
+    title: '保存文件', description: [
+      '把文件实例所属工作区内一个已有的文本文件改成 text，上限同 files.read。baseVersion 是打开时 files.read 给的 version：',
+      '文件之后被改过时拒绝（409），force 为 true 时照样覆盖；文件已是这份内容时直接返回，不再写。写成了打一枚工作区快照。',
+    ].join(''),
+    tool: null, effect: 'write', retry: 'content',
+    input: z.object({ instanceId: id, path: id, text: z.string(), baseVersion: z.string().regex(/^[0-9a-f]{64}$/), force: z.boolean().optional() }).strict(),
+    output: z.object({ path: id, version: id }).strict(),
+  },
   'files.history': {
     title: '读取历史版本', description: '列出文件实例所属工作区内一个文件的历史版本：工作区快照里这个文件内容变过的那些，新的在前，最多 100 个。',
     tool: null, effect: 'read', retry: 'read',
@@ -300,7 +309,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('monitor.start') }).strict(),
   /** 预览的操作不分目标：本工作区的预览都能起、看、操作和停，不限创建来源。 */
   ...previewOperations.map((operation) => z.object({ operation: z.literal(operation) }).strict()),
-  ...(['files.list', 'files.search', 'files.read', 'files.history', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
+  ...(['files.list', 'files.search', 'files.read', 'files.write', 'files.history', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
   z.object({ operation: z.literal('line'), actions: z.array(z.enum(lineActions)) }).strict(),

@@ -3,7 +3,7 @@
 - [分布式架构](decentralized-direction.md) — 不再自营服务器：Tailscale 身份、见证方可替换、设备间同步；实施顺序，第 1 步已做；设计待评审
 - [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由；DeepSeek 用账号 API Key
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
-- [代码编辑选型](code-editor-direction.md) — 系统文本视图 TextKit 2 加 tree-sitter，没选 CodeMirror、STTextView、Runestone 的理由
+- [代码编辑选型](code-editor-direction.md) — TextKit 2 加 tree-sitter、生成段落时上色、折行；没选 CodeMirror 等的理由，验证记录入口
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
 - [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，SwiftUI 菜单小程序验证，simctl 不再用，现场采集别挂调试器，真机点按记录与崩溃报告
 - [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打高度或片段坐标、沿视图链打裁剪；log 写全路径；外层蒙版会裁；逐帧错位在提交后核对；iPhone 动画真机逐帧截图；探针按块删
