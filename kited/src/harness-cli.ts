@@ -88,9 +88,10 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
     }
   };
   const settings = { model: { model: modelName, reasoning }, contextWindow };
-  // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量；不提供 skill 发现（docs/kited.md「终端试用」），清单为空。
+  // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量；不提供 skill 发现，也不接外部 MCP 服务（docs/kited.md「终端试用」），两份清单为空。
   // skill 来源只有系统层，skill 工具按名字还能加载系统层与项目层的。
-  const variables = { 'environment.date': today, ...directoryVariables(cwd, systemSkillSources), 'project.skills': () => ({ text: '' }) };
+  const variables = { 'environment.date': today, ...directoryVariables(cwd, systemSkillSources), 'project.skills': () => ({ text: '' }),
+    'mcp.servers': () => ({ text: '' }) };
   const host = await openThreadHost({
     cwd, threadDir: directory, env: { ...process.env }, onEvent: render, settings, skills: new SkillCatalog(cwd, systemSkillSources),
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),

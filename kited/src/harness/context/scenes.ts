@@ -44,6 +44,7 @@ export const contextLayers = {
       { name: 'agent.tools', title: '允许的工具', description: '允许的工具名称，已按项目约束过滤，用顿号分隔；一个都没有时是「无」，修改配置或项目约束后变化。' },
       { name: 'execution.grants', title: '执行授权', description: '工作目录、额外读写路径与网络访问的当前授权，JSON 格式；修改执行授权后变化。' },
       { name: 'plugin.tools', title: '插件工具', description: '已授权的插件工具按实例分组，JSON 格式：每项是实例 ID 与它的工具，name 是调用用的名字；全部撤回时是 []，修改授权后变化。' },
+      { name: 'mcp.servers', title: 'MCP 服务', description: '这个代理能用的外部 MCP 服务，每条一行：服务名，有说明时接一句说明。只列实例打开、这台工作机装了、项目约束没禁的；一个都没有时为空，开关服务、改项目约束或在这台工作机上增删服务后变化。' },
     ],
   },
 } as const;

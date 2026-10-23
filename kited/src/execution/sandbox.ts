@@ -20,7 +20,7 @@ export interface ExecutionPolicy {
 }
 
 /** 宿主内部数据不随工作区目录授权暴露给执行代码。 */
-export const hostPrivatePaths = (home: string): string[] => ['auth', 'sessions', 'diffs', 'attachments', 'workspaces', 'plugins', 'kite.db', 'kite.db-wal', 'kite.db-shm']
+export const hostPrivatePaths = (home: string): string[] => ['auth', 'sessions', 'diffs', 'attachments', 'workspaces', 'plugins', 'mcp', 'kite.db', 'kite.db-wal', 'kite.db-shm']
   .map((name) => join(home, name));
 
 /** 环境只携带开发工具的基础设置；认证、代理与运行时注入变量不随模型命令传递。 */

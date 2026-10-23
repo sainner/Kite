@@ -11,6 +11,8 @@ nonisolated struct RoleDefinition: Codable, Equatable, Identifiable, Sendable {
     var execution: ExecutionChanges?
     /// 新建代理的默认审批模式；没给时跟随工作机的默认（RoleCatalog.defaultApproval）。
     var approval: ApprovalMode?
+    /// 新建代理默认打开的外部 MCP 服务，按服务名；没装的工作机略过。没给就是都不开。
+    var mcp: [String]?
     var model: AgentModelConfiguration
 
     /// 有名称才能保存。

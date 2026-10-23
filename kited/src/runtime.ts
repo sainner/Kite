@@ -15,10 +15,13 @@ import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
 import { harnessModel } from './harness/adapters.ts';
 import { openThreadHost } from './harness/thread-host.ts';
 import { agentPolicy, harnessPolicy } from './execution/policy.ts';
-import { effectiveExecution, executionRevision, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
+import { effectiveExecution, executionRevision, instanceExecutionChanges } from './execution/grants.ts';
 import { projectContext, SkillCatalog } from './harness/context/project.ts';
 import { skillsBinding, type SkillSources } from './harness/context/skills.ts';
-import { effectiveTools, threadVariables } from './context-variables.ts';
+import { effectiveTools, threadVariables, type McpView } from './context-variables.ts';
+import type { ProjectConstraints } from './account-data/registry.ts';
+import type { McpServers } from './mcp/servers.ts';
+import { instanceMcp, MCP_TOOL_PREFIX } from './mcp/tools.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { agentTools } from './plugins/definitions.ts';
@@ -103,10 +106,13 @@ export interface RuntimeHost {
   compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
   /** 两个时刻之间工作区的净文件变化。 */
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
-  /** 所在项目的工具约束；每次请求和每次调用工具时读取，收紧即时生效。 */
-  toolConstraint(): ProjectToolRule | undefined;
-  /** 所在项目的执行授权基础与边界；每次请求和每次调用工具时读取，收紧对之后的命令生效。 */
-  executionConstraint(): ProjectExecution | undefined;
+  /**
+   * 所在项目的约束：工具规则、执行授权的基础与边界、禁用的 MCP 服务。每次请求和每次调用工具时读取，
+   * 工具与 MCP 的收紧即时生效，执行授权的收紧对之后的命令生效。
+   */
+  constraints(): ProjectConstraints | undefined;
+  /** 这台工作机的外部 MCP 服务；生效的服务的工具按需加载，每次请求和调用前按此刻的开关与约束取。 */
+  mcp?: McpView & Pick<McpServers, 'tools'>;
   /** 命令连接名单外的主机时交给它决定：按问的那一刻实例的审批模式放行、拒绝或问人，中途改模式对运行中的命令也生效。 */
   askNetwork: NetworkAsk;
   /** shell 的长命令转到后台终端：超时、用户插话或模型要求时接管，见 terminal/terminals.ts。 */
@@ -137,9 +143,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
   // 两个宿主在请求边界刷新它；工具、沙箱放行和这里给代理的清单用同一份。
   const skills = new SkillCatalog(cwd, host.skills);
-  const variables = (current: ThreadContext) => ({ ...threadVariables(current, host.toolConstraint(), host.executionConstraint(), host.skills),
+  const variables = (current: ThreadContext) => ({ ...threadVariables(current, host.constraints(), host.skills, host.mcp),
     'project.skills': () => skillsBinding(skills.skills) });
-  const policy = () => agentPolicy(basePolicy, cwd, instanceExecutionChanges(host.current()), host.executionConstraint(), host.secretFiles());
+  const policy = () => agentPolicy(basePolicy, cwd, instanceExecutionChanges(host.current()), host.constraints()?.execution, host.secretFiles());
+  const mcpTools = (current: ThreadContext) => host.mcp?.tools(host.mcp.effective(instanceMcp(current), host.constraints()?.mcp?.deny)) ?? [];
   const credentials = host.credentials;
   const secrets = credentials ? {
     list: async () => credentials.available(projectId),
@@ -156,13 +163,14 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       ...(host.outside ? { outside: host.outside } : {}),
       prepare(afterNotification) {
         const current = host.current();
-        const { agent, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
-        const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name)]);
+        const { agent, permitted, plugins } = selectTools(current, operations, host.constraints()?.tools);
+        const external = mcpTools(current);
+        const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name), ...external.map((tool) => tool.name)]);
         const updates = host.notifications(afterNotification);
         const values = variables(current);
         const instructions = assembleContext(projectContext(agent.context, values)).instructions;
         return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, values, host.contextUpdateTemplate())).instructions,
-          tools: [...operations.tools, ...plugins], allowed,
+          tools: [...operations.tools, ...plugins, ...external], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
@@ -178,24 +186,26 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     ...(host.outside ? { outside: host.outside } : {}),
     prepareRequest(tools, { afterNotification }) {
       const current = host.current();
-      const execution = effectiveExecution(instanceExecutionChanges(current), host.executionConstraint()).grants;
-      const { agent, selection, permitted, plugins } = selectTools(current, operations, host.toolConstraint());
+      const constraints = host.constraints();
+      const execution = effectiveExecution(instanceExecutionChanges(current), constraints?.execution).grants;
+      const { agent, selection, permitted, plugins } = selectTools(current, operations, constraints?.tools);
       const values = variables(current);
       // 声明顺序取代理插件的工具目录，与实例配置一致。
       const available = [...tools, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
       const { model, contextWindow } = harnessModel(agent.model, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
         ...(credentials ? { apiKeys: () => credentials.apiKeys() } : {}), ...(host.chatgptLimits ? { observeLimits: host.chatgptLimits } : {}) });
-      // 插件工具不进声明，经 tool_search 按实例加载；搜得到的是此刻获准的。
-      const search = searchTool(plugins);
+      // 插件与 MCP 工具不进声明，经 tool_search 按插件实例或服务名加载；搜得到的是此刻获准的。
+      const external = mcpTools(current);
+      const search = searchTool([...plugins, ...external]);
       return {
         model: options.model?.(current) ?? model,
-        tools: [...declared.filter((tool) => permitted(tool.name)), search, ...plugins],
-        // 请求发出后项目约束收紧时，这次请求里的调用也在执行前拦下；依赖的工具被禁，它也拦下。
+        tools: [...declared.filter((tool) => permitted(tool.name)), search, ...plugins, ...external],
+        // 请求发出后项目约束收紧、MCP 服务关掉或被禁时，这次请求里的调用也在执行前拦下；依赖的工具被禁，它也拦下。
         blocked: (name) => {
-          const constraint = host.toolConstraint();
-          return (agentTools as readonly string[]).includes(name) && !permittedTools(agentTools, constraint ? [constraint] : []).includes(name)
-            ? `项目约束已禁用 ${name}` : undefined;
+          const constraint = host.constraints()?.tools;
+          if ((agentTools as readonly string[]).includes(name) && !permittedTools(agentTools, constraint ? [constraint] : []).includes(name)) return `项目约束已禁用 ${name}`;
+          return name.startsWith(MCP_TOOL_PREFIX) && !mcpTools(host.current()).some((tool) => tool.name === name) ? `MCP 服务已关掉或被禁用：${name}` : undefined;
         },
         toolDefinitions: [...declared, search].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(agent.context, values), variables: values,

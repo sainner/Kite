@@ -50,13 +50,14 @@ struct SettingsContent: View {
 
 /// 每台工作机的子页。文件尚未接通。
 nonisolated enum DrivePage: String, SidebarPage {
-    case accounts, network, version, files
+    case accounts, mcp, network, version, files
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .accounts: "账号"
+        case .mcp: "MCP 服务"
         case .network: "网络"
         case .version: "版本"
         case .files: "文件"
@@ -66,6 +67,7 @@ nonisolated enum DrivePage: String, SidebarPage {
     var icon: TablerSymbol {
         switch self {
         case .accounts: .user
+        case .mcp: .plug
         case .network: .world
         case .version: .refresh
         case .files: .folder
@@ -83,6 +85,10 @@ struct DriveContent: View {
         Group {
             switch model.drivePage {
             case .accounts: TilesLayer(group: .accounts(model.accountWindows))
+            case .mcp:
+                SectionPage(header: PaneHeader(title: model.accountWorker?.machine.name ?? "设备", subtitle: model.drivePage.title)) {
+                    if let worker = model.accountWorker { McpSettingsPage(connection: worker) }
+                }
             case .network:
                 SectionPage(header: PaneHeader(title: model.accountWorker?.machine.name ?? "设备", subtitle: model.drivePage.title)) {
                     if let worker = model.accountWorker { NetworkSettingsPage(connection: worker) }

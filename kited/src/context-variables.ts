@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { permittedTools } from './agents/tool-policy.ts';
 import { KiteError } from './errors.ts';
-import { effectiveExecution, instanceExecutionChanges, type ProjectExecution } from './execution/grants.ts';
+import { effectiveExecution, instanceExecutionChanges } from './execution/grants.ts';
 import {
   contentHash, directoryVariables, documentFiles, documentLimit, documentPaths, documentVariables, today, type DocumentFile, type DocumentVariable,
 } from './harness/context/project.ts';
@@ -12,6 +12,9 @@ import { contextLayers, isPublicVariable, type ContextLayer, type LayerVariable,
 import type { SkillSources } from './harness/context/skills.ts';
 import type { ContextBinding, ContextValues } from './harness/context/types.ts';
 import type { Machine, Project, ThreadContext, Workspace } from './model.ts';
+import type { ProjectConstraints } from './account-data/registry.ts';
+import type { McpServers } from './mcp/servers.ts';
+import { instanceMcp } from './mcp/tools.ts';
 import { pluginToolBindings } from './plugins/tools.ts';
 import type { ProjectToolRule } from './roles.ts';
 import type { Store } from './store.ts';
@@ -25,6 +28,11 @@ export function environmentVariables(machine: Machine) {
 }
 
 const text = (value: () => string) => (): ContextBinding => ({ text: value() });
+
+/** 这台工作机装的 MCP 服务；没给时 mcp.servers 为空。 */
+export type McpView = Pick<McpServers, 'effective' | 'description'>;
+/** 变量用到的项目约束：工具规则、执行授权、禁用的 MCP 服务。 */
+export type VariableConstraints = Partial<Pick<ProjectConstraints, 'tools' | 'execution' | 'mcp'>>;
 
 /** 环境层加项目层：项目规则与记忆索引从 cwd 往上找，按检出取时 cwd 是项目文件夹；skill 清单合上 skills 给的几层。 */
 function projectVariables(machine: Machine, project: Project, cwd: string, skills: SkillSources) {
@@ -52,10 +60,10 @@ export function workspaceVariables(model: { machine: Machine; project: Project; 
 
 /**
  * thread 是取值时的状态：生成通知时传入变化之后的配置，变量取新值。每个值在模板引用时才取。
- * constraint 是项目的工具约束，允许的工具按它过滤，与配置通知一致。
+ * constraints 是项目约束，允许的工具、生效的执行授权与 MCP 服务按它过滤，与配置通知一致。
  */
-export function threadVariables(thread: ThreadContext, constraint: ProjectToolRule | undefined, execution: ProjectExecution | undefined,
-  skills: SkillSources): ContextValues {
+export function threadVariables(thread: ThreadContext, constraints: VariableConstraints | undefined, skills: SkillSources,
+  mcp: McpView | undefined): ContextValues {
   const agent = () => instanceAgent(thread);
   return {
     ...workspaceVariables(thread, skills),
@@ -64,20 +72,23 @@ export function threadVariables(thread: ThreadContext, constraint: ProjectToolRu
     'agent.role': text(() => agent().context.title),
     'agent.model': text(() => agent().model.model),
     'agent.reasoning': text(() => agent().model.reasoning),
-    'agent.tools': text(() => effectiveTools(agent(), constraint).join('、') || '无'),
-    'execution.grants': text(() => JSON.stringify(effectiveExecution(instanceExecutionChanges(thread), execution).grants)),
-    // 按实例列出获准的插件工具：自研 harness 按实例 ID 用 tool_search 加载，Claude 按名字用 ToolSearch 搜；name 是调用用的名字。
+    'agent.tools': text(() => effectiveTools(agent(), constraints?.tools).join('、') || '无'),
+    'execution.grants': text(() => JSON.stringify(effectiveExecution(instanceExecutionChanges(thread), constraints?.execution).grants)),
+    // 按实例列出获准的插件工具：自研 harness 以实例 ID 为分组用 tool_search 加载，Claude 按名字用 ToolSearch 搜；name 是调用用的名字。
     'plugin.tools': text(() => JSON.stringify([...Map.groupBy(pluginToolBindings(thread), (binding) => binding.instanceId)]
       .map(([instanceId, bindings]) => ({ instanceId, tools: bindings.map((binding) => ({ name: binding.modelName, tool: binding.toolName })) })))),
+    'mcp.servers': text(() => (mcp?.effective(instanceMcp(thread), constraints?.mcp?.deny) ?? []).map((server) => {
+      const description = mcp!.description(server);
+      return description ? `- ${server}：${description}` : `- ${server}`;
+    }).join('\n')),
   } satisfies Record<PublicVariable, () => ContextBinding>;
 }
 
 /** 按线程当前保存的状态取值。 */
-export function storedThreadVariables(store: Store, id: string, skills: SkillSources): ContextValues {
+export function storedThreadVariables(store: Store, id: string, skills: SkillSources, mcp: McpView): ContextValues {
   const thread = store.threadContext(id);
   if (!thread) throw new Error(`没有这个线程：${id}`);
-  const constraints = store.workspaceConstraints(thread.workspaceId);
-  return threadVariables(thread, constraints?.tools, constraints?.execution, skills);
+  return threadVariables(thread, store.workspaceConstraints(thread.workspaceId), skills, mcp);
 }
 
 /**
@@ -93,7 +104,7 @@ const layerOf = (name: PublicVariable) =>
   (Object.keys(contextLayers) as ContextLayer[]).find((layer) => contextLayers[layer].variables.some((variable) => variable.name === name))!;
 
 /** 范围能取到的层、各变量的取值，以及来自文件的变量往上找的起点。 */
-function scopeValues(store: Store, scope: VariableScope, skills: SkillSources): { layers: ContextLayer[]; values: ContextValues; cwd?: string } {
+function scopeValues(store: Store, scope: VariableScope, skills: SkillSources, mcp?: McpView): { layers: ContextLayer[]; values: ContextValues; cwd?: string } {
   switch (scope.kind) {
     case 'machine':
       return { layers: ['environment'], values: environmentVariables(store.machine) };
@@ -105,16 +116,15 @@ function scopeValues(store: Store, scope: VariableScope, skills: SkillSources): 
     case 'instance': {
       const thread = store.threadContext(scope.id);
       if (!thread) throw new KiteError(`没有这个线程：${scope.id}`, 404);
-      const constraints = store.workspaceConstraints(thread.workspaceId);
       return { layers: ['environment', 'project', 'workspace', 'agent'], cwd: thread.workspace.cwd,
-        values: threadVariables(thread, constraints?.tools, constraints?.execution, skills) };
+        values: threadVariables(thread, store.workspaceConstraints(thread.workspaceId), skills, mcp) };
     }
   }
 }
 
-export function previewVariable(store: Store, scope: VariableScope, name: string, skills: SkillSources): VariablePreview {
+export function previewVariable(store: Store, scope: VariableScope, name: string, skills: SkillSources, mcp?: McpView): VariablePreview {
   if (!isPublicVariable(name)) throw new KiteError(`${name} 不是公共变量，场景材料只在生成时才有`, 404);
-  const { layers, values, cwd } = scopeValues(store, scope, skills);
+  const { layers, values, cwd } = scopeValues(store, scope, skills, mcp);
   const layer = layerOf(name);
   if (!layers.includes(layer)) throw new KiteError(`${name} 在${contextLayers[layer].title}层，这里取不到`);
   try {

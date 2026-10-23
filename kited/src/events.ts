@@ -36,6 +36,8 @@ export type DomainEvent =
    * template 是上下文模板，skill 是 skill 列表。
    */
   | { type: 'library.changed'; kind: LibraryList }
+  /** 这台工作机的 MCP 服务连接状态或工具目录变了，客户端重新读 /mcp；catalog 为真是清单本身（服务名、说明）变了。 */
+  | { type: 'mcp.changed'; catalog?: boolean }
   /** Line 的收件箱变了：客户端更新标志旁的数目，打开着的收件箱重新读取。 */
   | { type: 'line.inbox' }
   /** Line 找用户：App 发系统通知，点开是收件箱里的那一项。 */

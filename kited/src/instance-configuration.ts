@@ -21,11 +21,14 @@ import { effectiveTools, threadVariables } from './context-variables.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
 import { trustedTargets } from './preview/targets.ts';
+import { instanceMcp } from './mcp/tools.ts';
+import { serverNamesSchema } from './mcp/names.ts';
 
 /** 实例上记住的预置脚本内容最多留这么多份。 */
 const MAX_TRUSTED_TARGETS = 50;
 
-type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'skillSources' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history' | 'terminals'>;
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'skillSources' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history'
+  | 'terminals' | 'mcp'>;
 
 interface ConfigurationControl {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
@@ -156,7 +159,7 @@ export class InstanceConfiguration {
     return {
       id: randomUUID(), kind: 'execution.permissions.changed', source, authority: 'instruction',
       context: assembleContext(executionPermissionsContext(executionRevision(effective),
-        threadVariables(thread, this.projectRule(thread.workspaceId), project, this.kite.skillSources),
+        threadVariables(thread, { ...this.constraints(thread.workspaceId), execution: project }, this.kite.skillSources, this.kite.mcp),
         this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
     } as const;
   }
@@ -183,22 +186,52 @@ export class InstanceConfiguration {
     });
   }
 
+  /** 这台工作机装的服务与此刻的连接状态，给开关列表用。 */
+  private mcpCatalog() {
+    return this.kite.mcp.list().map(({ name, config, status }) => ({ name, description: config.description, phase: status.phase }));
+  }
+  /** 实例打开的 MCP 服务（可以有本机没装的，装上后生效）、项目禁用的，以及这台工作机装的。 */
+  mcpSettings(id: string) {
+    const thread = this.control.context(id);
+    return { servers: instanceMcp(thread), denied: this.constraints(thread.workspaceId)?.mcp?.deny ?? [], available: this.mcpCatalog() };
+  }
+  /** 开关 MCP 服务：运行中也能改，下一次请求按新的给工具，基础上下文里的服务清单随之更新。 */
+  configureMcpSettings(id: string, value: unknown) {
+    const parsed = z.object({ servers: serverNamesSchema }).strict().safeParse(value);
+    if (!parsed.success) throw new KiteError(`MCP 服务开关请求无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`);
+    const { servers } = parsed.data;
+    return this.control.run(this.control.context(id).workspaceId, async () => {
+      const instance = this.control.openThread(id);
+      if (JSON.stringify(instanceMcp(instance)) !== JSON.stringify(servers)) {
+        const { mcp: _mcp, ...config } = instance.config;
+        this.kite.store.setInstanceConfig(id, servers.length ? { ...config, mcp: servers } : config);
+        this.control.changed(instance.workspaceId);
+      }
+      // 新打开、生效的服务在后台先连上，下一次请求就有它的工具。
+      void this.kite.mcp.ensure(this.kite.mcp.effective(servers, this.constraints(instance.workspaceId)?.mcp?.deny));
+      return this.mcpSettings(id);
+    });
+  }
+
   agentConfig(id: string) {
     this.control.context(id);
     const instance = this.kite.store.instance(id)!;
     const agent = instanceAgent(instance);
     return { instance, revision: agentRevision(agent), configurationBoundary: configurationBoundary(agent.runtime) };
   }
-  /** 项目当前的工具约束，以账号级数据为准，这里读本机缓存。 */
+  /** 项目当前的约束，以账号级数据为准，这里读本机缓存。 */
+  private constraints(workspaceId: string) {
+    return this.kite.store.workspaceConstraints(workspaceId);
+  }
   private projectRule(workspaceId: string) {
-    return this.kite.store.workspaceConstraints(workspaceId)?.tools;
+    return this.constraints(workspaceId)?.tools;
   }
   private projectExecution(workspaceId: string): ProjectExecution | undefined {
-    return this.kite.store.workspaceConstraints(workspaceId)?.execution;
+    return this.constraints(workspaceId)?.execution;
   }
   /** 通知里的公共变量取 thread 给出的变化之后的状态。 */
   private variables(thread: ThreadContext) {
-    return threadVariables(thread, this.projectRule(thread.workspaceId), this.projectExecution(thread.workspaceId), this.kite.skillSources);
+    return threadVariables(thread, this.constraints(thread.workspaceId), this.kite.skillSources, this.kite.mcp);
   }
   /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
@@ -211,13 +244,16 @@ export class InstanceConfiguration {
     const all = toolLimits(undefined, this.projectRule(thread.workspaceId));
     return agentCapabilities(instanceAgent(thread).runtime, { allowed: all.allowed, defaults: role.allowed, required: role.required, blocked: all.blocked });
   }
-  /** 新代理的草稿还没有实例：给出模型目录、工具的界面名称与分组，以及各角色在这个工作区可开的工具与被项目禁用的工具；必需工具被禁的角色附上原因。 */
+  /** 新代理的草稿还没有实例：给出模型目录、工具的界面名称与分组、这台工作机的 MCP 服务，以及各角色在这个工作区可开的工具、被项目禁用的工具与默认打开的服务；必需工具被禁的角色附上原因。 */
   agentOptions(workspaceId: string) {
     const project = this.projectRule(workspaceId);
     const all = toolLimits(undefined, project);
-    return { ...agentModelCatalog(), toolCatalog: agentToolCatalog, roles: this.kite.roles.list().map(({ role, revision }) => {
+    return { ...agentModelCatalog(), toolCatalog: agentToolCatalog,
+      mcp: { available: this.mcpCatalog(), denied: this.kite.store.workspaceConstraints(workspaceId)?.mcp?.deny ?? [] },
+      roles: this.kite.roles.list().map(({ role, revision }) => {
       const limits = toolLimits(role.tools, project);
       return { id: role.id, revision, tools: all.allowed, defaults: limits.allowed, required: limits.required, blocked: all.blocked,
+        ...(role.mcp?.length ? { mcp: role.mcp } : {}),
         ...(limits.missing.length ? { unavailable: `项目约束禁用了必需的 ${limits.missing.join('、')}` } : {}) };
     }) };
   }
@@ -243,7 +279,8 @@ export class InstanceConfiguration {
     return {
       id: randomUUID(), kind: 'agent.configuration.changed', source, authority: 'instruction',
       context: assembleContext(agentConfigurationContext(agentRevision(agent),
-        threadVariables({ ...thread, config: { ...thread.config, agent } }, project, this.projectExecution(thread.workspaceId), this.kite.skillSources),
+        threadVariables({ ...thread, config: { ...thread.config, agent } }, { ...this.constraints(thread.workspaceId), tools: project },
+          this.kite.skillSources, this.kite.mcp),
         this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
     } as const;
   }
@@ -255,10 +292,10 @@ export class InstanceConfiguration {
     const thread = this.control.context(id);
     const bound = roleAgent(this.kite.roles.get(selection.id, selection.revision), {}, this.projectRule(thread.workspaceId));
     return this.updateAgentConfiguration(id, expectedRevision, bound.agent, bound.role,
-      { execution: bound.execution, approval: bound.approval });
+      { execution: bound.execution, approval: bound.approval, mcp: bound.mcp });
   }
   private updateAgentConfiguration(id: string, expectedRevision: string, value: unknown, role?: RoleBinding,
-    defaults?: { execution?: ExecutionChanges; approval: ApprovalMode }) {
+    defaults?: { execution?: ExecutionChanges; approval: ApprovalMode; mcp: string[] }) {
     return this.control.run(this.control.context(id).workspaceId, async () => {
       this.control.openThread(id);
       const snapshot = this.agentConfig(id);
@@ -287,11 +324,12 @@ export class InstanceConfiguration {
       const save = () => this.kite.store.transaction(() => {
         if (runtimeChanged) this.kite.store.setThreadRuntime(id, agent.runtime);
         // 换角色时执行授权与审批模式重置为新角色的：角色没给执行授权就不增不减，审批模式已按角色与默认解析好。
-        const { approval: _approval, execution: _execution, ...config } = instance.config;
+        const { approval: _approval, execution: _execution, mcp: _mcp, ...config } = instance.config;
         this.kite.store.setInstanceConfig(id, { ...(role ? config : instance.config), agent,
           ...(role ? { role, grants: roleOperationGrants(instance.definitionId, this.kite.operations.grants(id).grants,
             toolLimits(instanceRole(instance)?.tools).allowed, toolLimits(role.tools).allowed),
-          ...(defaults?.execution ? { execution: defaults.execution } : {}), ...(defaults ? { approval: defaults.approval } : {}) } : {}) },
+          ...(defaults?.execution ? { execution: defaults.execution } : {}), ...(defaults ? { approval: defaults.approval } : {}),
+          ...(defaults?.mcp.length ? { mcp: defaults.mcp } : {}) } : {}) },
           nextRevision === revision ? undefined : notification);
       });
       if (runtimeChanged) await this.control.switchRuntime(id, agent, save);

@@ -320,6 +320,8 @@ struct RemoteEvent: Decodable {
     var kind: String?
     /// line.notification 带的系统通知。
     var notification: LineNotificationPayload?
+    /// mcp.changed：为真是服务清单本身变了，不只是连接状态。
+    var catalog: Bool?
 }
 
 /// Line 所在的工作机推来的系统通知（line.notification）：点开是收件箱里的 item。

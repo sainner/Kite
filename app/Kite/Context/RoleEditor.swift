@@ -8,12 +8,28 @@ struct RoleSettingsForm: View {
     @Binding var role: RoleDefinition
     let catalog: RoleCatalog?
     let focus: FocusState<RoleField?>.Binding
+    @Environment(AppModel.self) private var model
+    /// 连着的各台工作机装的 MCP 服务。
+    @State private var servers: [McpServerSummary] = []
 
     private var universe: [String] { catalog?.tools ?? [] }
 
     var body: some View {
         tools
+        mcp
         execution
+    }
+
+    /// 角色是账号级的，列出连着的各台工作机装的服务；新建代理时只开那台工作机上装了的。
+    @ViewBuilder
+    private var mcp: some View {
+        CardSection("MCP 服务", info: "新建代理默认打开的外部 MCP 服务，之后在代理配置里还能开关。服务不在沙箱里，授权一个服务等于把它能做的事交给代理。") {
+            if servers.isEmpty && (role.mcp ?? []).isEmpty {
+                Text("连着的工作机上还没有 MCP 服务，在「设备」里添加。").foregroundStyle(.secondary)
+            }
+            McpServerToggles(available: servers, selected: Binding(get: { role.mcp ?? [] }, set: { role.mcp = $0.isEmpty ? nil : $0 }))
+        }
+        .task(id: model.mcpCatalogRevision) { servers = await model.knownMcpServers() }
     }
 
     /// 执行授权在项目基础上加的许可，和新建代理的默认审批模式；项目禁止的仍打不开。

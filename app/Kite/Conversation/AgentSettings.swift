@@ -112,13 +112,21 @@ extension AppModel {
     }
 }
 
-/// 新代理草稿的配置：在所选角色允许的范围内调整工具；模型与思考强度在标题栏和输入区改。完成只改本机草稿。
+/// 新代理草稿的配置：在所选角色允许的范围内调整工具与 MCP 服务；模型与思考强度在标题栏和输入区改。完成只改本机草稿。
 struct DraftAgentSettings: View {
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
     @Environment(WorkThread.self) private var thread
     @Environment(\.dismiss) private var dismiss
     @State private var tools: [String] = []
+    @State private var mcp: [String] = []
 
     private var capabilities: AgentCapabilities? { thread.agentCapabilities }
+    /// 所选角色默认打开的 MCP 服务。
+    private var roleMcp: [String] {
+        let role = model.newThreadRole(for: thread, in: area)?.id
+        return (thread.agentOptions?.roles.first { $0.id == role }?.mcp ?? []).sorted()
+    }
 
     var body: some View {
         CardSheet(title: "配置", subtitle: "选择可用工具", size: InstanceSettings.size,
@@ -126,6 +134,11 @@ struct DraftAgentSettings: View {
             if let capabilities {
                 CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用。") {
                     AgentToolToggles(capabilities: capabilities, tools: $tools)
+                }
+                if let options = thread.agentOptions?.mcp, !(options.available.isEmpty && mcp.isEmpty) {
+                    CardSection("MCP 服务", note: "这台工作机装的外部 MCP 服务，角色给出默认勾选。服务不在沙箱里，授权一个服务等于把它能做的事交给代理。") {
+                        McpServerToggles(available: options.available, denied: options.denied, selected: $mcp, showsStatus: true)
+                    }
                 }
             } else {
                 ProgressView()
@@ -136,6 +149,7 @@ struct DraftAgentSettings: View {
         }
         .onAppear {
             tools = thread.draftChoice?.tools ?? capabilities?.defaults ?? []
+            mcp = thread.draftChoice?.mcp ?? roleMcp
         }
     }
 
@@ -144,6 +158,7 @@ struct DraftAgentSettings: View {
         guard let capabilities else { return }
         let selected = capabilities.tools.filter { tools.contains($0) }
         thread.draftChoice?.tools = selected == capabilities.tools.filter(capabilities.defaults.contains) ? nil : selected
+        thread.draftChoice?.mcp = mcp.sorted() == roleMcp ? nil : mcp.sorted()
         dismiss()
     }
 }

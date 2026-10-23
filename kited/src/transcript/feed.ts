@@ -4,7 +4,7 @@ import type { DisplayEvent } from './protocol.ts';
 
 /** 显示协议按对象归属过滤；目录流只包含概要变更。 */
 export function inScope(event: DisplayEvent, scope: EventScope): boolean {
-  if (scope === 'catalog') return ['checkout.changed', 'workspace.changed', 'thread.changed', 'thread.activity', 'model-accounts.changed', 'library.changed',
+  if (scope === 'catalog') return ['checkout.changed', 'workspace.changed', 'thread.changed', 'thread.activity', 'model-accounts.changed', 'library.changed', 'mcp.changed',
     'line.inbox', 'line.notification', 'monitor.changed', 'update.changed'].includes(event.type);
   if ('workspaceId' in scope) return 'workspaceId' in event && event.workspaceId === scope.workspaceId;
   // 活动摘要是目录概览，线程流已有完整的 thread.state。

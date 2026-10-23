@@ -469,6 +469,11 @@ final class AppModel {
                 Task { await self.refreshLineInbox() }
                 return
             }
+            if event.type == "mcp.changed" {
+                connection.mcpRevision += 1
+                if event.catalog == true { connection.mcpCatalogRevision += 1 }
+                return
+            }
             if event.type == "update.changed" {
                 connection.updateRevision += 1
                 Task { await self.refreshLocalUpdate(connection) }
@@ -604,7 +609,7 @@ final class AppModel {
         let choice = draft.draftChoice
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, approval: choice?.approval, windowId: window,
+                                      tools: choice?.tools, approval: choice?.approval, mcp: choice?.mcp, windowId: window,
                                       messageId: message.id, attachments: message.attachments.isEmpty ? nil : message.attachments.map(\.id)),
             as: RemoteThread.self)
         // 读回的窗口指向新实例，草稿对象由 WorkArea.update 认领，接着当这个代理

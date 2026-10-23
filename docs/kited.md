@@ -224,7 +224,7 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 
 ## Claude 会话的上下文
 
-Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上下文、授权、工作区与快照。Claude 的内置工具只留按需加载插件工具的 ToolSearch（见 [Bun 插件](Bun插件.md#模型工具与插件间调用)），此外只开放实例配置与授权允许的 Kite 工具，以及显式授权的插件工具，不自动加载用户或项目中的 MCP、skills 和设置。
+Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上下文、授权、工作区与快照。Claude 的内置工具只留按需加载插件工具的 ToolSearch（见 [Bun 插件](Bun插件.md#模型工具与插件间调用)），此外只开放实例配置与授权允许的 Kite 工具、显式授权的插件工具，以及实例打开的外部 MCP 服务的工具（由 kited 连接后作为 Kite 工具交给 Claude，见 [外部 MCP 服务](#外部-mcp-服务)），不自动加载用户或项目中的 MCP、skills 和设置。
 
 Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，工具名与自研 harness 相同，不带 MCP 前缀。工具执行完成并保存快照后才能继续模型请求。
 
@@ -310,7 +310,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | PUT | `/project-registry/:id/remote` | 给没有远程的项目设远程 `{remote}`：在这台有检出的工作机上把全部分支和标签推到远程，加上 origin，写进登记表；其他工作机的检出随项目同步加上 origin。推送被拒或这台没有检出 409，远程要账号时错误体带 `gitLogin` |
 | PUT | `/project-registry/:id/settings` | `{integration?, autoHandover?, handoverNeeds?}`，至少一项：`integration` 是集成方式，没有远程的项目只能是 `merge`，手动设置后清掉 `integrationReason`；`autoHandover` 是工作机睡眠、登出、重启或关机前，把这个项目里正在工作的工作区换到别的工作机；`handoverNeeds` 是换机目标须满足的环境，取值 `xcode`（完整的 Xcode）、`iosDevice`（连着的 iPhone 或 iPad） |
 | PUT | `/project-registry/:id/appearance` | `{icon?, color?}` 至少一项，未提供项不变；`icon` 为内置图标名（1–100 个 ASCII 字母、数字或句点，默认 `folder`），`color` 为 `primary`（默认）、`accent`、`green`、`purple`、`orange` 或 `pink`；返回完整项目，未登记的项目 404 |
-| GET/PUT | `/project-registry/:id/constraints` | 项目约束 `{tools: {mode, tools}, revision}`，没设置过时为不限制的黑名单；PUT `{expectedRevision, tools}`，`mode` 为 `allow` 或 `deny`，最多 64 个工具名，版本不符 409 |
+| GET/PUT | `/project-registry/:id/constraints` | 项目约束 `{tools: {mode, tools}, execution?, mcp?: {deny}, revision}`，没设置过时为不限制的黑名单；PUT `{expectedRevision, tools, execution?, mcp?}`，`mode` 为 `allow` 或 `deny`，最多 64 个工具名；`mcp.deny` 是本项目禁用的 MCP 服务名，任何层都打不开；版本不符 409 |
 | GET/POST | `/credentials` | 列出凭据的公开信息（`?type=&projectId=`，省略项目时列账号共享）`[{id, type, name, projectId, meta, createdAt, updatedAt}]`；POST `{type, name, projectId?, meta, secret}` 新建，返回 201，同类型、范围与名称已存在 409，`git`、`api`、`speech` 不接受项目。规则见 [凭据](#凭据) |
 | PUT/DELETE | `/credentials/:id` | PUT `{name?, meta?, secret?}` 至少一项，改名或替换内容，类型与范围不可改，改换 API 供应商须同时提供新密钥；DELETE 不存在也成功 |
 | POST | `/git/github/device` | 开始 GitHub 设备码授权 `{flow, userCode, verificationURI, expiresAt, interval}`；GitHub 无法访问时 502。`/git/github/device/:flow` 按 `interval` 轮询，返回 `{status}`（`pending`、`slow_down`、`expired`、`denied`）或 `{status: "authorized", account}`，授权成功即保存或替换 `github.com` 的 Git 凭据 |
@@ -341,7 +341,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent、文件或插件操作；参数、operationId 和重试语义见 [实例操作](实例操作.md) |
 | GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`）、工具的界面名称与分组（`toolCatalog`），以及配置生效边界；不发模型请求 |
-| GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录、工具的界面名称与分组（`toolCatalog`），以及各角色在这个工作区可开的工具；必需工具不可用的角色带 `unavailable` 原因 |
+| GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录、工具的界面名称与分组（`toolCatalog`）、这台工作机的 MCP 服务与本项目禁用的（`mcp: {available, denied}`），以及各角色在这个工作区可开的工具；角色设了默认打开的 MCP 服务时带 `mcp`；必需工具不可用的角色带 `unavailable` 原因 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新，工具不能超出创建时角色的规则，也不能关闭必需工具 |
 | GET / POST | `/roles` | 列出角色（带签名状态，内置角色另带默认内容的版本 `defaultRevision`，与 `revision` 不同即改过），附代理插件的全部工具及其界面名称与分组（`toolCatalog`）、提示词变量、模型目录，以及角色不设审批模式时新建代理用的 `defaultApproval`；以 `{role}` 新建角色 |
 | PUT | `/roles/:id` | 以 `{expectedRevision, role}` 更新角色；不修改已有代理 |
@@ -349,6 +349,10 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / POST | `/skills` | 列出资源库里的 skill，每项只有 `{name, revision, defaultRevision?}`，随 kited 带的另带默认内容的版本 `defaultRevision`，与 `revision` 不同即改过；以 `{skill}` 新建，名字不能与随 kited 带的重复，返回新建的那一项 |
 | GET / PUT / DELETE | `/skills/:name` | `GET` 取整包 `{skill: {version, name, files: [{path, content, encoding?}]}, revision, defaultRevision?}`；以 `{expectedRevision, skill}` 更新，只返回 `{name, revision, defaultRevision?}`；`DELETE ?expectedRevision=` 删除自建的，随 kited 带的只能恢复默认 |
 | POST | `/skills/:name/reset` | 以 `{expectedRevision}` 把随 kited 带的 skill 恢复默认，等同于保存默认内容，返回同 `PUT` |
+| GET | `/mcp` | 这台工作机装的 MCP 服务 `{servers: [{name, config, status}], error?}`，清单文件读不了时 `servers` 为空、带 `error`，这时也不接受修改：`config` 是服务配置（含环境变量与请求头的原值），`status` 为 `{phase, message?, tools?, protocol?, server?}`，`phase` 是 `idle`、`connecting`、`connected`、`failed` 或 `unauthorized`；变化随 `mcp.changed` 送达，清单本身（服务名、说明）变了时事件带 `catalog: true` |
+| PUT / DELETE | `/mcp/servers/:name` | 新增或替换一个服务，配置见 [外部 MCP 服务](#外部-mcp-服务)；已连着的断开，下次用到时按新配置连。`DELETE` 删除 |
+| POST | `/mcp/import` | 以通行的 `{mcpServers: {名字: 配置}}` 逐个新增或替换，有一个不对就都不改，返回 `{servers}` |
+| POST | `/mcp/servers/:name/reconnect` | 断开后马上重连，不等失败后的间隔，返回这个服务 |
 | GET | `/workspaces/:id/skills` | 这个工作区的代理能加载的 skill `{skills: [{name, description, layer}]}`，四层合成后的；输入框点选时列出来 |
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
 | POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `kind` 为 `role` 的 `library.changed` 送达；未启用轻任务时 503 |
@@ -363,13 +367,14 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效；读取另给按项目上限收紧后实际用的 `effective` 与上限 `max`。新建代理时依次取创建请求的 `approval`、角色的默认与 `/roles` 的 `defaultApproval`，写进实例配置的 `approval`，随工作区的 instances 下发 |
+| GET / PUT | `/instances/:id/mcp` | 读取或设置代理打开的 MCP 服务 `{servers}`（服务名，可以有本机没装的，装上后生效），运行中也可改，下一次请求生效；读取另给项目禁用的 `denied` 与这台工作机装的服务 `available: [{name, description?, phase}]`。新建代理时取创建请求的 `mcp`，没给就用角色的默认 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 与 grants 整体更新，代理的协作范围是其中几项授权共用的目标 |
 | POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例的视图（实例已有窗口时换到这个视图）；请求使用稳定 id |
 | GET | `/workspaces/:id/preview-targets` | 工作区的预览目标与设备候选 `{targets, devices}`：targets 每项是目标名；devices 是模拟器型号，以及与这台工作机配对过的真机，真机带名字、硬件型号、编号与连没连着，见 [实例操作 · 目标](实例操作.md#目标) |
 | GET | `/instances/:id/preview/bundle` | App 窗口里那个 App 的 .app 打成的 zip，响应头 `X-Kite-App` 是 .app 的名字（百分号编码）；App 不是 .app 时 409，见 [实例操作 · App 窗口](实例操作.md#app-窗口) |
 | PUT | `/apps/:name` | 请求体是 .app 的 zip，在这台 Mac 上解开到 Kite 目录的 `apps/` 下（同名的换成新的）并打开，返回 `{path}`；只接本机监听的请求 |
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, windowId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, mcp?, windowId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
@@ -430,6 +435,19 @@ HTTPS 远程要账号或拒绝了访问令牌时，访问远程的接口（添�
 远程连接需要组网，iPhone 真机经组网连接的完整验收尚未完成。Linux 沙箱实机验证、资源配额、独立终端授权编辑和脱离进程组的后台任务尚未完成；Git 元数据只读，不能假设模型工具可直接暂存或提交。文件快照回退已提供，会话历史的回退与分叉尚未提供。
 
 Claude 原生能力的开放范围以本文专节为准。
+
+## 外部 MCP 服务
+
+外部 MCP 服务只来自这台工作机，见 [产品架构](产品架构.md#两层协议与上下文)。清单存在数据目录的 `mcp/servers.json`，写法与通行的 `mcpServers` 相同，只有本人可读写，也在宿主保护路径里，代理的命令读不到：
+
+- 本机程序 `{type: "stdio", command, args?, env?, cwd?, description?}`：`type` 可以省略。环境只带开发工具的基础设置（与代理的命令相同，PATH 取 kited 的）再加 `env`，工作目录默认用户主目录；命令找不到时写绝对路径。
+- 远程服务 `{type: "http", url, headers?, description?}`：只接 Streamable HTTP，SSE 传输在新规范里已弃用，不接。要登录的服务先在 `headers` 里放令牌，OAuth 登录尚未接入。
+- `env` 与 `headers` 的值里可以写 `{account.名字}`，引用 [凭据](#凭据) 里账号共享的密钥，连接时取出明文替换，清单里只存引用；服务属于工作机、不属于某个项目，不认 `{project.名字}`。直接写的值以明文存在清单里，`GET /mcp` 也原样返回，令牌应改用引用。
+- `description` 是给代理看的一句说明，出现在基础上下文的服务清单里。
+
+每个服务一条连接，所有代理共用，第一次有代理要用时连上；会话启动前最多等 5 秒，还没连上过的这次不给工具，之后的请求再给。连上后取到的工具目录一直沿用到服务通知变化或配置被改，断开期间照样给模型，调用时再连，连不上的调用记为没执行。失败的隔 30 秒再试，要登录的不自动重试，App 里可以手动重连。协议按 2026-07-28 版（无状态），SDK 先探测服务支持的版本，旧版服务退回原来的握手；不实现 sampling、roots 与 logging，也不向服务声明补充信息（elicitation）的能力。工具目录按服务给的缓存时长缓存，服务通知变化时刷新。旧版 stdio 服务若把状态放在进程里，几个代理共用一个进程时会互相影响，目前不按代理分开。
+
+服务是用户装在这台工作机上的普通程序，不在 Kite 的沙箱里，代理的执行授权管不到它；授权一个服务等于把它能做的事交给代理。谁能用由三层决定：项目约束的 `mcp.deny` 禁用，角色的 `mcp` 是新建代理默认打开的，实例上可以再开关；新装的服务默认谁都不能用。生效的服务列在公共变量 `mcp.servers` 里，它们的工具和插件工具一样按需加载：工具名为 `mcp__服务名__工具名`，自研 harness 经 `tool_search` 按服务名加载，Claude 经 ToolSearch 搜到。单次调用最长 30 分钟，有进度就续期；结果里的文字、PNG/JPEG/WebP 图片交给模型，超过 10 万字截掉；发出后断开或停止的调用结果记为不明。
 
 ## Bun 自定义插件
 

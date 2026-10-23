@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { diffReferenceSchema } from '../workspace/file-diffs.ts';
 import { loadedText } from '../harness/tool-search.ts';
 import { skillMarkSchema } from '../harness/request-config.ts';
-import type { Json, Tool, ToolImage, ToolResult } from '../harness/types.ts';
+import { toolImageTypes, type Json, type Tool, type ToolImage, type ToolResult } from '../harness/types.ts';
 
 /** Claude Code 内置的按需加载工具，结果是加载到的工具引用。 */
 export const CLAUDE_TOOL_SEARCH = 'ToolSearch';
@@ -15,7 +15,7 @@ export const structuredClaudeTool = (name: string): boolean => name !== 'read' &
 
 /** 原生条目里的对象字段；不是对象时按空对象读。 */
 export const object = (value: unknown): Record<string, any> => value && typeof value === 'object' ? value as Record<string, any> : {};
-const imageTypes = new Set<string>(['image/png', 'image/jpeg', 'image/webp']);
+const imageTypes = new Set<string>(toolImageTypes);
 
 const imageBlock = (image: ToolImage) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: image.mediaType, data: image.data } });
 
@@ -76,10 +76,15 @@ export function claudeToolServer(options: {
 }) {
   // 提问与审批等用户回应不设时限；上游对单次调用有硬时限，这里取它允许的最大值（约 24.8 天）。
   // 服务整体设常驻会盖过单个工具，所以逐个设：按需加载的以外都常驻。
-  return { ...createSdkMcpServer({ name: 'kite', tools: options.tools.map((entry) => {
-    const schema = z.fromJSONSchema(entry.parameters);
-    if (!(schema instanceof z.ZodObject)) throw new Error(`工具 ${entry.name} 的参数须为对象`);
-    return tool(entry.name, entry.description, schema.shape, async (args, extra) => {
+  // 插件与 MCP 服务给的参数 schema 转不成 zod 对象时只跳过那个工具，不让一个外部工具拖垮整个工具服务；Kite 自己的工具照旧报错。
+  return { ...createSdkMcpServer({ name: 'kite', tools: options.tools.flatMap((entry) => {
+    let schema: z.ZodType | undefined;
+    try { schema = z.fromJSONSchema(entry.parameters); } catch (error) { if (!entry.deferred) throw error; }
+    if (!(schema instanceof z.ZodObject)) {
+      if (entry.deferred) { console.error(`[Claude] 工具 ${entry.name} 的参数 schema 转换不了，没有交给 Claude`); return []; }
+      throw new Error(`工具 ${entry.name} 的参数须为对象`);
+    }
+    return [tool(entry.name, entry.description, schema.shape, async (args, extra) => {
       let callId: string | undefined;
       let result: ToolResult;
       try {
@@ -103,6 +108,6 @@ export function claudeToolServer(options: {
         ...(images ?? []).map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mediaType }))],
         ...(structured ? { structuredContent: { ...rest } } : {}), ...(result.status === 'success' ? {} : { isError: true }) };
     }, { annotations: { readOnlyHint: entry.parallel === true, destructiveHint: entry.parallel !== true, openWorldHint: true },
-      alwaysLoad: !entry.deferred });
+      alwaysLoad: !entry.deferred })];
   }) }), timeout: 2_147_483_647 };
 }

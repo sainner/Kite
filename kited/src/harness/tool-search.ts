@@ -1,6 +1,6 @@
 /**
- * 插件工具按需加载，规则见 docs/Bun插件.md「按需加载」：声明里固定一个由客户端执行的 tool_search，插件工具不进声明；
- * 模型按实例搜索时，结果带上这个实例已授权工具的定义，适配器把它作为 tool_search_output 追加进历史。
+ * 插件与外部 MCP 服务的工具按需加载，规则见 docs/Bun插件.md「按需加载」：声明里固定一个由客户端执行的 tool_search，这些工具不进声明；
+ * 模型按分组（插件实例 ID 或 MCP 服务名）搜索时，结果带上这一组已授权工具的定义，适配器把它作为 tool_search_output 追加进历史。
  * 两家 Responses 接口的实测见 spikes/tool-search/README.md。
  */
 import { z } from 'zod';
@@ -8,7 +8,7 @@ import type { ContextItem, Tool, ToolDefinition } from './types.ts';
 
 export const TOOL_SEARCH = 'tool_search';
 
-const input = z.object({ instances: z.array(z.string().min(1)).min(1).max(20) }).strict();
+const input = z.object({ groups: z.array(z.string().min(1)).min(1).max(20) }).strict();
 
 /** 加载结果的说明；Claude 的 ToolSearch 结果显示时也用它，两个后端写法一致。 */
 export const loadedText = (names: string[]) => `已加载 ${names.length} 个工具：${names.join('、')}`;
@@ -17,14 +17,14 @@ export const loadedText = (names: string[]) => `已加载 ${names.length} 个工
 export function searchTool(tools: Tool[]): Tool {
   return {
     name: TOOL_SEARCH,
-    description: '加载插件实例的工具。按实例 ID 加载后，这些工具之后直接按名字调用，不用再加载。',
+    description: '加载按需加载的工具：groups 填插件实例 ID 或 MCP 服务名。加载后这些工具直接按名字调用，不用再加载。',
     parameters: z.toJSONSchema(input) as Tool['parameters'],
     validate(value) { input.parse(value); },
     async execute(value) {
-      const ids = [...new Set(input.parse(value).instances)];
+      const ids = [...new Set(input.parse(value).groups)];
       const found = tools.filter((tool) => ids.includes(tool.deferred!.group)).map(({ name, description, parameters }) => ({ name, description, parameters }));
       const missing = ids.filter((id) => !tools.some((tool) => tool.deferred!.group === id));
-      const note = missing.length ? `；${missing.join('、')} 不是已授权的插件实例` : '';
+      const note = missing.length ? `；没有 ${missing.join('、')} 这一组已授权的工具` : '';
       if (!found.length) return { status: 'error', output: `没有加载到工具${note}`, tools: [] };
       return { status: 'success', output: `${loadedText(found.map((tool) => tool.name))}${note}`, tools: found };
     },

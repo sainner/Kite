@@ -207,8 +207,8 @@ test('订阅接口的工具搜索往返：声明为客户端执行的 tool_searc
       instructions: '测试主循环', settings: {},
     }),
   });
-  const searchCall = (id: string, instances: string[]): JsonObject => ({
-    id: `item-${id}`, type: 'tool_search_call', execution: 'client', call_id: id, status: 'completed', arguments: { instances },
+  const searchCall = (id: string, groups: string[]): JsonObject => ({
+    id: `item-${id}`, type: 'tool_search_call', execution: 'client', call_id: id, status: 'completed', arguments: { groups },
   });
   const respond = (stream: ReturnType<typeof sse>, call: JsonObject) => {
     stream.event({ type: 'response.output_item.added', item: { ...call, status: 'in_progress' } });
@@ -476,7 +476,7 @@ test('终端线程关闭等工具停止，重开保留历史并更新项目材�
     cwd, threadDir, env: ENV(),
     prepareRequest: () => ({
       model: currentModel,
-      instructions: projectContext(defaultContextDefinition, { 'environment.date': today, ...directoryVariables(cwd) }),
+      instructions: projectContext(defaultContextDefinition, { 'environment.date': today, ...directoryVariables(cwd), 'mcp.servers': () => ({ text: '' }) }),
       tools: [tool('hold', async (_args, { signal }) => { started.resolve(signal); await aborted(signal); return stopped.promise; })],
       settings: { model: { model: 'test', reasoning: 'high' } },
     }),

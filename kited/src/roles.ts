@@ -13,6 +13,7 @@ import { agentTools } from './plugins/definitions.ts';
 import { lineToolNames } from './operations/contract.ts';
 import { approvalModes, bindRoleExecution, defaultApprovalMode, executionChangesSchema, type ApprovalMode } from './execution/grants.ts';
 import type { Store } from './store.ts';
+import { serverNamesSchema } from './mcp/names.ts';
 
 export const roleSchema = z.object({
   version: z.literal(1),
@@ -25,6 +26,8 @@ export const roleSchema = z.object({
   execution: executionChangesSchema.optional(),
   /** 新建代理的默认审批模式，项目上限仍然适用；不设时跟随工作机的默认。 */
   approval: z.enum(approvalModes).optional(),
+  /** 新建代理默认打开的外部 MCP 服务，按服务名；工作机上没装的略过。服务默认谁都不能用，只有列在这里或在实例上打开的才给。 */
+  mcp: serverNamesSchema.optional(),
   model: agentDefinitionSchema.shape.model,
   /** 已不起作用：旧版存进账号的角色带着它，留着才能照原样读写、版本对得上。 */
   maxRequestsPerTurn: z.number().int().positive().optional(),
@@ -44,7 +47,7 @@ export function roleSelection(value: unknown): RoleSelection | undefined {
 /** 实例配置里记下创建时的角色与它的工具规则，作为之后修改工具的上限。 */
 export interface RoleBinding { id: string; revision: string; tools: ToolRule }
 /** 草稿里可调的初始参数，覆盖角色的默认值。 */
-export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; approval?: ApprovalMode }
+export interface RoleChoice { model?: AgentDefinition['model']; tools?: AgentDefinition['tools']; approval?: ApprovalMode; mcp?: string[] }
 
 /** 项目约束里的工具规则，没有必需项。 */
 export type ProjectToolRule = Pick<ToolRule, 'mode' | 'tools'>;
@@ -88,14 +91,14 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   const binding: RoleBinding = { id: role.id, revision, tools: role.tools };
   // 审批模式依次取草稿的选择、角色的默认、工作机的默认，解析好写进实例，App 照实例配置显示。
   const approval = choice.approval ?? role.approval ?? defaultApprovalMode;
-  return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), approval };
+  return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), approval, mcp: choice.mcp ?? role.mcp ?? [] };
 }
 const defaultModel = { model: defaultAgentModel, reasoning: 'medium' };
 const reviewTools: ToolRule = { mode: 'allow', tools: ['read', 'skill'], required: ['read'] };
 const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
   { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
     text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。只审查不修改；需要的材料工具拿不到时（如目录或 diff）请用户提供，不声称执行过修改或检查。' }] },
-  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory', 'skills'].includes(block.id)),
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory', 'skills', 'mcp'].includes(block.id)),
 ] };
 export const lineRoleId = 'kite.line';
 const lineTools: ToolRule = { mode: 'allow', tools: ['read', 'patch', 'question', 'monitor_start', 'monitor_list', 'monitor_stop', ...lineToolNames], required: ['line_status'] };
@@ -111,7 +114,7 @@ const lineContext: ContextDefinition = { ...defaultContextDefinition, id: lineRo
     '- 要记挂的事用 monitor_start 约个时刻醒来（用户设定的每日巡视也这样约），要盯着某件事就开一个命令来源的 monitor。一句「收到」不收尾任何事：集成、推送、归档仍是各自的显式操作。',
     '- 你的记忆以用户为中心，在本项目的 .kite/memory/ 下：用户的偏好、做决定的习惯、各项目的轻重缓急、以前怎么处理过类似的事项，以及每次代处理的决定与理由。各项目的专业经验留在项目自己的记忆里，你不收集。用 read 和 patch 维护。',
   ].join('\n') }] },
-  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'rules', 'memory'].includes(block.id)),
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'project-rules', 'rules', 'memory', 'mcp'].includes(block.id)),
 ] };
 const builtinRoles: Role[] = [
   // 工作角色不带 Line 的管理工具：它们的目标范围是整个账号。

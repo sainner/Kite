@@ -343,6 +343,11 @@ private extension RoleDefinition {
     /// 默认审批模式）落到排队写入时工作机上最新的角色上。整份覆盖会把排在前面、没存上已撤掉的改动和别的设备的改动一起写回去。
     mutating func adopt(_ after: RoleDefinition, since before: RoleDefinition, in universe: [String]) {
         if after.approval != before.approval { approval = after.approval }
+        if after.mcp != before.mcp {
+            let (old, new) = (Set(before.mcp ?? []), Set(after.mcp ?? []))
+            let value = Set(mcp ?? []).subtracting(old.subtracting(new)).union(new.subtracting(old)).sorted()
+            mcp = value.isEmpty ? nil : value
+        }
         if after.execution != before.execution {
             let (old, new) = (before.execution ?? ExecutionChanges(), after.execution ?? ExecutionChanges())
             var value = execution ?? ExecutionChanges()

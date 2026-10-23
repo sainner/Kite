@@ -85,8 +85,10 @@ export interface ToolResult {
   skill?: SkillMark;
 }
 
+/** 交给模型看的图片格式，各家适配器都收。 */
+export const toolImageTypes = ['image/png', 'image/jpeg', 'image/webp'] as const;
 export interface ToolImage {
-  mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+  mediaType: typeof toolImageTypes[number];
   /** base64 正文。 */
   data: string;
 }

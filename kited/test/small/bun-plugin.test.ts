@@ -317,7 +317,7 @@ test('模型按实例授权调用同名 Bun 工具，原始参数 schema 拦住�
     })).status).toBe(200);
     // 插件工具经 tool_search 按实例加载：加载结果带两个实例各自的 state 定义，下一次请求才放行它们。
     const first = await model.call(1);
-    await first.response.emit({ type: 'item', item: modelItem('search', TOOL_SEARCH, { instances: [firstId, secondId] }) });
+    await first.response.emit({ type: 'item', item: modelItem('search', TOOL_SEARCH, { groups: [firstId, secondId] }) });
     first.response.complete();
     const second = await model.call(2);
     const loaded = modelResult(second.request.history, 'search');
@@ -401,7 +401,7 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
     const first = await model.call(1);
     expect(first.request.history.some((entry) => entry.type === 'notification'
       && entry.text.includes('插件通知旧模板') && entry.text.includes(pin.modelName) && entry.text.includes(targetId))).toBe(true);
-    await first.response.emit({ type: 'item', item: modelItem('search', TOOL_SEARCH, { instances: [targetId] }) });
+    await first.response.emit({ type: 'item', item: modelItem('search', TOOL_SEARCH, { groups: [targetId] }) });
     first.response.complete();
     const second = await model.call(2);
     expect(second.request.allowedTools).toContain(pin.modelName);

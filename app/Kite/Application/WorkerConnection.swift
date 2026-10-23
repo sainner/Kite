@@ -26,6 +26,9 @@ import SwiftUI
     var outdated: VersionMismatch?
     /// 工作机推 update.changed 时加一，版本页据此重新读 /update。
     var updateRevision = 0
+    /// 工作机推 mcp.changed 时加一，MCP 页与代理的服务开关据此重新读 /mcp；清单本身变了时 mcpCatalogRevision 也加一。
+    var mcpRevision = 0
+    var mcpCatalogRevision = 0
     /// 进行中的目录读取，按请求路径，见 AppModel.refreshCatalog。
     @ObservationIgnored var catalogRequests: [String: (connection: UUID, task: Task<Void, Error>)] = [:]
     @ObservationIgnored var task: Task<Void, Never>?

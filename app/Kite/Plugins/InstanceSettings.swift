@@ -22,7 +22,7 @@ struct InstanceSettings: View {
     /// 弹窗里当前的子页面，nil 是实例设置本身。
     @State private var page: Page?
 
-    private enum Page { case agent, grants }
+    private enum Page { case agent, grants, mcp }
 
     private var definition: RemotePluginDefinition? { area.definition(of: instance) }
     private var caller: String { definition?.agent == nil ? "plugin" : "model" }
@@ -46,6 +46,8 @@ struct InstanceSettings: View {
                 if let thread { AgentSettings(instance: instance, thread: thread, back: { page = nil }) }
             case .grants?:
                 if let thread { ExecutionGrantSettings(instance: instance, thread: thread, back: { page = nil }) }
+            case .mcp?:
+                InstanceMcpSettings(instance: instance, back: { page = nil })
             case nil:
                 main
             }
@@ -65,6 +67,7 @@ struct InstanceSettings: View {
                     if thread != nil {
                         CardLink("代理配置") { page = .agent }.disabled(!available)
                         CardLink("执行授权") { page = .grants }.disabled(!available)
+                        CardLink("MCP 服务") { page = .mcp }.disabled(!available)
                     }
                     ForEach(definition?.views ?? []) { view in
                         Button("打开\(view.title)") {

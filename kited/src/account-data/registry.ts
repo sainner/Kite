@@ -10,6 +10,7 @@ import { HANDOVER_NEEDS, type HandoverNeed } from '../environment.ts';
 import { httpsRemote, normalizeRemote, remoteName } from '../remote-url.ts';
 import { revisionOf, type AccountData } from './store.ts';
 import { parseProjectExecution, stricterExecution, type ProjectExecution } from '../execution/grants.ts';
+import { serverNamesSchema } from '../mcp/names.ts';
 
 /** 集成方式：直接合入主线并推送，或推分支提交 PR，见 docs/项目与远程仓库.md「工作区与集成」。 */
 export const INTEGRATIONS = ['merge', 'pullRequest'] as const;
@@ -36,6 +37,8 @@ export interface RegisteredProject extends IntegrationChoice {
 export interface ProjectConstraints {
   tools: { mode: 'allow' | 'deny'; tools: string[] };
   execution?: ProjectExecution;
+  /** 本项目禁用的外部 MCP 服务，按服务名；任何层都打不开。 */
+  mcp?: { deny: string[] };
   revision: string;
 }
 
@@ -53,6 +56,7 @@ const settings = z.object({
 const constraintsWrite = z.object({
   tools: z.object({ mode: z.enum(['allow', 'deny']), tools: z.array(z.string().trim().min(1).max(64)).max(64) }).strict(),
   execution: z.unknown().optional(),
+  mcp: z.object({ deny: serverNamesSchema }).strict().optional(),
   expectedRevision: z.string().min(1),
 }).strict();
 const defaultConstraints: Omit<ProjectConstraints, 'revision'> = { tools: { mode: 'deny', tools: [] } };
@@ -193,8 +197,8 @@ export class ProjectRegistry {
   saveConstraints(id: string, raw: unknown): ProjectConstraints {
     const parsed = constraintsWrite.safeParse(raw);
     if (!parsed.success) throw new KiteError('项目约束要写 tools 与 expectedRevision；工具最多 64 个');
-    const { expectedRevision, execution, ...rest } = parsed.data;
-    const body = { ...rest, ...(execution === undefined ? {} : { execution: parseProjectExecution(execution) }) };
+    const { expectedRevision, execution, mcp, ...rest } = parsed.data;
+    const body = { ...rest, ...(execution === undefined ? {} : { execution: parseProjectExecution(execution) }), ...(mcp?.deny.length ? { mcp } : {}) };
     if (this.constraints(id).revision !== expectedRevision) throw new KiteError('项目约束已被其他设备修改，请刷新后重试', 409);
     this.data.put('constraints', id, body);
     return this.constraints(id);
@@ -215,7 +219,9 @@ export class ProjectRegistry {
           // 没设执行约束的一方按默认（没有基础许可）算，合起来同样取更严的，不把另一方的基础许可带过去。
           const execution = rule.execution || keptRule.execution
             ? stricterExecution(parseProjectExecution(keptRule.execution), parseProjectExecution(rule.execution)) : undefined;
-          this.data.put('constraints', kept!.id, { tools: stricter(keptRule.tools, rule.tools), ...(execution ? { execution } : {}) });
+          const deny = serverNamesSchema.parse([...keptRule.mcp?.deny ?? [], ...rule.mcp?.deny ?? []]);
+          this.data.put('constraints', kept!.id, { tools: stricter(keptRule.tools, rule.tools), ...(execution ? { execution } : {}),
+            ...(deny.length ? { mcp: { deny } } : {}) });
           this.data.remove('constraints', project.id);
         }
         this.data.put('project', project.id, { mergedInto: kept!.id });

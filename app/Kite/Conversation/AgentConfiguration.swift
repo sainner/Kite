@@ -30,6 +30,8 @@ struct DraftAgentChoice: Equatable {
     var tools: [String]?
     /// 草稿里改过的审批模式；没改时用角色的默认。
     var approval: ApprovalMode?
+    /// 草稿里改过的 MCP 服务；没改时用角色的默认。
+    var mcp: [String]?
 }
 
 /// 工具的黑白名单：白名单只准列出的，黑名单排除列出的。角色规则与项目约束共用，开关的含义都是「能用这个工具」。
@@ -149,6 +151,32 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
     var explanation: String { configurationBoundary == "request" ? "保存后在下一次模型请求时生效。" : "请在代理空闲时保存，下次执行生效。" }
 }
 
+/// 服务开关列表用的一项：服务名、给代理看的说明与连接状态（`/instances/:id/mcp` 的 available 与新代理草稿的选项）。
+nonisolated struct McpServerSummary: Decodable, Identifiable, Equatable, Sendable {
+    let name: String
+    var description: String?
+    var phase: McpPhase?
+    var id: String { name }
+}
+
+/// MCP 服务的连接状态，与 kited 的 phase 一致。
+nonisolated enum McpPhase: String, Decodable, Sendable {
+    case idle, connecting, connected, failed, unauthorized
+
+    var title: String {
+        switch self {
+        case .connected: "已连接"
+        case .connecting: "正在连接"
+        case .failed: "连接失败"
+        case .unauthorized: "需要登录"
+        case .idle: "未连接"
+        }
+    }
+
+    /// 要用户处理：连不上或要登录。
+    var needsAttention: Bool { self == .failed || self == .unauthorized }
+}
+
 /// 新代理草稿的选项：模型目录与各角色在这个工作区可开的工具；必需工具不可用的角色带原因。
 nonisolated struct AgentOptions: Decodable, Sendable {
     struct Role: Decodable, Identifiable, Sendable {
@@ -159,11 +187,19 @@ nonisolated struct AgentOptions: Decodable, Sendable {
         let required: [String]
         let blocked: [String]
         let unavailable: String?
+        /// 角色默认打开的 MCP 服务。
+        var mcp: [String]?
+    }
+    /// 这台工作机装的 MCP 服务与本项目禁用的。
+    struct Mcp: Decodable, Sendable {
+        let available: [McpServerSummary]
+        let denied: [String]
     }
     let vendors: [AgentCapabilities.Vendor]
     let models: [AgentCapabilities.Model]
     let toolCatalog: [AgentToolInfo]
     let roles: [Role]
+    var mcp: Mcp?
 
     /// 草稿还没有实例，按所选角色给出与已有代理同形的能力，模型菜单与配置页共用。
     func capabilities(for role: String) -> AgentCapabilities? {

@@ -8,7 +8,7 @@ import type { Kite } from './kite.ts';
 import { operationCatalog } from './operations/contract.ts';
 import { inputSchema, inputVia } from './harness/input.ts';
 import type { InputVia } from './harness/types.ts';
-import { roleSelection } from './roles.ts';
+import { roleSchema, roleSelection } from './roles.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
 import { defaultAgentModel } from './agents/models.ts';
 import { networkChannelSchema, type Network } from './network.ts';
@@ -593,13 +593,24 @@ export function serve(kite: Kite, listen: Listen) {
         GET: bound((req) => kite.approvalMode(req.params.id)),
         PUT: bound(async (req) => kite.configureApprovalMode(req.params.id, await body(req))),
       },
+      '/instances/:id/mcp': {
+        GET: bound((req) => kite.mcpSettings(req.params.id)),
+        PUT: bound(async (req) => kite.configureMcpSettings(req.params.id, await body(req))),
+      },
+      '/mcp': { GET: bound(() => ({ servers: kite.mcp.list(), ...(kite.mcp.invalid ? { error: kite.mcp.invalid } : {}) })) },
+      '/mcp/import': { POST: bound(async (req) => ({ servers: await kite.mcp.import(await body(req)) })) },
+      '/mcp/servers/:name': {
+        PUT: bound(async (req) => kite.mcp.save(req.params.name, await body(req))),
+        DELETE: bound(async (req) => { await kite.mcp.remove(req.params.name); return { ok: true }; }),
+      },
+      '/mcp/servers/:name/reconnect': { POST: bound((req) => kite.mcp.reconnect(req.params.name)) },
       '/workspaces/:id/threads': {
         POST: bound(async (req) => {
           const b = await body(req);
           const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
-            approval: z.enum(approvalModes).optional(),
+            approval: z.enum(approvalModes).optional(), mcp: roleSchema.shape.mcp,
             windowId: z.uuid().optional(), messageId: z.uuid().optional(), attachments: z.array(z.string().min(1)).min(1).optional() })
-            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, windowId: b.windowId, messageId: b.messageId, attachments: b.attachments });
+            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, mcp: b.mcp, windowId: b.windowId, messageId: b.messageId, attachments: b.attachments });
           if (!parsed.success) throw new KiteError('代理创建参数无效');
           const { windowId, messageId, attachments, ...choice } = parsed.data;
           return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId, messageId, attachments);

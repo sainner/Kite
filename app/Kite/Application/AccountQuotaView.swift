@@ -326,13 +326,7 @@ private struct ApiAccountRow: View {
     private var status: some View {
         let hasData = account.cost != nil || account.balances != nil
         let color: Color = warns ? Theme.warning : !stale && account.status == "ready" && hasData ? .accentColor : .secondary
-        return HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(account.statusTitle)
-        }
-        .font(Theme.caption)
-        .foregroundStyle(warns ? Theme.warning : .secondary)
-        .fixedSize()
+        return StatusDotLabel(title: account.statusTitle, color: color, warns: warns).fixedSize()
     }
 }
 

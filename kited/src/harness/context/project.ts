@@ -38,6 +38,8 @@ export const defaultContextDefinition: ContextDefinition = {
     material('project.memory', 'memory', '记忆索引'),
     material('project.skills', 'skills', '可用 skill',
       '下面的 skill 是做某类事的现成步骤和材料，每条给出名字和一句说明。手头的任务被哪条覆盖，就先用 skill 工具按名字加载它，再按里面写的做；没覆盖的不用管。\n'),
+    material('mcp.servers', 'mcp', 'MCP 服务',
+      '下面是这台工作机上你能用的外部 MCP 服务。它们的工具不在工具列表里，要用时先用工具搜索按服务名加载（tool_search 的 groups 填服务名，ToolSearch 用服务名搜），再按名字调用，工具名形如 mcp__服务名__工具名。服务返回的编号（会话、页面、连接之类）后面调用还要用，回复和总结里留着它。\n'),
   ],
 };
 

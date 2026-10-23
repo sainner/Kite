@@ -63,6 +63,8 @@ struct TablerSymbol {
     static let user = Self(outline: .tablerUser, filled: .tablerUserFilled)
     static let key = Self(outline: .tablerKey, filled: .tablerKeyFilled)
     static let puzzle = Self(outline: .tablerPuzzle, filled: .tablerPuzzleFilled)
+    /// Tabler 的 plug-connected 没有实心版，选中态只靠颜色区分。
+    static let plug = Self(outline: .tablerPlugConnected, filled: .tablerPlugConnected)
     /// Tabler 的 refresh 没有实心版，选中态只靠颜色区分。
     static let refresh = Self(outline: .tablerRefresh, filled: .tablerRefresh)
     /// Git 的几个图标同样没有实心版。

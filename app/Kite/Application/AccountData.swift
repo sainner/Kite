@@ -115,11 +115,11 @@ extension AppModel {
         try await dataWorker().request("/project-registry/\(projectID)/constraints", as: ProjectConstraints.self)
     }
 
-    func saveProjectConstraints(_ projectID: String, tools: ProjectConstraints.Tools, execution: ProjectExecution,
+    func saveProjectConstraints(_ projectID: String, tools: ProjectConstraints.Tools, execution: ProjectExecution, mcp: ProjectConstraints.Mcp,
                                 expectedRevision: String) async throws -> ProjectConstraints {
-        struct Save: Encodable { let tools: ProjectConstraints.Tools; let execution: ProjectExecution; let expectedRevision: String }
+        struct Save: Encodable { let tools: ProjectConstraints.Tools; let execution: ProjectExecution; let mcp: ProjectConstraints.Mcp; let expectedRevision: String }
         return try await dataWorker().request("/project-registry/\(projectID)/constraints", method: "PUT",
-                                                 body: Save(tools: tools, execution: execution, expectedRevision: expectedRevision), as: ProjectConstraints.self)
+                                                 body: Save(tools: tools, execution: execution, mcp: mcp, expectedRevision: expectedRevision), as: ProjectConstraints.self)
     }
 
     /// 凭据接口默认找任一台工作机，client 指定时用它（马上要用这份凭据的那台，不等同步）。

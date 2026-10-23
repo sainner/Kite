@@ -1,6 +1,6 @@
 /** 会话标题的材料、触发规则和保存边界；模型调用由轻任务入口提供。 */
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
-import { threadVariables } from './context-variables.ts';
+import { threadVariables, type McpView } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import type { SkillSources } from './harness/context/skills.ts';
 import type { AgentInstance } from './model.ts';
@@ -93,6 +93,8 @@ export class ThreadTitles {
     changed(thread: AgentInstance): void;
     /** 生成的标题与原来的不同；原样返回的只推进生成进度，不算改名。 */
     renamed(id: string): void;
+    /** 这台工作机的 MCP 服务，公共变量 mcp.servers 用。 */
+    mcp: McpView;
   }) {}
 
   refresh(id: string): Promise<void> {
@@ -157,8 +159,7 @@ export class ThreadTitles {
     // 每次生成读取已保存的模板；本次展开后固定，不受后续编辑影响。
     const template = this.templates.get(titleTemplate.id, 'thread.title');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId)?.tools, this.store.workspaceConstraints(thread.workspaceId)?.execution,
-        this.host.skills),
+      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId), this.host.skills, this.host.mcp),
       ...sceneValues<'thread.title'>({ 'title.current': JSON.stringify(title.title), 'title.messages': content.input }),
     }));
     let text: string;

@@ -215,6 +215,8 @@ struct CreateThreadRequest: Encodable {
     var tools: [String]? = nil
     /// 草稿里选的审批模式；没选时用角色的默认。
     var approval: ApprovalMode? = nil
+    /// 草稿里选的 MCP 服务；没选时用角色的默认。
+    var mcp: [String]? = nil
     var windowId: String? = nil
     var messageId: String? = nil
     /// 第一条消息带的附件（已传到这个工作区）。

@@ -37,7 +37,8 @@ export class InstanceLifecycle {
     const bound = definition.agent && roleAgent(this.kite.roles.get(choice.role?.id ?? defaultRoleId, choice.role?.revision), choice, project);
     const grants = bound ? roleOperationGrants(definitionId, [], [], toolLimits(bound.role.tools).allowed) : [];
     // 执行授权取角色的，角色没给就是在项目基础上不增不减；审批模式总写入解析好的。项目的基础与边界不拷进实例，每次按项目此刻的约束合成。
-    const config = bound ? { agent: bound.agent, role: bound.role, grants, ...(bound.execution ? { execution: bound.execution } : {}), approval: bound.approval }
+    const config = bound ? { agent: bound.agent, role: bound.role, grants, ...(bound.execution ? { execution: bound.execution } : {}), approval: bound.approval,
+      ...(bound.mcp.length ? { mcp: bound.mcp } : {}) }
       : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: [] } : {};
     return { id: randomUUID(), workspaceId, definitionId, title, config, state: {},
       presentation: 'window', status: 'open', createdAt: Date.now() };

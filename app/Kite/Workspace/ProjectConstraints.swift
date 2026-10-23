@@ -6,9 +6,14 @@ nonisolated struct ProjectConstraints: Codable, Equatable, Sendable {
         var mode: String
         var tools: [String]
     }
+    /// 本项目禁用的外部 MCP 服务，任何层都打不开。
+    struct Mcp: Codable, Equatable, Sendable {
+        var deny: [String]
+    }
     var tools: Tools
     /// 执行授权的基础与边界；没设置过时没有。
     var execution: ProjectExecution?
+    var mcp: Mcp?
     var revision: String
 }
 
@@ -20,6 +25,9 @@ struct ProjectConstraintsSection: View {
     @State private var saved: ProjectConstraints?
     @State private var draft: ProjectConstraints.Tools?
     @State private var execution = ProjectExecution()
+    @State private var mcpDeny: [String] = []
+    /// 连着的各台工作机装的 MCP 服务。
+    @State private var servers: [McpServerSummary] = []
     @State private var saving = false
     @State private var error: String?
 
@@ -44,6 +52,21 @@ struct ProjectConstraintsSection: View {
         .task(id: projectID) { await load() }
         if draft != nil {
             Section {
+                let names = Array(Set(servers.map(\.name) + mcpDeny)).sorted()
+                if names.isEmpty { Text("连着的工作机上还没有 MCP 服务。").foregroundStyle(.secondary) }
+                ForEach(names, id: \.self) { name in
+                    Toggle(name, isOn: Binding(get: { !mcpDeny.contains(name) }, set: { allowed in
+                        mcpDeny.removeAll { $0 == name }
+                        if !allowed { mcpDeny.append(name); mcpDeny.sort() }
+                    }))
+                }
+            } header: {
+                Text("MCP 服务")
+            } footer: {
+                Text("关掉的服务在这个项目里任何代理都开不了。服务默认谁都不能用，在角色或代理配置里打开；这里只做禁止。")
+            }
+            .task(id: model.mcpCatalogRevision) { servers = await model.knownMcpServers() }
+            Section {
                 Toggle("工作区只读", isOn: Binding(get: { execution.workspace == .read }, set: { execution.workspace = $0 ? .read : .write }))
                 Picker("审批模式上限", selection: $execution.approval) {
                     ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -65,7 +88,7 @@ struct ProjectConstraintsSection: View {
                 HStack {
                     Spacer()
                     Button(saving ? "正在保存…" : "保存") { save() }
-                        .disabled(saving || (draft == saved?.tools && execution == (saved?.execution ?? ProjectExecution())))
+                        .disabled(saving || (draft == saved?.tools && execution == (saved?.execution ?? ProjectExecution()) && mcpDeny == (saved?.mcp?.deny ?? [])))
                 }
                 if let error { Text(error).foregroundStyle(Theme.danger) }
             } header: {
@@ -92,6 +115,7 @@ struct ProjectConstraintsSection: View {
             saved = value
             draft = value.tools
             execution = value.execution ?? ProjectExecution()
+            mcpDeny = value.mcp?.deny ?? []
             error = nil
         }
         catch is CancellationError { }
@@ -105,10 +129,12 @@ struct ProjectConstraintsSection: View {
         Task {
             defer { saving = false }
             do {
-                let value = try await model.saveProjectConstraints(projectID, tools: draft, execution: execution, expectedRevision: saved.revision)
+                let value = try await model.saveProjectConstraints(projectID, tools: draft, execution: execution,
+                                                                   mcp: .init(deny: mcpDeny), expectedRevision: saved.revision)
                 self.saved = value
                 self.draft = value.tools
                 self.execution = value.execution ?? ProjectExecution()
+                self.mcpDeny = value.mcp?.deny ?? []
             } catch { self.error = error.localizedDescription }
         }
     }
