@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 #if os(macOS)
 import AppKit
 #endif
@@ -40,6 +41,21 @@ struct FilePane: View {
         if browser.displayingWeb { return PaneHeader(title: pageName, subtitle: "网页") }
         return PaneHeader(title: browser.selection.path.map { ($0 as NSString).lastPathComponent } ?? rootName,
                           subtitle: showingDiff ? "历史差异" : browser.selection.version != nil ? versionSubtitle : "文件")
+    }
+
+    /// 信息区：网页是站点图标，文件是文件类型图标，还没选时是文件夹；占圆环的位置，提示出现时同圆环一样虚化盖住。说明是完整的路径或网址。
+    private var kindIcon: some View {
+        Group {
+            if browser.displayingWeb {
+                WebSiteIcon(icon: web.icon)
+            } else {
+                Image(systemName: browser.selection.path == nil ? "folder" : browser.format.symbol)
+                    .resizable().scaledToFit()
+                    .foregroundStyle(.secondary)
+                    .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
+            }
+        }
+        .paneHeaderRing(lineWidth: 0, status: browser.displayingWeb ? address : browser.selection.path ?? rootName)
     }
 
     /// 看历史版本时的副标题：哪个时候的版本。
@@ -113,7 +129,7 @@ struct FilePane: View {
     }
 
     var body: some View {
-        PaneWindow(header: header, notice: notice, actions: headerActions) {
+        PaneWindow(header: header, notice: notice, status: AnyView(kindIcon), actions: headerActions) {
             ZStack(alignment: .topTrailing) {
                 // 文件不参与目录的动画：排布在开关时当场变好，窄排时留在原地让目录盖住，网页、PDF 也不用重新加载
                 HStack(spacing: 0) {
@@ -222,11 +238,19 @@ struct FilePane: View {
         }
     }
 
-    /// 地址栏：站点图标、地址、网页操作的菜单，同文件的中间信息（fileInfo）；不打字时地址居中。
+    /// 地址栏：中间地址（点了才输入），左边浏览记录，右边网页操作的菜单，同文件的中间信息（fileInfo）；站点图标在标题栏的信息区。
     private func addressField(typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: true) {
-            WebSiteIcon(icon: webVisible ? web.icon : nil)
-                .frame(width: Metrics.paneHeaderIconWidth)
+            if webVisible {
+                Menu {
+                    webHistory
+                } label: {
+                    PaneHeaderButtonLabel("浏览记录", systemImage: "clock.arrow.circlepath")
+                }
+                .foregroundStyle(Color.primary)
+                .disabled(web.history.isEmpty)
+                .help("浏览记录")
+            }
             WebPathField(path: webVisible ? address : "", typing: typing, reset: addressReset, prompt: "网址或端口号", centered: true, open: go)
             if webVisible {
                 WebPageMenu(browser: web, typing: typing.wrappedValue, home: goHome, reload: reloadPage, clear: { addressReset += 1 })
@@ -234,14 +258,32 @@ struct FilePane: View {
         }
     }
 
-    /// 地址栏显示的地址：本机的写 localhost:端口 加路径，https 省掉前缀。
+    /// 浏览记录：这个窗口里去过的页面从旧到新往下排，同文件的时间线；正在看的打勾，点了跳过去。
+    private var webHistory: some View {
+        ForEach(web.history) { item in
+            Toggle(isOn: Binding {
+                web.currentItem == item
+            } set: { chosen in
+                if chosen { web.go(to: item) }
+            }) {
+                Text(Self.label(item.title.flatMap { $0.isEmpty ? nil : $0 } ?? Self.address(item.url)))
+            }
+        }
+    }
+
+    /// 地址栏显示的地址。
     private var address: String {
-        if let local = web.url.flatMap(LocalPort.init) {
-            let path = LocalPort.displayPath(of: web.url)
+        if let url = web.url { return Self.address(url) }
+        if let port = browser.selection.port { return "localhost:\(port)" }
+        return browser.selection.url.flatMap(URL.init(string:)).map(Self.address) ?? ""
+    }
+
+    /// 本机的写 localhost:端口 加路径，https 省掉前缀。
+    private static func address(_ url: URL) -> String {
+        if let local = LocalPort(url) {
+            let path = LocalPort.displayPath(of: url)
             return "localhost:\(local.port)" + (path == "/" ? "" : path)
         }
-        if web.url == nil, let port = browser.selection.port { return "localhost:\(port)" }
-        guard let url = web.url ?? browser.selection.url.flatMap(URL.init(string:)) else { return "" }
         let text = url.absoluteString
         return text.hasPrefix("https://") ? String(text.dropFirst("https://".count)) : text
     }
@@ -328,7 +370,7 @@ struct FilePane: View {
         return actions
     }
 
-    /// 看文件时的控制区：左边翻页，中间是路径（点开是时间线，最右边是文件操作的菜单），右边在文件里找。找的时候搜索框占满一行。
+    /// 看文件时的控制区：左边翻页，中间是路径（两头是时间线和文件操作的菜单），右边在文件里找。找的时候搜索框占满一行。
     private var fileBar: some View {
         HStack(spacing: Metrics.paneButtonGap) {
             if !searching {
@@ -441,28 +483,23 @@ struct FilePane: View {
         return Text(SearchHighlight(query: query, current: current).apply(to: text))
     }
 
-    /// 控制区中间：文件类型图标和居中的路径，点开是这个文件的时间线；最右边是文件操作的菜单，和图标对称。
+    /// 控制区中间：居中的路径，左边是这个文件的时间线，右边是文件操作的菜单；文件类型图标在标题栏的信息区。
     private var fileInfo: some View {
         PaneHeaderButtonGroup(expands: true) {
             Menu {
                 timeline
             } label: {
-                HStack(spacing: 0) {
-                    Image(systemName: browser.selection.path == nil ? "folder" : browser.format.symbol)
-                        .foregroundStyle(.secondary)
-                        .frame(width: Metrics.paneHeaderIconWidth)
-                    Text(browser.selection.path ?? rootName)
-                        .font(Theme.body)
-                        .foregroundStyle(browser.selection.path == nil ? .secondary : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: .infinity)
-                }
-                .frame(height: Metrics.paneHeaderButton)
-                .contentShape(.rect)
+                PaneHeaderButtonLabel("时间线", systemImage: "clock.arrow.circlepath")
             }
+            .foregroundStyle(Color.primary)
             .disabled(browser.selection.path == nil)
             .help("时间线")
+            Text(browser.selection.path ?? rootName)
+                .font(Theme.body)
+                .foregroundStyle(browser.selection.path == nil ? .secondary : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity)
             fileMenu
         }
     }

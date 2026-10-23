@@ -121,6 +121,12 @@ struct WebPreview: View {
     var url: URL? { page?.url }
     var canGoBack: Bool { page?.backForwardList.backList.isEmpty == false }
     var canGoForward: Bool { page?.backForwardList.forwardList.isEmpty == false }
+    var currentItem: WebPage.BackForwardList.Item? { page?.backForwardList.currentItem }
+    /// 这个网页视图里去过的页面，旧的在前，含正在看的一页。
+    var history: [WebPage.BackForwardList.Item] {
+        guard let list = page?.backForwardList else { return [] }
+        return list.backList + [list.currentItem].compactMap(\.self) + list.forwardList
+    }
 
     fileprivate func attach(_ page: WebPage, report: @escaping (String?) -> Void) {
         navigation?.cancel()
@@ -142,6 +148,11 @@ struct WebPreview: View {
     func open(_ url: URL) {
         guard let page else { return }
         follow(page.load(url))
+    }
+
+    func go(to item: WebPage.BackForwardList.Item) {
+        guard let page else { return }
+        follow(page.load(item))
     }
 
     /// 重新加载当前页面。还没打开成功过（首次加载就失败了）时没有可重新加载的，返回 false，由窗口重建网页视图。
@@ -472,7 +483,7 @@ struct WebControls<Content: View>: View {
 }
 
 /// 地址栏里的路径（浏览里是整个地址）：平时跟着页面显示当前路径，打字时不被页面的跳转改掉；回车打开，没打开就离开（Mac 上按 Esc 也是）回到当前路径。
-/// reset 变了（清除输入）也回到当前路径，接着打字。centered 时不打字的时候地址居中（浏览）。
+/// reset 变了（清除输入）也回到当前路径，接着打字。centered（浏览）时不打字的时候是居中的一行字，太长截掉中间，点了才变成输入框并全选地址。
 struct WebPathField: View {
     let path: String
     let typing: FocusState<Bool>.Binding
@@ -481,16 +492,35 @@ struct WebPathField: View {
     var centered = false
     let open: (String) -> Void
     @State private var text = ""
+    @State private var selection: TextSelection?
     /// 刚按回车打开：留着输入的路径等页面跳过去，不先退回旧路径。
     @State private var submitted = false
 
     var body: some View {
-        TextField("网页地址", text: $text, prompt: Text(prompt))
+        let label = centered && !typing.wrappedValue
+        TextField("网页地址", text: $text, selection: $selection, prompt: Text(prompt))
             .textFieldStyle(.plain)
             .font(Theme.body)
             .foregroundStyle(.primary)
-            .multilineTextAlignment(centered && !typing.wrappedValue ? .center : .leading)
             .frame(maxWidth: .infinity)
+            .opacity(label ? 0 : 1)
+            .accessibilityHidden(label)
+            .overlay {
+                if label {
+                    Button { typing.wrappedValue = true } label: {
+                        Text(text.isEmpty ? prompt : text)
+                            .font(Theme.body)
+                            .foregroundStyle(text.isEmpty ? .secondary : .primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.pointingPlain)
+                    .accessibilityLabel("网页地址")
+                    .accessibilityValue(text)
+                }
+            }
             .frame(height: Metrics.paneHeaderButton)
             .autocorrectionDisabled()
             #if os(iOS)
@@ -511,7 +541,10 @@ struct WebPathField: View {
             }
             .onChange(of: reset) { text = path }
             .onChange(of: typing.wrappedValue) { _, editing in
-                if editing { submitted = false } else if !submitted { text = path }
+                if editing {
+                    submitted = false
+                    if centered { selection = TextSelection(range: text.startIndex..<text.endIndex) }
+                } else if !submitted { text = path }
             }
     }
 }
@@ -598,7 +631,7 @@ struct WebPageMenu: View {
     }
 }
 
-/// 地址栏最前面的站点图标，没有时是地球。
+/// 站点图标，没有时是地球。
 struct WebSiteIcon: View {
     let icon: Image?
 
