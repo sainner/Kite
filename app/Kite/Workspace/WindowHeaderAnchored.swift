@@ -86,9 +86,11 @@ private struct HeaderAnchorHost<Content: View> {
     }
 
     /// 偏好值和尺寸隔一拍交出去：里面的托管视图可能在外面这次更新当中排版，不能当场改外面的状态。
+    /// 右边那一侧铺满托管视图、内容靠右，里面的控件伸缩时（浏览的侧栏开关伸成搜索框）右边不动。托管视图把内容居中摆：
+    /// 内容先在旧宽里居中伸缩，隔一拍这一侧改宽、左边挪开，玻璃先跳到中间再往两边伸，收起时右边冲出窗口再缩回来（2026-10-24 Mac 小程序逐帧量过）。
     private func rooted(_ environment: EnvironmentValues, title: WindowHeaderTitleEdge) -> AnyView {
         let relay = relay
-        return AnyView(content
+        let rooted = content
             .onPreferenceChange(PaneHeaderStatusText.self) { text in
                 Task { @MainActor in if relay.statusText != text { relay.statusText = text } }
             }
@@ -111,7 +113,8 @@ private struct HeaderAnchorHost<Content: View> {
             .coordinateSpace(name: "pane-header")
             .environment(\.windowHeaderTitleEdge, title)
             .environment(\.windowHeaderAnchors, nil)
-            .environment(\.self, environment))
+            .environment(\.self, environment)
+        return edge == .trailing ? AnyView(rooted.frame(minWidth: 0, maxWidth: .infinity, alignment: .trailing)) : AnyView(rooted)
     }
 }
 
@@ -180,6 +183,8 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
 
     /// 没给的方向按理想大小：标题栏的高度由里面的按钮定（2026-10-12 Mac 实测，给无限高时标题栏从 48 撑到 56）。
     func measure(_ proposal: ProposedViewSize) -> CGSize {
+        // 右边那一侧铺满托管视图（见 HeaderAnchorHost.rooted），按提议量出来的就是提议的宽；里面都是定宽的按钮组，按理想大小
+        if edge == .trailing { return controller.view.intrinsicContentSize }
         // 两个方向都给了就不用先量理想大小：拖缝改宽时标题那一侧每步都要量
         if let width = proposal.width, let height = proposal.height {
             return controller.sizeThatFits(in: CGSize(width: width, height: height))
@@ -316,9 +321,10 @@ private final class HeaderAnchorContainer: UIView, WindowHeaderFollower {
         return hit === self || hit === mover ? nil : hit
     }
 
-    /// 没给的方向按理想大小：标题栏的高度由里面的按钮定。
+    /// 没给的方向按理想大小：标题栏的高度由里面的按钮定。右边那一侧按理想大小，同 Mac 版。
     func measure(_ proposal: ProposedViewSize) -> CGSize {
         let ideal = controller.view.intrinsicContentSize
+        if edge == .trailing { return ideal }
         return controller.sizeThatFits(in: CGSize(width: proposal.width ?? ideal.width, height: proposal.height ?? ideal.height))
     }
 
