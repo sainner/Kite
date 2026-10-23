@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 输入框上面待发的附件：图片是缩略图，其余文件是一张小卡片，一个挨一个靠左排，放不下换行。右上角的叉拿掉它；
 /// 传的途中盖一层半透明、中间是进度，传不上去的标出来，点一下重传。圆角和玻璃同心（ComposerLayout.fieldFillRadius）。
-/// 两端原生输入区（MacControlsBar、PhoneControlsBar）经 DraftStripHost 托管它，Mac 窄窗口的 ThreadControls 直接放。
+/// 两端原生输入区（MacControlsBar、PhoneControlsBar）经 ComposerStripHost 托管它，Mac 窄窗口的 ThreadControls 直接放。
 struct DraftAttachmentStrip: View {
     let thread: WorkThread
 
@@ -76,25 +76,28 @@ private struct DraftAttachmentItem: View {
     }
 }
 
-/// 两端原生输入区托管待发附件那一行：换了会话、外观或字号重建，增删了重新量；托管的那一行自己变了大小（退回来的缩略图取到了）
-/// 也重新量，经 resized 让输入区重排。没有附件时藏着。
-@MainActor final class DraftStripHost {
+/// 两端原生输入区托管输入框上面的一行（待发附件、skill 候选）：换了会话、外观或字号重建，列的几项变了作废量出的高。
+/// 高要量的那一行自己变了大小（退回来的缩略图取到了）也重新量，经 resized 让输入区重排。没有内容时藏着。
+@MainActor final class ComposerStripHost {
     #if os(macOS)
     private let host = NSHostingController(rootView: AnyView(EmptyView()))
     #else
     private let host = UIHostingController(rootView: AnyView(EmptyView()))
     #endif
     var resized: () -> Void = {}
+    /// 固定的高，不用量；为空时按宽量。
+    private let fixedHeight: CGFloat?
     /// 现在放的是哪个会话、什么外观的；换了重建。
     private var owner: (thread: ObjectIdentifier, scheme: ColorScheme?, typeSize: DynamicTypeSize?)?
-    /// 现在有哪几个附件；增删了重新量。
-    private var key: [String] = []
+    /// 现在列着哪几项；变了重新量。
+    private var items: [String] = []
     /// 按宽量出的高，换了一批或它自己报了新大小时作废。
     private var size: (width: CGFloat, height: CGFloat)?
 
     var view: PlatformView { host.view }
 
-    init() {
+    init(height: CGFloat? = nil) {
+        fixedHeight = height
         host.sizingOptions = []
         host.view.isHidden = true
         #if os(iOS)
@@ -103,32 +106,33 @@ private struct DraftAttachmentItem: View {
         #endif
     }
 
-    func show(_ thread: WorkThread, environment: EnvironmentValues?) {
+    /// 按 thread 摆这一行，items 是列着的几项；content 只在换了会话、外观或字号时现做。
+    func show(_ thread: WorkThread, items: [String], environment: EnvironmentValues?, content: () -> some View) {
         let owner = (thread: ObjectIdentifier(thread), scheme: environment?.colorScheme, typeSize: environment?.dynamicTypeSize)
         if self.owner?.thread != owner.thread || self.owner?.scheme != owner.scheme || self.owner?.typeSize != owner.typeSize {
             self.owner = owner
             size = nil
-            host.rootView = AnyView(DraftAttachmentStrip(thread: thread)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            let row = content().frame(maxWidth: .infinity, alignment: .leading)
+            let environment = environment ?? EnvironmentValues()
+            host.rootView = fixedHeight != nil ? AnyView(row.environment(\.self, environment)) : AnyView(row
                 // 只看高：宽由输入区摆，拖缝改宽时不用每帧多排一次；量出的高本来就按宽缓存
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { [weak self] _ in
                     self?.size = nil
                     self?.resized()
                 }
-                .environment(\.self, environment ?? EnvironmentValues()))
+                .environment(\.self, environment))
         }
-        let key = thread.draftAttachments.map(\.id)
-        if key != self.key {
-            self.key = key
+        if items != self.items {
+            self.items = items
             size = nil
         }
-        if host.view.isHidden != key.isEmpty { host.view.isHidden = key.isEmpty }
+        if host.view.isHidden != items.isEmpty { host.view.isHidden = items.isEmpty }
     }
 
-    /// 输入区宽 width 时那一行的高，没有附件时 0。
+    /// 输入区宽 width 时那一行的高，没有内容时 0。
     func height(width: CGFloat) -> CGFloat {
-        guard !key.isEmpty else { return 0 }
+        guard !items.isEmpty else { return 0 }
+        if let fixedHeight { return fixedHeight }
         let width = ComposerLayout.stripWidth(width)
         if let size, size.width == width { return size.height }
         let height = host.sizeThatFits(in: CGSize(width: width, height: .greatestFiniteMagnitude)).height

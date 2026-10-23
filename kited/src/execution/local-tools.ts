@@ -5,8 +5,8 @@ import { dirname, join, relative } from 'node:path';
 import { applyDiff } from '@openai/agents-core/utils';
 import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
-import { projectFolders } from '../harness/context/project.ts';
-import { collectSkills, loadSkill, readSkillFile } from '../harness/context/skills.ts';
+import { projectSkills } from '../harness/context/project.ts';
+import { loadSkill, readSkillFile } from '../harness/context/skills.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
@@ -126,16 +126,17 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       return { status: 'success', output: `共 ${result.totalLines} 行\n${output}` };
     }, true),
     make('skill', skillDescription, skillArgs, async ({ name, file }) => {
-      const skills = collectSkills(projectFolders(root));
+      const skills = projectSkills(root);
       const skill = skills.find((entry) => entry.name === name);
       if (!skill) {
         return { status: 'error', output: skills.length ? `没有叫 ${name} 的 skill；可用的：${skills.map((entry) => entry.name).join('、')}` : `没有叫 ${name} 的 skill，现在一个 skill 都没有` };
       }
       if (file !== undefined) return { status: 'success', output: readSkillFile(skill, file) };
-      const loaded = loadSkill(skill);
-      if (loadedSkills.get(name) === loaded.hash) return { status: 'success', output: `skill「${name}」已经加载过，内容没变，按前面已有的正文做。` };
-      loadedSkills.set(name, loaded.hash);
-      return { status: 'success', output: loaded.text };
+      const text = loadSkill(skill);
+      const digest = hash(text);
+      if (loadedSkills.get(name) === digest) return { status: 'success', output: `skill「${name}」已经加载过，内容没变，按前面已有的正文做。` };
+      loadedSkills.set(name, digest);
+      return { status: 'success', output: text };
     }, true),
     make('patch', patchDescription, patchArgs, async ({ operations }) => {
       // 同一工作区的线程并行时，整批的读、算、写在一个同步段里完成：同一进程里别的线程的 patch 插不进来，

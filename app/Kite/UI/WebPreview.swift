@@ -324,6 +324,31 @@ nonisolated private struct WorkspaceFileScheme: URLSchemeHandler {
     }
 }
 
+/// 互联网上的一个网址，给浏览的网页画面用：页面从开起时的网址开，之后换网址在同一个页面里跳过去，前进后退接得上；
+/// 换了 id 重建时从那时的网址开起。store、roaming 同 PortPreview。
+struct AddressPreview: View {
+    let url: URL
+    let store: UUID
+    var roaming: WebRoaming?
+    let browser: WebBrowser
+    var report: (String?) -> Void = { _ in }
+    @State private var start: URL
+
+    init(url: URL, store: UUID, roaming: WebRoaming?, browser: WebBrowser, report: @escaping (String?) -> Void = { _ in }) {
+        self.url = url
+        self.store = store
+        self.roaming = roaming
+        self.browser = browser
+        self.report = report
+        _start = State(initialValue: url)
+    }
+
+    var body: some View {
+        WebPreview(source: .address(start, store: store, roaming: roaming), report: report, browser: browser)
+            .onChange(of: url) { _, url in browser.open(url) }
+    }
+}
+
 /// 工作机上某个端口的网页，给浏览和预览的网页画面用。本机就是工作机时直接访问 localhost；其他设备在本机回环上开转发
 /// （PortRelays），经组网连到工作机为这个端口开的转发。本工作区其他运行中终端与预览的端口也开着同号转发（见 PortForwarding），页面里嵌着或调用的
 /// 另一个端口上的服务照工作机上的地址打开。store 是这个目标在本设备的网站数据，roaming 见 WebSource.address。

@@ -54,10 +54,8 @@ struct SkillPane: View {
     @State private var newPath = ""
     @State private var importing = false
     @State private var replacing: String?
-    @State private var exporting = false
+    /// 正在导出的文件，有时弹出存储面板。
     @State private var exportDocument: SkillFileDocument?
-    @State private var exportName = ""
-    @State private var exportType = UTType.data
     @State private var editor = ContextEditor()
 
     private var saved: LibrarySkill? { model.savedSkill(name) }
@@ -131,7 +129,8 @@ struct SkillPane: View {
             Text("路径相对 skill 文件夹。图片、PDF 等已有文件可通过「导入文件」添加。")
         }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.data], allowsMultipleSelection: replacing == nil, onCompletion: importFiles)
-        .fileExporter(isPresented: $exporting, document: exportDocument, contentType: exportType, defaultFilename: exportName) { result in
+        .fileExporter(isPresented: Binding(get: { exportDocument != nil }, set: { if !$0 { exportDocument = nil } }), document: exportDocument,
+                      contentType: exportDocument?.type ?? .data, defaultFilename: exportDocument?.name) { result in
             if case .failure(let failure) = result { error = "导出失败：\(failure.localizedDescription)" }
         }
         .discardAlert(isNew ? "放弃这个新 skill？" : "放弃未保存的修改？", isPresented: $discard, discardLabel: isNew ? "放弃新 skill" : "放弃修改") {
@@ -257,11 +256,7 @@ struct SkillPane: View {
 
     private func exportFile() {
         guard let current, let data = current.data else { error = "无法读取文件内容"; return }
-        let url = URL(fileURLWithPath: current.path)
-        exportDocument = SkillFileDocument(data: data)
-        exportName = url.lastPathComponent
-        exportType = UTType(filenameExtension: url.pathExtension) ?? .data
-        exporting = true
+        exportDocument = SkillFileDocument(data: data, path: current.path)
     }
 
     private func removeFile() {
@@ -301,23 +296,21 @@ private struct SkillFileTabs: View {
                 .buttonStyle(.pointingPlain)
                 .accessibilityAddTraits(selected == file.path ? .isSelected : [])
             }
-            Button(action: add) {
-                Label("新建文本文件", systemImage: "plus")
-                    .font(Theme.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .overlay(Capsule().strokeBorder(Theme.rule))
-            }
-            .buttonStyle(.pointingPlain)
-            Button(action: importFiles) {
-                Label("导入文件", systemImage: "square.and.arrow.down")
-                    .font(Theme.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .overlay(Capsule().strokeBorder(Theme.rule))
-            }
-            .buttonStyle(.pointingPlain)
+            addButton("新建文本文件", systemImage: "plus", action: add)
+            addButton("导入文件", systemImage: "square.and.arrow.down", action: importFiles)
         }
+    }
+
+    /// 末尾添加文件的按钮：描边胶囊，和文件的底色区分开。
+    private func addButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(Theme.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .overlay(Capsule().strokeBorder(Theme.rule))
+        }
+        .buttonStyle(.pointingPlain)
     }
 }
 

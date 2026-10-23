@@ -122,8 +122,8 @@ struct ThreadControlsModel {
         return thread.availableSkills.filter { $0.name.lowercased().hasPrefix(prefix) }
     }
 
-    var selectedSkill: AvailableSkill? {
-        let candidates = skillCandidates
+    /// 候选里键盘选中的那个，没选过时是第一个；candidates 是现算好的 skillCandidates。
+    func selectedSkill(in candidates: [AvailableSkill]) -> AvailableSkill? {
         if let selected = state.skillSelection, selected.thread == ObjectIdentifier(thread), selected.text == thread.draft,
            let skill = candidates.first(where: { $0.name == selected.name }) { return skill }
         return candidates.first
@@ -132,7 +132,7 @@ struct ThreadControlsModel {
     /// 有候选才接管方向键和 Tab；其余时候保留输入框自己的光标与焦点行为。
     func completeSkill(_ key: SkillCompletionKey) -> Bool {
         let candidates = skillCandidates
-        guard let selected = selectedSkill, let index = candidates.firstIndex(of: selected) else { return false }
+        guard let selected = selectedSkill(in: candidates), let index = candidates.firstIndex(of: selected) else { return false }
         switch key {
         case .complete: pickSkill(selected)
         case .previous, .next:
@@ -450,7 +450,8 @@ struct ThreadEffortControl: View {
 
 /// 两端原生输入区（MacControlsBar、PhoneControlsBar）的版式，照 ThreadControls：输入框左右 controlInset + 8、上下 6；输入框和按钮行之间 2；
 /// 按钮行左右、底 controlButtonInset；顶 controlInset。附件、语音一组间距 0，和后面的主按钮间距 actionGap；横排时思考强度和按钮组之间至少两个按钮间距。
-/// 有待发的附件时，那一行（DraftAttachmentStrip）在最上面，左右、顶离玻璃 controlInset，下面隔 stripGap 才是输入框。
+/// 有待发的附件、skill 候选时，那几行（DraftAttachmentStrip、SkillCandidateStrip）从上往下叠在最上面，左右、顶离玻璃 controlInset，
+/// 每行下面隔 stripGap，最后才是输入框。
 enum ComposerLayout {
     static let fieldInset = Metrics.controlInset + 8
     static let fieldPadding: CGFloat = 6
@@ -468,24 +469,28 @@ enum ComposerLayout {
         var field: CGFloat
         var effort: CGSize
         var hidesActions: Bool
-        /// 待发附件那一行的高，没有附件时 0。
-        var strip: CGFloat = 0
-
-        /// 输入框的顶边：有附件时往下让出那一行。
-        var fieldTop: CGFloat { ComposerLayout.fieldTop + (strip > 0 ? strip + ComposerLayout.stripGap : 0) }
+        /// 输入框上面那几行各自的位置，按传进来的先后；没有内容的那行高 0，不占地方。
+        var strips: [CGRect] = []
+        /// 输入框的顶边：上面有几行就往下让出几行。
+        var fieldTop = ComposerLayout.fieldTop
     }
 
-    /// 待发附件那一行的宽：玻璃左右各让 controlInset。
+    /// 输入框上面那几行的宽：玻璃左右各让 controlInset。
     static func stripWidth(_ width: CGFloat) -> CGFloat { max(width - 2 * Metrics.controlInset, 0) }
 
-    /// 输入框（连同淡出的字）排出 field 高、思考强度是 effort 大、待发附件那一行 strip 高时：玻璃多高，按钮行还放不放得下附件、语音和主按钮。
-    static func plan(width: CGFloat, field: CGFloat, effort: CGSize, strip: CGFloat = 0) -> Plan {
+    /// 输入框（连同淡出的字）排出 field 高、思考强度是 effort 大、上面那几行从上往下是 strips 高时：玻璃多高，那几行摆在哪，
+    /// 按钮行还放不放得下附件、语音和主按钮。
+    static func plan(width: CGFloat, field: CGFloat, effort: CGSize, strips: [CGFloat] = []) -> Plan {
         let buttons = 3 * Metrics.paneButton + ThreadControlsModel.actionGap
         let hidesActions = effort.width + 2 * Metrics.paneButtonGap + buttons > width - 2 * Metrics.controlButtonInset
         let row = max(effort.height, Metrics.paneButton)
-        let attachments = strip > 0 ? strip + stripGap : 0
-        let height = Metrics.controlInset + attachments + 2 * fieldPadding + field + rowSpacing + row + Metrics.controlButtonInset
-        return Plan(height: height, field: field, effort: effort, hidesActions: hidesActions, strip: strip)
+        var above: CGFloat = 0
+        let frames = strips.map { height in
+            defer { if height > 0 { above += height + stripGap } }
+            return CGRect(x: Metrics.controlInset, y: Metrics.controlInset + above, width: stripWidth(width), height: height)
+        }
+        let height = Metrics.controlInset + above + 2 * fieldPadding + field + rowSpacing + row + Metrics.controlButtonInset
+        return Plan(height: height, field: field, effort: effort, hidesActions: hidesActions, strips: frames, fieldTop: fieldTop + above)
     }
 
     /// 审批的决定在按钮行左边一个挨一个，之间 actionGap（同收件箱卡片里的那一行）：各个按钮离这一组左边多远，和整组多大。

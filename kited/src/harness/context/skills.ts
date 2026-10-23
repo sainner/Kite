@@ -3,7 +3,7 @@
  * 机器层是这台工作机上的 ~/.agents/skills 与 ~/.claude/skills；项目层从仓库根目录到工作目录逐级找 .claude/skills 与 .agents/skills。
  * 清单只列名字和一句说明，正文由模型用 skill 工具加载；契约见 docs/harness-上下文组装.md。
  */
-import { createHash } from 'node:crypto';
+import { isUtf8 } from 'node:buffer';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { safePath, within } from '../../paths.ts';
@@ -20,10 +20,10 @@ export const systemSkillsDirectory = existsSync(bundledSkills) ? realpathSync(bu
 
 export type SkillLayer = 'system' | 'user' | 'machine' | 'project';
 export interface Skill { name: string; description: string; /** SKILL.md 的路径。 */ path: string; directory: string; layer: SkillLayer }
-export const layerTitles: Record<SkillLayer, string> = { system: '系统', user: '用户', machine: '机器', project: '项目' };
+const layerTitles: Record<SkillLayer, string> = { system: '系统', user: '用户', machine: '机器', project: '项目' };
 
 /** 清单里一句说明的上限，与 Claude Code 的列表一致；超出的截断加省略号。 */
-export const skillDescriptionLimit = 1536;
+const skillDescriptionLimit = 1536;
 /** skill 工具一次给模型的正文或文件上限（字节），再大的让模型分段 read。 */
 const skillTextLimit = 2 * 1024 * 1024;
 
@@ -40,24 +40,28 @@ export function skillSourceDirectories(): string[] {
     .map((directory) => realpathSync(directory));
 }
 
+/** SKILL.md 开头用 --- 包起来的 YAML 头的各行，与之后的正文；没有头或头不完整时头为空、正文是全文。 */
+function splitFrontmatter(content: string): { header: string[]; body: string } {
+  const lines = content.split(/\r?\n/);
+  const end = lines[0]?.trim() === '---' ? lines.findIndex((line, index) => index > 0 && line.trim() === '---') : -1;
+  return end < 0 ? { header: [], body: content.trim() } : { header: lines.slice(1, end), body: lines.slice(end + 1).join('\n').trim() };
+}
+
 /**
- * SKILL.md 开头用 --- 包起来的 YAML 头，只认顶层的 key: value：单行值去掉成对的引号；> 或 | 开头的块取后面缩进的行，用空格接起来。
+ * YAML 头只认顶层的 key: value：单行值去掉成对的引号；> 或 | 开头的块取后面缩进的行，用空格接起来。
  * 不是完整的 YAML，Agent Skills 标准里 name 与 description 都是字符串，够用；没有头或头不完整时返回空对象，skill 只列名字。
  */
 export function parseFrontmatter(content: string): Record<string, string> {
-  const lines = content.split(/\r?\n/);
-  if (lines[0]?.trim() !== '---') return {};
-  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
-  if (end < 0) return {};
+  const { header } = splitFrontmatter(content);
   const fields: Record<string, string> = {};
-  for (let index = 1; index < end; index++) {
-    const match = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(lines[index]!);
+  for (let index = 0; index < header.length; index++) {
+    const match = /^([A-Za-z][\w-]*):\s*(.*)$/.exec(header[index]!);
     if (!match) continue;
     const key = match[1]!;
     let value = match[2]!.trim();
     if (/^[>|]-?$/.test(value)) {
       const block: string[] = [];
-      while (index + 1 < end && (/^\s+\S/.test(lines[index + 1]!) || lines[index + 1]!.trim() === '')) block.push(lines[++index]!.trim());
+      while (index + 1 < header.length && (/^\s+\S/.test(header[index + 1]!) || header[index + 1]!.trim() === '')) block.push(header[++index]!.trim());
       value = block.filter(Boolean).join(' ');
     } else if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
       value = value.slice(1, -1);
@@ -67,12 +71,9 @@ export function parseFrontmatter(content: string): Record<string, string> {
   return fields;
 }
 
-/** SKILL.md 去掉 YAML 头之后的正文。 */
-export function skillBody(content: string): string {
-  const lines = content.split(/\r?\n/);
-  if (lines[0]?.trim() !== '---') return content.trim();
-  const end = lines.findIndex((line, index) => index > 0 && line.trim() === '---');
-  return (end < 0 ? content : lines.slice(end + 1).join('\n')).trim();
+/** 文件的字节按文本给出：须是合法的 UTF-8 且不含 NUL，不是文本时为 undefined。打包与 skill 工具读文件按同一个标准。 */
+export function textContent(bytes: Buffer): string | undefined {
+  return isUtf8(bytes) && !bytes.includes(0) ? bytes.toString('utf8') : undefined;
 }
 
 /** 一个 skill 文件夹：名字取头里的 name，没有就用文件夹名；说明压成一行并截断。读不到 SKILL.md 的不算 skill。 */
@@ -156,19 +157,15 @@ export function skillBlocks(text: string): Array<{ name: string; text: string }>
   return blocks;
 }
 
-/**
- * skill 工具交给模型的内容：包装行里写名字、所在层和文件夹，正文前列出文件夹里的文件，正文里的相对路径按这个文件夹解析。
- * hash 是整段的摘要，同一个 skill 再加载、内容没变时只回一句「已加载过」。
- */
-export function loadSkill(skill: Skill): { text: string; hash: string } {
+/** skill 工具交给模型的内容：包装行里写名字、所在层和文件夹，正文前列出文件夹里的文件，正文里的相对路径按这个文件夹解析。 */
+export function loadSkill(skill: Skill): string {
   const content = readFileSync(skill.path, 'utf8');
   if (Buffer.byteLength(content) > skillTextLimit) throw new Error(`${skill.name} 的 SKILL.md 超过 2 MiB，请用 read 或 shell 分段读`);
   const files = skillFiles(skill.directory).filter((file) => file !== 'SKILL.md');
-  const text = [`${OPEN}${skill.name}" layer="${layerTitles[skill.layer]}" folder="${skill.directory.replaceAll('"', '')}">`,
+  return [`${OPEN}${skill.name}" layer="${layerTitles[skill.layer]}" folder="${skill.directory.replaceAll('"', '')}">`,
     `这是 skill「${skill.name}」（${layerTitles[skill.layer]}层）的正文，文件夹在 ${skill.directory}。`
       + (files.length ? `文件夹里另有：${files.join('、')}。正文里提到的文件按相对这个文件夹的路径找；要看其中一个，用 skill 工具加 file 参数，脚本用 shell 跑。` : '正文里提到的路径相对这个文件夹。'),
-    '', skillBody(content), CLOSE].join('\n');
-  return { text, hash: createHash('sha256').update(text).digest('hex') };
+    '', splitFrontmatter(content).body, CLOSE].join('\n');
 }
 
 /** skill 文件夹里的一个文件（相对路径）：只给文本，不能越出文件夹，软链接按真实位置算。 */
@@ -184,8 +181,7 @@ export function readSkillFile(skill: Skill, file: string): string {
   const stat = statSync(real);
   if (!stat.isFile()) throw new Error(`${file} 不是文件`);
   if (stat.size > skillTextLimit) throw new Error(`${file} 超过 2 MiB，请用 shell 分段读`);
-  const bytes = readFileSync(real);
-  const content = bytes.toString('utf8');
-  if (bytes.includes(0) || !Buffer.from(content).equals(bytes)) throw new Error(`${file} 不是文本文件，用 shell 处理；文件路径：${real}`);
+  const content = textContent(readFileSync(real));
+  if (content === undefined) throw new Error(`${file} 不是文本文件，用 shell 处理；文件路径：${real}`);
   return content;
 }

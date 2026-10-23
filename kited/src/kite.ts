@@ -2,7 +2,7 @@
 import type { AttachmentRef, CompactionRequest, Input, InputNotice, InputOrigin, InputVia, StopRequest } from './harness/types.ts';
 import { AgentReports, agentReportContextDefinition, agentWorkspaceContextDefinition } from './agent-reports.ts';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { FileDiffStore } from './workspace/file-diffs.ts';
 import { join, relative } from 'node:path';
 import { ChildrenPending, GitLoginRequired, KiteError } from './errors.ts';
@@ -86,8 +86,8 @@ import { Previews } from './preview/previews.ts';
 import { Simulators } from './preview/simulators.ts';
 import { previewDefinitionId } from './preview/state.ts';
 import { trustedTargets } from './preview/targets.ts';
-import { contentHash, projectFolders } from './harness/context/project.ts';
-import { collectSkills, loadSkill, setSkillSources } from './harness/context/skills.ts';
+import { contentHash, projectSkills } from './harness/context/project.ts';
+import { loadSkill, setSkillSources } from './harness/context/skills.ts';
 import { Skills, type SkillSnapshot } from './skills.ts';
 import { type ApprovalRequest, type Ask, Asks, questionResponseOf, questionResultText, secretDeniedText, secretResponseOf, type SecretWaitingItem, type Waiting, WaitingConflict, Waits } from './waiting.ts';
 import { hasEnvKey, secretLabel, setEnvLine, type SecretRequest } from './secrets.ts';
@@ -520,12 +520,12 @@ export class Kite {
   async createSkill(value: unknown) {
     const skill = this.skills.validateNew(value);
     this.library.write('skill', skill.name, skill, null);
-    return this.skillSaved(this.skills.create(skill));
+    return this.skillSaved(this.skills.save(skill));
   }
   async updateSkill(name: string, expectedRevision: string, value: unknown) {
     const skill = this.skills.validate(name, expectedRevision, value);
     this.library.save('skill', name, skill, this.skills.accountRevision(name), this.skills.isDefault(skill));
-    return this.skillSaved(this.skills.update(skill));
+    return this.skillSaved(this.skills.save(skill));
   }
   /** 只有随 kited 带的 skill 能恢复默认，就是保存默认内容。 */
   resetSkill(name: string, expectedRevision: string) { return this.updateSkill(name, expectedRevision, this.skills.builtin(name)); }
@@ -542,9 +542,7 @@ export class Kite {
   }
   /** 这个工作区的代理能加载的 skill：四层合成后的名字、说明与所在层，输入框点选时列出来。 */
   availableSkills(workspaceId: string) {
-    const model = this.store.workspaceModel(workspaceId);
-    if (!model) throw new KiteError(`没有这个工作区：${workspaceId}`, 404);
-    return { skills: collectSkills(projectFolders(realpathSync(model.workspace.cwd))).map(({ name, description, layer }) => ({ name, description, layer })) };
+    return { skills: projectSkills(this.workspace(workspaceId).workspace.cwd).map(({ name, description, layer }) => ({ name, description, layer })) };
   }
   /** 角色保存后通知各端刷新，并随提示词更新点阵签名。 */
   private roleSaved(saved: RoleSnapshot) {
@@ -1739,9 +1737,9 @@ export class Kite {
     const match = /^\/([a-z0-9][a-z0-9._-]*)(?=\s|$)/i.exec(input.text);
     if (!match) return input;
     let skill;
-    try { skill = collectSkills(projectFolders(realpathSync(cwd))).find((entry) => entry.name === match[1]); } catch { return input; }
+    try { skill = projectSkills(cwd).find((entry) => entry.name === match[1]); } catch { return input; }
     if (!skill) return input;
-    return { ...input, skill: { name: skill.name, text: loadSkill(skill).text } };
+    return { ...input, skill: { name: skill.name, text: loadSkill(skill) } };
   }
   /** 给人发的消息挂上附件，按存好的那份固定名字、类型与尺寸。 */
   private withAttachments(input: Input, workspaceId: string, ids: string[]): Input {

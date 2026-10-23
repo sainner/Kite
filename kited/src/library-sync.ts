@@ -86,8 +86,8 @@ export class LibrarySync {
     for (const item of accountTemplates.values()) changes.templates = accepted('template', item.id, () => templates.cache(item.body)) || changes.templates;
     changes.templates = templates.keep(new Set(accountTemplates.keys())) || changes.templates;
 
-    const accountSkills = items('skill');
-    for (const item of accountSkills.values()) changes.skills = accepted('skill', item.id, () => skills.cache(item.body)) || changes.skills;
+    const accountSkills = items('skill', ['files']);
+    for (const item of accountSkills.values()) changes.skills = accepted('skill', item.id, () => skills.cache(item.id, item.revision)) || changes.skills;
     changes.skills = skills.keep(new Set(accountSkills.keys())) || changes.skills;
 
     const accountEmblems = items('emblem');

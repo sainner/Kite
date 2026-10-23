@@ -139,16 +139,12 @@ struct RemoteInput: Codable {
     var from: From? = nil
     /// 人发的消息带的附件。
     var attachments: [Attachment]? = nil
-    /// 开头 /名字 点选的 skill，工作机收下时固定的；退回重发时原样带回。
+    /// 开头 /名字 点选的 skill，工作机收下时固定的；App 只用名字拆出命令显示。
     var skill: Skill? = nil
-    var message: Message {
-        skill == nil ? Message(id: id, text: text, attachments: attachments ?? [], midTurn: midTurn ?? false)
-            : Message(id: id, typed: text, attachments: attachments ?? [], midTurn: midTurn ?? false)
-    }
+    var message: Message { Message(id: id, text: text, skill: skill?.name, attachments: attachments ?? [], midTurn: midTurn ?? false) }
 
     struct Skill: Codable {
         let name: String
-        let text: String
     }
 
     struct From: Codable {
@@ -235,8 +231,7 @@ struct RemoteRecord: Decodable, Identifiable {
         switch block.type {
         case "human":
             guard let messageID = block.id, let text = block.text else { return nil }
-            content = .human(block.skill == nil ? Message(id: messageID, text: text, attachments: block.attachments ?? [], midTurn: block.midTurn ?? false)
-                : Message(id: messageID, typed: text, attachments: block.attachments ?? [], midTurn: block.midTurn ?? false))
+            content = .human(Message(id: messageID, text: text, skill: block.skill, attachments: block.attachments ?? [], midTurn: block.midTurn ?? false))
         case "agent":
             guard let messageID = block.id, let text = block.text, let sender = block.sender else { return nil }
             content = .agent(Message(id: messageID, text: text), sender: Sender(name: sender.name, instance: sender.instance))

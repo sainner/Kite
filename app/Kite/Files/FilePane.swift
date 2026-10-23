@@ -17,8 +17,6 @@ struct FilePane: View {
     @State private var addressReset = 0
     /// 看着文件时点了「打开网址」：控制区换成地址栏，打开了或离开地址栏就换回来。
     @State private var addressing = false
-    /// 互联网网页的页面从哪个网址开起；之后换网址在同一个页面里跳过去，前进后退接得上（见 webPage）。
-    @State private var webStart: URL?
     /// 窗口够宽，文件和目录可以并排。
     @State private var wide = false
     @State private var searching = false
@@ -157,20 +155,12 @@ struct FilePane: View {
             withAnimation { searching = false }
         }
         .onChange(of: browser.selection.port) { area.portChanged(browser.instanceID, to: browser.selection.port) }
-        .onChange(of: browser.selection.url, initial: true) { _, url in
-            // 换网址在同一个页面里跳过去；从别的内容换到网址时从这个网址开起
-            guard let url = url.flatMap(URL.init(string:)), webStart != nil else {
-                webStart = url.flatMap(URL.init(string:))
-                return
-            }
-            web.open(url)
-        }
     }
 
     // MARK: - 网页
 
     /// 本工作区的网页经端口转发打开，互联网的直接打开；页面里可以去任何网址，只是进不了工作机服务自己的地址（WebRoaming）。
-    /// 互联网网页的来源是开起时的网址，换网址不重建页面。
+    /// 互联网网页从开起时的网址开，换网址不重建页面（AddressPreview）。
     @ViewBuilder
     private var webPage: some View {
         if let client = browser.connection, let store = UUID(uuidString: browser.workspaceID) {
@@ -180,7 +170,7 @@ struct FilePane: View {
                             browser: web, report: { browser.pageError = $0 })
                     .id("\(port) \(reload)")
             case .url(let url):
-                WebPreview(source: .address(webStart ?? url, store: store, roaming: client.roaming), report: { browser.pageError = $0 }, browser: web)
+                AddressPreview(url: url, store: store, roaming: client.roaming, browser: web, report: { browser.pageError = $0 })
                     .id(reload)
             default:
                 Color.clear
@@ -269,7 +259,6 @@ struct FilePane: View {
     private func reloadPage() {
         browser.pageError = nil
         guard !web.reload() else { return }
-        webStart = browser.selection.url.flatMap(URL.init(string:))
         reload = UUID()
     }
 

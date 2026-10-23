@@ -128,10 +128,14 @@ struct Message: Identifiable {
         }
     }
 
-    /// 工作机记录里点选了 skill 的消息：正文是输入框里打的原样，命令名拆出来显示，id 沿用记录的。
-    init(id: String, typed: String, attachments: [Attachment] = [], midTurn: Bool = false) {
-        let split = Message(typed: typed)
-        self.init(id: id, text: split.text, command: split.command, attachments: attachments, midTurn: midTurn)
+    /// 工作机记录里的人发消息：点选了 skill 的，正文是输入框里打的原样、开头是「/名字」，命令名拆出来显示；id 沿用记录的。
+    init(id: String, text: String, skill: String?, attachments: [Attachment] = [], midTurn: Bool = false) {
+        if let command = skill.map({ "/" + $0 }), text.hasPrefix(command) {
+            self.init(id: id, text: text.dropFirst(command.count).trimmingCharacters(in: .whitespacesAndNewlines), command: command,
+                      attachments: attachments, midTurn: midTurn)
+        } else {
+            self.init(id: id, text: text, attachments: attachments, midTurn: midTurn)
+        }
     }
 
     /// 放回输入框、复制时的原文：斜杠命令连同命令名。

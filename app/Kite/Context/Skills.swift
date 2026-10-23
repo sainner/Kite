@@ -56,12 +56,19 @@ nonisolated struct SkillPackage: Codable, Equatable, Sendable {
     }
 }
 
-/// 导出选中的文件时保留原始字节，不经过文本编辑器。
+/// 导出选中的文件时保留原始字节，不经过文本编辑器；文件名和类型按它在 skill 里的路径。
 struct SkillFileDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.data] }
     let data: Data
+    var name = ""
+    var type = UTType.data
 
-    init(data: Data) { self.data = data }
+    init(data: Data, path: String) {
+        let url = URL(fileURLWithPath: path)
+        self.data = data
+        name = url.lastPathComponent
+        type = UTType(filenameExtension: url.pathExtension) ?? .data
+    }
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else { throw CocoaError(.fileReadCorruptFile) }
         self.data = data
@@ -88,7 +95,6 @@ nonisolated struct SkillCatalog: Decodable, Sendable {
 nonisolated struct AvailableSkill: Decodable, Hashable, Identifiable, Sendable {
     let name: String
     let description: String
-    let layer: String
     var id: String { name }
 }
 

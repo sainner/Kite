@@ -61,77 +61,21 @@ private struct ExtensionSidebar: View {
 private struct SkillSection: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model
-    @Environment(\.sidebarMetrics) private var metrics
-    @State private var expanded = true
-
-    private struct Item: Identifiable {
-        let id: String
-        let note: String?
-    }
-
-    private struct Group: Identifiable {
-        let title: String
-        let items: [Item]
-        /// 这一组的小标题上有新建按钮。
-        let addable: Bool
-        var id: String { title }
-    }
 
     var body: some View {
-        let page = ExtensionLibrary.skills
-        let selected = model.extensionPage == page
-        let current = selected ? model.skillItem : nil
-        let groups = [Group(title: "自建", items: items(builtin: false), addable: true), Group(title: "随 Kite 提供", items: items(builtin: true), addable: false)]
-            .filter { !$0.items.isEmpty || $0.addable }
-        SidebarStickySection(headerHeight: metrics.rowHeight) {
-            SidebarListRow(selected: selected) { foreground in
-                Button { open(nil) } label: {
-                    SidebarListLabel(title: page.title, icon: page.icon, selected: selected)
-                }
-                .buttonStyle(SidebarButtonStyle(foreground: foreground))
-                .accessibilityAddTraits(selected ? .isSelected : [])
-                SidebarDisclosureButton(title: page.title, noun: page.title, isExpanded: $expanded, foreground: foreground)
-            }
-        } content: {
-            if expanded {
-                SidebarSubgroups(linked: true) {
-                    ForEach(groups) { group in
-                        let selectedIndex = group.items.firstIndex { $0.id == current }
-                        SidebarStickySection(enabled: selectedIndex != nil, topInset: metrics.rowHeight, headerHeight: metrics.subheaderHeight) {
-                            SidebarSubheader(title: group.title, selected: selectedIndex != nil, help: "打开\(group.title)的 skill",
-                                             open: group.items.first.map { first in { open(first.id) } },
-                                             add: group.addable ? SidebarSubheaderAdd(help: "新建 Skill", label: "新建 Skill", action: newSkill) : nil)
-                        } content: {
-                            SidebarTreeRows(items: group.items, selectedIndex: selectedIndex, hasCheckout: true) { item in
-                                SidebarTreeRow(selected: item.id == current) {
-                                    Button { open(item.id) } label: {
-                                        HStack(spacing: 6) {
-                                            Text(item.id)
-                                                .lineLimit(1).truncationMode(.middle)
-                                            if let note = item.note {
-                                                Text(note).font(Theme.caption).foregroundStyle(.secondary)
-                                            }
-                                            Spacer(minLength: 0)
-                                        }
-                                        .frame(maxWidth: .infinity, minHeight: metrics.workspaceRowHeight)
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.pointingPlain)
-                                }
-                            }
-                        }
-                        .zIndex(selectedIndex != nil ? 1 : 0)
-                    }
-                }
-            }
-        }
+        let groups = [
+            LibraryGroup(title: "自建", help: "打开自建的 skill", items: items(builtin: false),
+                         add: SidebarSubheaderAdd(help: "新建 Skill", label: "新建 Skill", action: newSkill)),
+            LibraryGroup(title: "随 Kite 提供", help: "打开随 Kite 提供的 skill", items: items(builtin: true)),
+        ].filter { !$0.items.isEmpty || $0.add != nil }
+        LibrarySection(page: .skills, groups: groups, current: model.skillItem, open: open)
     }
 
-    private func items(builtin: Bool) -> [Item] {
+    private func items(builtin: Bool) -> [LibraryItem<String>] {
         let saved = (model.skillCatalog?.skills ?? []).filter { $0.isBuiltin == builtin }
-            .map { Item(id: $0.id, note: model.skillDraft($0.id) != nil ? "未保存" : nil) }
+            .map { LibraryItem(id: $0.id, title: $0.id, note: model.skillDraft($0.id) != nil ? "未保存" : nil) }
         guard !builtin else { return saved }
-        return saved + model.skillDrafts.filter(\.isNew).map { Item(id: $0.id, note: "新建") }
+        return saved + model.skillDrafts.filter(\.isNew).map { LibraryItem(id: $0.id, title: $0.id, note: "新建") }
     }
 
     /// 打开 Skill 页；给了哪个就选中它，没给时显示上次选中的。
@@ -151,20 +95,73 @@ private struct SkillSection: View {
 private struct AgentContextSection: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let groups = AgentContextCategory.allCases.map { category in
+            LibraryGroup(title: category.title, help: "打开\(category.title)", items: items(category),
+                         add: category == .role && model.roleCatalog?.defaultRole != nil
+                            ? SidebarSubheaderAdd(help: "新建角色", label: "新建角色", action: newRole) : nil)
+        }.filter { !$0.items.isEmpty }
+        LibrarySection(page: .contexts, groups: groups, current: model.agentContextItem, open: open)
+    }
+
+    private func items(_ category: AgentContextCategory) -> [LibraryItem<AgentContextItem>] {
+        if let kind = category.templateKind {
+            return model.libraryTemplates(kind).map {
+                LibraryItem(id: AgentContextItem(category: category, id: $0.id), title: $0.title.isEmpty ? "未命名模板" : $0.title,
+                            note: model.templateDraft($0.id) != nil ? "未保存" : nil)
+            }
+        }
+        return model.libraryRoles.map {
+            LibraryItem(id: AgentContextItem(category: category, id: $0.id), title: $0.title.isEmpty ? "未命名角色" : $0.title,
+                        note: model.roleUnsaved($0.id) ? "未保存" : nil)
+        }
+    }
+
+    /// 打开代理上下文页；给了哪项就选中它，没给时显示上次选中的。
+    private func open(_ item: AgentContextItem?) {
+        model.extensionPage = .contexts
+        if let item { model.selectedAgentContext = item }
+        onSelect()
+    }
+
+    private func newRole() {
+        model.newLibraryRole()
+        onSelect()
+    }
+}
+
+/// 资源库侧栏里分组列出的一项；note 是名字后面的灰字（「未保存」「新建」）。
+private struct LibraryItem<ID: Hashable>: Identifiable {
+    let id: ID
+    let title: String
+    let note: String?
+}
+
+/// 资源库侧栏里的一组：小标题点开第一项，add 是小标题上的新建按钮。
+private struct LibraryGroup<ID: Hashable>: Identifiable {
+    let title: String
+    /// 小标题的提示。
+    let help: String
+    let items: [LibraryItem<ID>]
+    var add: SidebarSubheaderAdd? = nil
+    var id: String { title }
+}
+
+/// 资源库侧栏里分组的一页（代理上下文、Skill），像项目一栏里的项目一样：页名一行可收起，各组作小标题、各项作树状子项列在下面。
+/// current 是这一页选中的项，页没打开时不标；open 给 nil 是只打开这一页。
+private struct LibrarySection<ID: Hashable>: View {
+    let page: ExtensionLibrary
+    let groups: [LibraryGroup<ID>]
+    let current: ID?
+    let open: (ID?) -> Void
+    @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
     @State private var expanded = true
 
-    private struct Item: Identifiable {
-        let id: String
-        let title: String
-        let unsaved: Bool
-    }
-
     var body: some View {
-        let page = ExtensionLibrary.contexts
         let selected = model.extensionPage == page
-        let current = selected ? model.agentContextItem : nil
-        let categories = AgentContextCategory.allCases.map { ($0, items($0)) }.filter { !$0.1.isEmpty }
+        let current = selected ? current : nil
         SidebarStickySection(headerHeight: metrics.rowHeight) {
             SidebarListRow(selected: selected) { foreground in
                 Button { open(nil) } label: {
@@ -177,24 +174,20 @@ private struct AgentContextSection: View {
         } content: {
             if expanded {
                 SidebarSubgroups(linked: true) {
-                    ForEach(categories, id: \.0) { category, items in
-                        let currentID = current?.category == category ? current?.id : nil
-                        let selectedIndex = items.firstIndex { $0.id == currentID }
-                        SidebarStickySection(enabled: selectedIndex != nil, topInset: metrics.rowHeight,
-                                             headerHeight: metrics.subheaderHeight) {
-                            SidebarSubheader(title: category.title, selected: selectedIndex != nil, help: "打开\(category.title)",
-                                             open: items.first.map { first in { open(AgentContextItem(category: category, id: first.id)) } },
-                                             add: category == .role && model.roleCatalog?.defaultRole != nil
-                                                ? SidebarSubheaderAdd(help: "新建角色", label: "新建角色", action: newRole) : nil)
+                    ForEach(groups) { group in
+                        let selectedIndex = group.items.firstIndex { $0.id == current }
+                        SidebarStickySection(enabled: selectedIndex != nil, topInset: metrics.rowHeight, headerHeight: metrics.subheaderHeight) {
+                            SidebarSubheader(title: group.title, selected: selectedIndex != nil, help: group.help,
+                                             open: group.items.first.map { first in { open(first.id) } }, add: group.add)
                         } content: {
-                            SidebarTreeRows(items: items, selectedIndex: selectedIndex, hasCheckout: true) { item in
-                                SidebarTreeRow(selected: item.id == currentID) {
-                                    Button { open(AgentContextItem(category: category, id: item.id)) } label: {
+                            SidebarTreeRows(items: group.items, selectedIndex: selectedIndex, hasCheckout: true) { item in
+                                SidebarTreeRow(selected: item.id == current) {
+                                    Button { open(item.id) } label: {
                                         HStack(spacing: 6) {
                                             Text(item.title)
                                                 .lineLimit(1).truncationMode(.middle)
-                                            if item.unsaved {
-                                                Text("未保存").font(Theme.caption).foregroundStyle(.secondary)
+                                            if let note = item.note {
+                                                Text(note).font(Theme.caption).foregroundStyle(.secondary)
                                             }
                                             Spacer(minLength: 0)
                                         }
@@ -210,29 +203,6 @@ private struct AgentContextSection: View {
                 }
             }
         }
-    }
-
-    private func items(_ category: AgentContextCategory) -> [Item] {
-        if let kind = category.templateKind {
-            return model.libraryTemplates(kind).map {
-                Item(id: $0.id, title: $0.title.isEmpty ? "未命名模板" : $0.title, unsaved: model.templateDraft($0.id) != nil)
-            }
-        }
-        return model.libraryRoles.map {
-            Item(id: $0.id, title: $0.title.isEmpty ? "未命名角色" : $0.title, unsaved: model.roleUnsaved($0.id))
-        }
-    }
-
-    /// 打开代理上下文页；给了哪项就选中它，没给时显示上次选中的。
-    private func open(_ item: AgentContextItem?) {
-        model.extensionPage = .contexts
-        if let item { model.selectedAgentContext = item }
-        onSelect()
-    }
-
-    private func newRole() {
-        model.newLibraryRole()
-        onSelect()
     }
 }
 

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join, parse, resolve } from 'node:path';
 import { bindContext } from './assembler.ts';
-import { collectSkills, skillsBinding } from './skills.ts';
+import { collectSkills, skillsBinding, type Skill } from './skills.ts';
 import type { PublicVariable } from './scenes.ts';
 import type { ContextBinding, ContextBlock, ContextDefinition, ContextPart, ContextSource, ContextValues } from './types.ts';
 
@@ -56,6 +56,9 @@ function folders(cwd: string): { folders: string[]; git?: string } {
 /** 从仓库根目录到工作目录的各级文件夹，由外到内；skill 的项目层也按这个范围找。 */
 export const projectFolders = (cwd: string): string[] => folders(cwd).folders;
 
+/** 工作目录能加载的 skill：项目层按 projectFolders 的范围找，再合上系统、用户与机器层；清单、skill 工具和 /名字 点选都按它。 */
+export const projectSkills = (cwd: string): Skill[] => collectSkills(projectFolders(realpathSync(cwd)));
+
 /** 来自文件的公共变量：从仓库根目录到工作目录逐级找到的同名文件。 */
 export const documentVariables = {
   'project.rules': 'AGENTS.md',
@@ -105,7 +108,7 @@ export function directoryVariables(cwd: string) {
     'workspace.branch': () => branch(realpathSync(cwd)),
     'project.rules': () => documents(realpathSync(cwd), documentVariables['project.rules']),
     'project.memory': () => documents(realpathSync(cwd), documentVariables['project.memory']),
-    'project.skills': () => skillsBinding(collectSkills(projectFolders(realpathSync(cwd)))),
+    'project.skills': () => skillsBinding(projectSkills(cwd)),
   } satisfies Partial<Record<PublicVariable, () => ContextBinding>>;
 }
 
