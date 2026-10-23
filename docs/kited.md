@@ -296,7 +296,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/machine` | 读取这台工作机服务的持久身份 `{id, name, createdAt, version}`，`version` 为 `{build, protocol, builtAt?, commit?}`，源码运行时 `build` 为 `dev`；无需 `X-Kite-Machine`；远程访问须通过同账号组网认证 |
 | GET | `/update` | 这台工作机的版本与自动更新 `{version, release, state, …}`：`release` 是最近一次发布 `{build, protocol, builtAt, commit, platform, arch, by}`，没有时为 null；`state` 为 `dev`（源码运行，不更新）、`current`、`unsupported`（平台或架构不同，带 `reason`）、`waiting-source`（在线的工作机里没有运行这一版的）、`downloading`（带 `done`、`total` 字节）、`ready`（`waiting` 列出还在等的事项）、`installing` 或 `failed`（带 `error`；`retry` 为 false 时这一版不再自动重试）；本机服务已换上的那一版 Mac App 备好时带 `app: {build, path}`。变化时目录事件流推 `update.changed`。规则见 [自动更新](macOS安装与打包.md#自动更新) |
 | POST | `/update/apply` | 准备好的新版现在就换上，不等空闲，返回时多半还是 `ready`，换版开始后推 `update.changed`；进行中的回合、终端与后台命令随服务重启中断。没有准备好的新版 409 |
-| GET/POST | `/update/:build/:payload`、`/update/:build/:payload/files` | 仅工作机：从正在运行这一版的工作机取文件。`payload` 为 `runtime`（运行目录）或 `app`（装上服务的 Mac App 中运行目录以外的部分），GET 返回清单 `{files}`，每项为 `{path, sha256, size, executable}` 或符号链接 `{path, link}`。POST `{paths}` 返回这些文件的 tar 流，只给清单里有的路径。没在运行这一版或没有这份内容 404 |
+| GET/POST | `/update/:build/:payload`、`/update/:build/:payload/files`、`/update/:build/:payload/file` | 仅工作机：从正在运行这一版的工作机取文件。`payload` 为 `runtime`（运行目录）或 `app`（装上服务的 Mac App 中运行目录以外的部分），GET 返回清单 `{files}`，每项为 `{path, sha256, size, executable}` 或符号链接 `{path, link}`，认单段 `Range`（不带时给整份）。POST `{paths}` 返回这些文件的 tar 流。`GET .../file?path=` 返回一个文件、认 `Range`，拉取方按段取大文件；旧版没有这个接口（404）时拉取方退回 tar。都只给清单里有的路径。没在运行这一版或没有这份内容 404。这组接口跨版本兼容 |
 | GET | `/model-accounts` | 读取本机模型账号、订阅额度与 API 费用/余额的当前快照，详见 [模型账号与额度](#模型账号与额度) |
 | POST | `/model-accounts/refresh` | 立即查询上游并推送新快照 |
 | GET | `/token-prices` | 读取用量折算金额用的价格表，只列 Kite 模型目录里的模型（计价本身覆盖更多型号）：`checked`（核对日期）与 `models`，每项是 `model`（目录里的显示名）、`provider`，以及每百万 token 的美元单价 `input`、`cacheRead`、`output`，价格页列出时带 `cacheWrite`、`cacheWrite1h`（Claude 的 1 小时缓存写入）与长提示档 `long`（`above`、`rates`）；分时计价的 DeepSeek 单价是高峰价，另带空闲价 `offPeak` |
@@ -379,7 +379,8 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
 | GET | `/threads/:id/raw` | 调试查看原生记录，只读：harness 的 journal 与 Claude 的会话文件逐条原样给出，两份各按文件顺序、按时间交错。`?journal=&claude=` 是上次读到的条数，省略为 0；返回 `{journal, claude, reset, entries}`，每条 `{source, index, at, label, text}`，`text` 是缩进好的原文，图片的 base64 换成占位；起点超出现有条数（记录被整份换掉）时 `reset` 为 true、从头给。格式随后端与 CLI 版本变，不是稳定契约 |
-| PUT / GET / DELETE | `/workspaces/:id/attachments/:attachment` | 上传、读取（`?size=` 取缩略图）、删除还没发出的消息附件，语义见 [会话显示协议](会话显示协议.md#附件) |
+| PUT / GET / DELETE | `/workspaces/:id/attachments/:attachment` | 上传、读取（`?size=` 取缩略图，原件认 `Range`）、删除还没发出的消息附件，语义见 [会话显示协议](会话显示协议.md#附件) |
+| PUT / POST | `/workspaces/:id/attachments/:attachment/parts/:offset`、`/workspaces/:id/attachments/:attachment/parts` | 分段上传附件：各段 PUT 到自己的位置，传完 POST 核对后收下，见 [会话显示协议](会话显示协议.md#附件) |
 | POST | `/threads/:id/messages` | 发消息 `{text, id?, attachments?, relay?, confirmRecovery?}`，返回 `{id}`；`attachments` 是这个工作区里存好的附件 ID，只有人发的消息能带；`confirmRecovery: true` 先确认恢复再发送，只用于 App 里用户的发送，带 `X-Kite-Source` 时拒绝；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
 | POST | `/threads/:id/messages/:message/cancel` | 按后端能力撤回尚未交接的输入 |
 | POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?, confirmRecovery?}`，响应 `{returned}`；`confirmRecovery: true` 先确认恢复再停止 |

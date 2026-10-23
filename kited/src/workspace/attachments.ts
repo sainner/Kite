@@ -6,7 +6,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync,
-  writeFileSync } from 'node:fs';
+  statSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
@@ -149,6 +149,45 @@ export class Attachments {
 
   discard(upload: Upload): void { rmSync(upload.staging, { recursive: true, force: true }); }
 
+  /** 分段上传拼接中的文件，在暂存目录里，按工作区与附件 ID 认。 */
+  private partsFile(workspaceId: string, id: string): string {
+    this.dir(workspaceId, id);
+    return join(this.staging, 'parts', workspaceId, id);
+  }
+
+  /**
+   * 分段上传的一段：写进这个附件拼接文件的 offset 处，几段可以同时写；size 是整份大小。
+   * 组网上卡住的段由客户端换个请求重传（见 App 的 KitedClient.upload），后到的覆盖先到的。
+   */
+  async receivePart(workspaceId: string, id: string, size: number, offset: number, body: AsyncIterable<Uint8Array>): Promise<void> {
+    if (!Number.isSafeInteger(size) || size <= 0) throw new KiteError('附件大小无效');
+    if (size > MAX_ATTACHMENT_BYTES) throw new KiteError(`附件超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024} MiB`, 413);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= size) throw new KiteError('分段位置无效');
+    const file = this.partsFile(workspaceId, id);
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const fd = openSync(file, constants.O_CREAT | constants.O_WRONLY, 0o600);
+    try {
+      let position = offset;
+      for await (const chunk of body) {
+        if (position + chunk.byteLength > size) throw new KiteError('分段超出附件大小');
+        writeSync(fd, chunk, 0, chunk.byteLength, position);
+        position += chunk.byteLength;
+      }
+    } finally { closeSync(fd); }
+  }
+
+  /** 各段都传完了：拼好的文件与整份的大小、SHA-256 对得上才交回它的位置，由调用方照整份上传收下；之后调 dropParts。 */
+  async assembled(workspaceId: string, id: string, size: number, sha256: string): Promise<string> {
+    const file = this.partsFile(workspaceId, id);
+    if (!existsSync(file)) throw new KiteError('没有收到这个附件的分段', 404);
+    const hash = createHash('sha256');
+    for await (const chunk of Bun.file(file).stream()) hash.update(chunk);
+    if (statSync(file).size !== size || hash.digest('hex') !== sha256) throw new KiteError('附件的分段没有传全，请重新上传', 409);
+    return file;
+  }
+
+  dropParts(workspaceId: string, id: string): void { rmSync(this.partsFile(workspaceId, id), { force: true }); }
+
   /** 发消息带的附件：都要已经存好，不能重复，数量有上限。 */
   refs(workspaceId: string, ids: string[]): AttachmentRef[] {
     if (ids.length > MAX_MESSAGE_ATTACHMENTS) throw new KiteError(`一条消息最多带 ${MAX_MESSAGE_ATTACHMENTS} 个附件`);
@@ -167,6 +206,7 @@ export class Attachments {
   /** 删掉没发出去的附件，连同工作区里的那份；已经没有的不算错。 */
   remove(workspaceId: string, cwd: string, id: string): void {
     const dir = this.dir(workspaceId, id);
+    this.dropParts(workspaceId, id);
     if (!existsSync(dir)) return;
     if (existsSync(join(dir, 'sent'))) throw new KiteError('附件已随消息发出，不能删除', 409);
     rmSync(dir, { recursive: true, force: true });

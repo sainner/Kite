@@ -1,4 +1,5 @@
 /** HTTP 接口：本机监听信任回环客户端，远程监听只接受已核验组网身份的内部代理。事件流用 SSE，语音输入和终端用 WebSocket。 */
+import { rangedResponse } from './byte-range.ts';
 import { KiteError } from './errors.ts';
 import type { EventScope } from './events.ts';
 import { inScope } from './transcript/feed.ts';
@@ -240,7 +241,7 @@ export function serve(kite: Kite, listen: Listen) {
     if (!workspace) throw new KiteError(`没有这个工作区：${req.params.id}`, 404);
     return fileContent(req, new WorkspaceFiles(workspace.cwd), str(new URL(req.url).searchParams.get('path'), 'path'));
   };
-  /** 附件的原件，或 size 给出长边的图片缩略图；同一个附件 ID 的内容不会变。 */
+  /** 附件的原件（组网上的 App 按段取），或 size 给出长边的图片缩略图；同一个附件 ID 的内容不会变。 */
   const attachmentContent = async (req: Request & { params: { id: string; attachment: string } }) => {
     kite.workspace(req.params.id);
     const size = new URL(req.url).searchParams.get('size');
@@ -256,8 +257,7 @@ export function serve(kite: Kite, listen: Listen) {
       return new Response(thumbnail.bytes, { headers });
     }
     headers.set('Content-Type', ref.mediaType);
-    headers.set('Content-Length', String(ref.size));
-    return new Response(Bun.file(path), { headers });
+    return rangedResponse(req, Bun.file(path), headers);
   };
   // 本机网络设置不对远程设备开放。
   const localOnly = <R extends Request>(fn: (req: R) => Promise<Response>) =>
@@ -348,9 +348,11 @@ export function serve(kite: Kite, listen: Listen) {
       // 自动更新：/update 与取文件的接口跨版本保持兼容，新旧版本靠它们收敛，见 update/updates.ts。
       '/update': { GET: bound(() => kite.updates.status()) },
       '/update/apply': { POST: bound(() => kite.updates.applyNow()) },
-      '/update/:build/:payload': { GET: long(peerOnly((req) => kite.updates.listing(req.params.build, payload(req.params.payload)))) },
+      '/update/:build/:payload': { GET: long(peerOnly((req) => kite.updates.listingResponse(req, req.params.build, payload(req.params.payload)))) },
       '/update/:build/:payload/files': { POST: long(peerOnly(async (req) =>
         kite.updates.files(req.params.build, payload(req.params.payload), (await body(req)).paths, req.signal))) },
+      '/update/:build/:payload/file': { GET: long(peerOnly((req) =>
+        kite.updates.file(req, req.params.build, payload(req.params.payload), str(new URL(req.url).searchParams.get('path'), 'path')))) },
       '/subscription-logins': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.uuid(), provider: z.enum(['chatgpt', 'claude']) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('订阅登录请求无效');
@@ -536,6 +538,23 @@ export function serve(kite: Kite, listen: Listen) {
         })),
         GET: bound(attachmentContent),
         DELETE: bound((req) => { kite.removeAttachment(req.params.id, req.params.attachment); return { ok: true }; }),
+      },
+      // 组网上分段上传：各段 PUT 到自己的位置（几段同时传，卡住的段重传），传完 POST 核对整份的大小与哈希后收下。
+      '/workspaces/:id/attachments/:attachment/parts': {
+        POST: bound(async (req) => {
+          const name = new URL(req.url).searchParams.get('name');
+          if (!name) throw new KiteError('缺少 name');
+          const parsed = z.object({ size: z.number().int().positive(), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict().safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('分段上传的核对信息无效');
+          return kite.saveAttachmentParts(req.params.id, req.params.attachment, name, parsed.data.size, parsed.data.sha256);
+        }),
+      },
+      '/workspaces/:id/attachments/:attachment/parts/:offset': {
+        PUT: long(bound((req) => {
+          if (!req.body) throw new KiteError('分段是空的');
+          return kite.saveAttachmentPart(req.params.id, req.params.attachment, Number(new URL(req.url).searchParams.get('size')),
+            Number(req.params.offset), req.body).then(() => ({ ok: true }));
+        })),
       },
       '/workspaces/:id/operations/:operation': { POST: bound(async (req) =>
         kite.operations.invoke({ kind: 'ui' }, req.params.id, req.params.operation, await body(req), req.signal)) },

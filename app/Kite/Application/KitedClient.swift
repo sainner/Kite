@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 nonisolated struct RemoteState: Decodable, Equatable, Sendable {
@@ -623,7 +624,9 @@ struct KitedClient: Equatable {
     }
 
     /// 把本机文件原样传上去（附件），返回解码后的响应；progress 报已发出的比例，在 URLSession 的队列上调。
-    func upload<T: Decodable>(_ path: String, file: URL, as type: T.Type, progress: (@Sendable (Double) -> Void)? = nil) async throws -> T {
+    /// segmented 给有分段上传接口的地址用：不是本机时按段传，见 segmentedUpload。
+    func upload<T: Decodable>(_ path: String, file: URL, as type: T.Type, segmented: Bool = false,
+                              progress: (@Sendable (Double) -> Void)? = nil) async throws -> T {
         guard let machineID else { throw KitedError(message: "请先连接工作机") }
         var request = URLRequest(url: try url(path))
         request.httpMethod = "PUT"
@@ -631,12 +634,90 @@ struct KitedClient: Equatable {
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         let trace = TimingTrace.span("PUT \(path)")
         let session = Tailnet.covers(address) ? try await Tailnet.shared.urlSession() : URLSession.shared
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? Int) ?? 0
         let data: Data, response: URLResponse
-        do { (data, response) = try await session.upload(for: request, fromFile: file, delegate: progress.map(UploadProgress.init)) }
-        catch { trace("失败：\(error.localizedDescription)"); throw error }
+        do {
+            if segmented, !isLocal, size > 0 {
+                (data, response) = try await segmentedUpload(path, file: file, size: size, machineID: machineID, session: session, progress: progress)
+            } else {
+                (data, response) = try await session.upload(for: request, fromFile: file, delegate: progress.map(UploadProgress.init))
+            }
+        } catch { trace("失败：\(error.localizedDescription)"); throw error }
         trace("\((response as? HTTPURLResponse)?.statusCode ?? 0)")
         try validate(response, data: data)
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// 组网上按段传，段的大小、路数与卡住的判断同按段取（segmentSize 等）：各段 PUT 到 path/parts/<位置>，几路同时传，
+    /// 卡住的段换个请求重传；传完 POST path/parts，工作机核对整份的大小与 SHA-256 后收下，交回这个回应。path 可带查询，原样给最后一步。
+    /// 同 segmentedDownload，这次上传用自己的会话，段请求不在会话里排队。
+    private func segmentedUpload(_ path: String, file: URL, size: Int, machineID: String, session: URLSession,
+                                 progress: (@Sendable (Double) -> Void)?) async throws -> (Data, URLResponse) {
+        guard let components = URLComponents(string: path) else { throw KitedError(message: "上传地址无效") }
+        let base = components.percentEncodedPath
+        let sha256 = try await Self.sha256(of: file)
+        let configuration = session.configuration
+        configuration.httpMaximumConnectionsPerHost = Self.segmentWorkers
+        let own = URLSession(configuration: configuration)
+        defer { own.invalidateAndCancel() }
+        let sent = SentBytes(total: size, report: progress)
+        var pending = Array(stride(from: 0, to: size, by: Self.segmentSize))
+        try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
+            var running = 0
+            repeat {
+                while running < Self.segmentWorkers, !pending.isEmpty {
+                    let start = pending.removeFirst()
+                    var request = URLRequest(url: try url("\(base)/parts/\(start)?size=\(size)"))
+                    request.httpMethod = "PUT"
+                    request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+                    request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                    let sending = request
+                    group.addTask {
+                        try await Self.part(sending, file: file, start: start, length: min(Self.segmentSize, size - start), session: own, sent: sent)
+                    }
+                    running += 1
+                }
+                guard let done = try await group.next() else { break }
+                running -= 1
+                try validate(done.1, data: done.0)
+            } while running > 0
+        }
+        var request = URLRequest(url: try url("\(base)/parts\(components.percentEncodedQuery.map { "?\($0)" } ?? "")"))
+        request.httpMethod = "POST"
+        request.setValue(machineID, forHTTPHeaderField: "X-Kite-Machine")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["size": size, "sha256": sha256])
+        return try await own.data(for: request)
+    }
+
+    /// 传一段：从文件读出这一段再发。URLRequest 的超时量的是两次收发数据之间的空档，超过 2 秒就当这条连接卡住了，换个请求重传。
+    nonisolated private static func part(_ base: URLRequest, file: URL, start: Int, length: Int, session: URLSession,
+                                         sent: SentBytes) async throws -> (Data, URLResponse) {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(start))
+        let body = try handle.read(upToCount: length) ?? Data()
+        guard body.count == length else { throw KitedError(message: "上传时文件变了") }
+        var request = base
+        request.timeoutInterval = segmentStall
+        var attempt = 1
+        while true {
+            do { return try await session.upload(for: request, from: body, delegate: PartProgress(start: start, sent: sent)) }
+            catch let error as URLError where [.timedOut, .networkConnectionLost].contains(error.code) && attempt < segmentAttempts {
+                sent.update(start, 0)
+                attempt += 1
+            }
+        }
+    }
+
+    nonisolated private static func sha256(of file: URL) async throws -> String {
+        try await Task.detached {
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            var hash = SHA256()
+            while let chunk = try handle.read(upToCount: Self.segmentSize), !chunk.isEmpty { hash.update(data: chunk) }
+            return hash.finalize().map { String(format: "%02x", $0) }.joined()
+        }.value
     }
 
     /// 长连接（事件流、语音）用的独立会话和带工作机校验的请求；thread 给出时只关于这个会话。组网会话的配置带着节点的代理设置。
@@ -675,6 +756,32 @@ private final class UploadProgress: NSObject, URLSessionTaskDelegate, Sendable {
                                 totalBytesExpectedToSend: Int64) {
         guard totalBytesExpectedToSend > 0 else { return }
         report(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
+    }
+}
+
+/// 分段上传的进度：各段已发出的字节合起来报比例，一段重传时从零算起。
+nonisolated private final class SentBytes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var parts: [Int: Int64] = [:]
+    private let total: Int
+    private let report: (@Sendable (Double) -> Void)?
+    init(total: Int, report: (@Sendable (Double) -> Void)?) { self.total = total; self.report = report }
+
+    func update(_ start: Int, _ bytes: Int64) {
+        guard let report else { return }
+        let sum = lock.withLock { parts[start] = bytes; return parts.values.reduce(0, +) }
+        report(Double(sum) / Double(max(total, 1)))
+    }
+}
+
+/// 一段的发送进度交给 SentBytes。
+nonisolated private final class PartProgress: NSObject, URLSessionTaskDelegate, Sendable {
+    let start: Int
+    let sent: SentBytes
+    init(start: Int, sent: SentBytes) { self.start = start; self.sent = sent }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
+                    totalBytesExpectedToSend: Int64) {
+        sent.update(start, totalBytesSent)
     }
 }
 

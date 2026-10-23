@@ -3,11 +3,12 @@
  * Git 智能 HTTP，其他工作机从这里 clone 和拉取，不接受推送。主线只做快进，两边都有新提交时不合并，留给用户集成。
  * 服务端直接交给 git 自带的 http-backend（CGI），这里只做转接；只开放拉取的两个入口。
  */
+import { rmSync } from 'node:fs';
 import { basename, dirname } from 'node:path';
 import { gitConfigEnv } from '../git-credential.ts';
 import { fastForward, git, gitTry, revParse } from './git.ts';
 import type { Peer } from '../peer-fetch.ts';
-import { currentBranch, fetchRef, gitFailure, type RemoteAccess } from './remote.ts';
+import { currentBranch, gitFailure, missingRef, type RemoteAccess } from './remote.ts';
 
 /** 访问对端 kited 的方式：组网上经 kite-net 的本机 HTTP 代理；测试里同一进程的几台直接访问，没有代理。 */
 export interface PeerRoute { proxy?: string }
@@ -15,20 +16,43 @@ export interface PeerRoute { proxy?: string }
 const peersRef = (machine: string) => `refs/kite/peers/${machine}/`;
 export const peerURL = (peer: Peer, projectId: string) => `${peer.address}/git/${projectId}`;
 
+/** curl 的速度下限：低于 limit 字节每秒持续 time 秒就断开。 */
+interface Speed { limit: number; time: number }
+/** 对端睡眠或断网时连接可能挂着不断，采纳等操作持锁拉取：连续 30 秒几乎没有数据就放弃，慢中继上的大仓库只要还在传就不受影响。 */
+const PATIENT: Speed = { limit: 1, time: 30 };
 /**
- * 经代理访问对端检出的方式，请求带上对端的机器 ID。对端睡眠或断网时连接可能挂着不断，采纳等操作持锁拉取，
- * 所以按进度设限：连续 30 秒几乎没有数据就放弃；慢中继上的大仓库只要还在传就不受影响。
+ * 组网上一条连接遇上丢包后可能一直慢下去，新开的连接却往往很快（见 peer-fetch.ts）。Git 的包是对端现场生成的，没法按段取，
+ * 只能整次重来：前两次 15 秒里平均每秒不到 32 KB 就断开换一条，之后按 PATIENT 取到底。
  */
-function peerAccess(peer: Peer, projectId: string, route: PeerRoute): RemoteAccess {
+const BRISK: Speed = { limit: 32 * 1024, time: 15 };
+const BRISK_ATTEMPTS = 2;
+
+/** 经代理访问对端检出的方式，请求带上对端的机器 ID。 */
+function peerAccess(peer: Peer, projectId: string, route: PeerRoute, speed: Speed): RemoteAccess {
   return { url: peerURL(peer, projectId),
-    env: gitConfigEnv([['http.extraHeader', `X-Kite-Machine: ${peer.id}`], ['http.lowSpeedLimit', '1'], ['http.lowSpeedTime', '30'],
+    env: gitConfigEnv([['http.extraHeader', `X-Kite-Machine: ${peer.id}`], ['http.lowSpeedLimit', String(speed.limit)], ['http.lowSpeedTime', String(speed.time)],
       ...(route.proxy ? [['http.proxy', route.proxy] as [string, string]] : [])]) };
+}
+
+/** 按 BRISK、PATIENT 的节奏跑一个访问对端的 Git 命令：太慢被 curl 断开的换个连接再来，其余结果原样交回。 */
+async function briskly(peer: Peer, projectId: string, route: PeerRoute,
+  run: (access: RemoteAccess) => Promise<{ code: number; stderr: string }>): Promise<{ code: number; stderr: string }> {
+  for (let attempt = 1; ; attempt++) {
+    const brisk = attempt <= BRISK_ATTEMPTS;
+    const r = await run(peerAccess(peer, projectId, route, brisk ? BRISK : PATIENT));
+    // curl 的说明不随语言变：取引用列表时是 Operation too slow，取包时 Git 报 RPC failed; curl 28。
+    if (r.code === 0 || !brisk || !/Operation too slow|curl 28/i.test(r.stderr)) return r;
+  }
 }
 
 /** 从对端的检出 clone 成裸仓库；origin 不留，没有远程的项目各检出平等。 */
 export async function clonePeer(peer: Peer, projectId: string, dest: string, route: PeerRoute): Promise<void> {
-  const access = peerAccess(peer, projectId, route);
-  const r = await gitTry('/', ['clone', '-q', '--bare', '--', access.url, dest], { env: access.env });
+  let attempt = 0;
+  const r = await briskly(peer, projectId, route, (access) => {
+    // 上一次断开时可能留下建了一半的目录。
+    if (attempt++) rmSync(dest, { recursive: true, force: true });
+    return gitTry('/', ['clone', '-q', '--bare', '--', access.url, dest], { env: access.env });
+  });
   if (r.code !== 0) throw gitFailure(`从 ${peer.id} clone`, r.stderr);
   await git(dest, ['remote', 'remove', 'origin']);
 }
@@ -39,8 +63,8 @@ export async function clonePeer(peer: Peer, projectId: string, dest: string, rou
  */
 export async function syncPeer(cwd: string, peer: Peer, projectId: string, route: PeerRoute): Promise<'current' | 'forwarded' | 'diverged' | 'absent'> {
   const prefix = peersRef(peer.id);
-  const access = peerAccess(peer, projectId, route);
-  const r = await gitTry(cwd, ['fetch', '-q', '--no-tags', '--prune', '--', access.url, `+refs/heads/*:${prefix}*`], { env: access.env });
+  const r = await briskly(peer, projectId, route,
+    (access) => gitTry(cwd, ['fetch', '-q', '--no-tags', '--prune', '--', access.url, `+refs/heads/*:${prefix}*`], { env: access.env }));
   if (r.code !== 0) throw gitFailure(`从 ${peer.id} 拉取`, r.stderr);
   const branch = await currentBranch(cwd);
   const theirs = branch && await revParse(cwd, `${prefix}${branch}`);
@@ -50,8 +74,11 @@ export async function syncPeer(cwd: string, peer: Peer, projectId: string, route
 
 /** 从对端的检出取几条 ref（refspec 写法），对端没有的跳过；一次取几条时缺一条整次失败，所以逐条取。 */
 export async function fetchPeerRefs(cwd: string, peer: Peer, projectId: string, route: PeerRoute, specs: string[]): Promise<void> {
-  const access = peerAccess(peer, projectId, route);
-  for (const spec of specs) await fetchRef(cwd, access, spec, `从 ${peer.id} 取工作区的快照`);
+  for (const spec of specs) {
+    const r = await briskly(peer, projectId, route,
+      (access) => gitTry(cwd, ['fetch', '-q', '--no-tags', '--', access.url, spec], { env: { ...access.env, LC_ALL: 'C' } }));
+    if (r.code !== 0 && !missingRef(r.stderr)) throw gitFailure(`从 ${peer.id} 取工作区的快照`, r.stderr);
+  }
 }
 
 /** 对端的拉取请求：rest 为 /info/refs 或 /git-upload-pack，其余拒绝。 */

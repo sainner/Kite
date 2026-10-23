@@ -59,7 +59,7 @@ extension EnvironmentValues {
     }
 
     private static func download(_ attachment: Attachment, from source: AttachmentSource) async throws -> URL {
-        let (file, _) = try await source.client.download(source.path(attachment.id))
+        let (file, _) = try await source.client.download(source.path(attachment.id), segmented: true)
         guard let file else { throw KitedError(message: "附件下载失败") }
         let directory = FileManager.default.temporaryDirectory.appending(path: "KiteAttachments/\(attachment.id)")
         try? FileManager.default.removeItem(at: directory)
@@ -157,7 +157,7 @@ extension EnvironmentValues {
         task?.cancel()
         task = Task {
             do {
-                let result = try await source.client.upload(source.path(id) + "?name=\(name.pathComponent)", file: local, as: Attachment.self) { [weak self] fraction in
+                let result = try await source.client.upload(source.path(id) + "?name=\(name.pathComponent)", file: local, as: Attachment.self, segmented: true) { [weak self] fraction in
                     // 大文件回调上千次，涨够 1% 才更新，免得一直重画
                     Task { @MainActor in
                         guard let self, fraction - self.progress >= 0.01 || fraction == 1 else { return }

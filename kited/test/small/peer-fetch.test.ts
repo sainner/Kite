@@ -1,9 +1,10 @@
 /**
- * 对端请求按进度超时（src/peer-fetch.ts 的 peerJSON 的 stallMs）：等响应头、等下一段正文都不超过 stallMs，总时长不限。
- * 本地 Bun.serve 扮演对端，正文用 ReadableStream 一段段写出；三个请求并行，整个测试约 0.5 秒。
+ * 对端请求（src/peer-fetch.ts）：peerJSON 按进度超时（stallMs）：等响应头、等下一段正文都不超过 stallMs，总时长不限；
+ * peerDownload 按段取，卡住的段换个请求重取。本地 Bun.serve 扮演对端，正文用 ReadableStream 一段段写出。
  */
 import { afterEach, expect, test } from 'bun:test';
-import { peerJSON, type PeerFetch } from '../../src/peer-fetch.ts';
+import { randomBytes } from 'node:crypto';
+import { peerDownload, peerJSON, SEGMENT_BYTES, type PeerFetch } from '../../src/peer-fetch.ts';
 
 const servers: Array<{ stop(force?: boolean): unknown }> = [];
 afterEach(() => { for (const server of servers.splice(0)) void server.stop(true); });
@@ -63,4 +64,56 @@ test('正文分段慢慢到、总时长超过 stallMs 但每段间隔都短于�
     expect(failed.ms).toBeGreaterThan(STALL_MS * 0.8);
     expect(failed.ms).toBeLessThan(STALL_MS * 3);
   }
+});
+
+/*
+ * 依赖 Bun 运行时：fetch 的正文读到一半时中止，挂着的读取能结束，再发一个新请求重取这一段；几路同时取的各段乱序完成，
+ * 按位置拼回整份。单看代码看不出中止、重来与并发拼接合起来的时序问题。
+ * 整份 3.5 MiB 多一点，末段不满一段；第二段（从 1 MiB 起）的第一次请求发完响应头和一小块就挂住，第二次正常给，
+ * 所以它最后完成，晚于后面两段。另一个路径忽略 Range、回 200 整份，像不认 Range 的旧版对端。
+ */
+test('按段取时某段发了一小块就挂住，约 stallMs 后换个请求重取这一段，乱序完成的各段按位置拼回整份；对端忽略 Range 回 200 时整份照收', async () => {
+  const content = randomBytes(3 * SEGMENT_BYTES + 512 * 1024 + 7);
+  const stuckStart = SEGMENT_BYTES;
+  const requested: Record<string, string[]> = { '/ranged': [], '/whole': [] };
+  const server = Bun.serve({
+    hostname: '127.0.0.1', port: 0, idleTimeout: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      const range = request.headers.get('range') ?? '';
+      requested[path]?.push(range);
+      if (path === '/whole') return new Response(content);
+      const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+      if (path !== '/ranged' || !match) return new Response('没有这个接口', { status: 404 });
+      const start = Number(match[1]);
+      const end = Math.min(match[2] ? Number(match[2]) : content.length - 1, content.length - 1);
+      const headers = { 'Content-Range': `bytes ${start}-${end}/${content.length}` };
+      if (start === stuckStart && requested['/ranged']!.filter((value) => value === range).length === 1) {
+        // 发出响应头和开头一小块后既不再写也不关闭。
+        return new Response(new ReadableStream({ start(controller) { controller.enqueue(content.subarray(start, start + 4096)); } }),
+          { status: 206, headers });
+      }
+      return new Response(content.subarray(start, end + 1), { status: 206, headers });
+    },
+  });
+  servers.push(server);
+  const fetcher: PeerFetch = (address, path, init) => fetch(address + path, init);
+  const peer = { id: 'peer-test', address: `http://127.0.0.1:${server.port}` };
+  const download = async (path: string) => {
+    const out = Buffer.alloc(content.length);
+    const size = await peerDownload(fetcher, peer, path, (offset, bytes) => { bytes.copy(out, offset); }, { stallMs: STALL_MS });
+    return { size, out };
+  };
+
+  const [ranged, whole] = await Promise.all([download('/ranged'), download('/whole')]);
+  expect(ranged.size).toBe(content.length);
+  expect(ranged.out.equals(content)).toBe(true);
+  expect(whole.size).toBe(content.length);
+  expect(whole.out.equals(content)).toBe(true);
+
+  const starts = requested['/ranged']!.map((range) => Number(/^bytes=(\d+)-/.exec(range)?.[1]));
+  expect(requested['/ranged']![0]).toBe(`bytes=0-${SEGMENT_BYTES - 1}`);
+  expect([...new Set(starts)].sort((a, b) => a - b)).toEqual([0, 1, 2, 3].map((index) => index * SEGMENT_BYTES));
+  expect(starts.filter((start) => start === stuckStart)).toHaveLength(2);
+  expect(requested['/whole']).toHaveLength(1);
 });

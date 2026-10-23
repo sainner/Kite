@@ -8,13 +8,14 @@
  */
 import { spawn } from 'node:child_process';
 import { closeSync, constants, copyFileSync, chmodSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync,
-  renameSync, rmSync, symlinkSync } from 'node:fs';
+  renameSync, rmSync, symlinkSync, writeSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { AccountData } from '../account-data/store.ts';
+import { rangedResponse } from '../byte-range.ts';
 import { KiteError } from '../errors.ts';
-import { peerJSON, type Peer, type PeerFetch } from '../peer-fetch.ts';
+import { parallel, peerDownload, PeerError, SEGMENT_ATTEMPTS, SEGMENT_BYTES, SEGMENT_STALL_MS, SEGMENT_WORKERS, type Peer, type PeerFetch } from '../peer-fetch.ts';
 import { readManifest, versionOf, type RuntimeManifest, type Version } from '../version.ts';
 import { buildOf, fileEntry, hashFile, listFiles, MANIFEST_FILES, unlisted, unsafeEntry, type FileEntry, type RegularEntry } from './files.ts';
 
@@ -40,11 +41,8 @@ export type UpdateStatus = UpdateState & { version: Version; release: Release | 
 export type Payload = 'runtime' | 'app';
 /** Mac App 里放运行目录的位置；App 的清单不含它，拉取方用本机的同一版运行目录补上。 */
 const APP_RUNTIME = 'Contents/Resources/Service/runtime';
-/** 一次 tar 最多带这么多文件、这么多字节；断了只重取没到的。提供方的 Bun 会把整批 tar 输出读进内存，批不宜大。 */
+/** 一次 tar 最多带这么多文件；字节数按组网上的一段（SEGMENT_BYTES），比它大的文件按段取。 */
 const BATCH_FILES = 2_000;
-const BATCH_BYTES = 16 * 1024 * 1024;
-/** 这么久没收到数据就当对方没了。 */
-const STALL_MS = 60_000;
 const TICK_MS = 30_000;
 const PUBLISH_DELAY_MS = 30_000;
 const RETRY_MIN_MS = 60_000;
@@ -86,6 +84,8 @@ export class Updates {
   private appAttempts = new Map<string, number>();
   private progressAt = 0;
   private listings = new Map<string, Promise<FileEntry[]>>();
+  /** 序列化好的清单，按段给的是同一份字节。 */
+  private serialized = new Map<string, Blob>();
 
   constructor(private deps: {
     data: AccountData;
@@ -356,15 +356,20 @@ export class Updates {
   }
 
   private async listingFrom(source: Peer, build: string, payload: Payload): Promise<FileEntry[]> {
-    const body = await peerJSON<{ files: unknown }>(this.deps.fetch, source, `/update/${build}/${payload}`, { signal: this.abort.signal, stallMs: 5 * 60_000 });
-    const files = z.array(fileEntry).parse(body.files);
+    const parts: Array<[number, Buffer]> = [];
+    // 对端头一次给这份清单要现算哈希（App 的尤其慢），第一段等得宽些。清单有几 MB，按段取。
+    const size = await peerDownload(this.deps.fetch, source, `/update/${build}/${payload}`, (offset, bytes) => { parts.push([offset, bytes]); },
+      { waitMs: 5 * 60_000, signal: this.abort.signal });
+    const body = Buffer.alloc(size);
+    for (const [offset, bytes] of parts) body.set(bytes, offset);
+    const files = z.array(fileEntry).parse(JSON.parse(body.toString('utf8')).files);
     const unsafe = unsafeEntry(files);
     if (unsafe !== undefined) throw new Error(`清单里有不安全的条目：${unsafe}`);
     return files;
   }
 
   /**
-   * 按清单在 target 组出文件树：已在的（上次没取完留下的）照用，本机有相同内容的复制过来，其余成批从对端取；
+   * 按清单在 target 组出文件树：已在的（上次没取完留下的）照用，本机有相同内容的复制过来，其余从对端取；
    * 最后逐个校验，不符的再从对端取一次，仍不符就放弃。
    */
   private async assemble(source: Peer, build: string, payload: Payload, files: FileEntry[], target: string, local: Map<string, string>): Promise<void> {
@@ -405,21 +410,66 @@ export class Updates {
     for (const entry of files) if ('sha256' in entry) chmodSync(join(target, entry.path), entry.executable ? 0o755 : 0o644);
   }
 
-  /** 成批取文件：对端给 tar 流，本机用 tar 解进 target。 */
+  /**
+   * 从对端取文件：小文件凑到约一段大小打成一批 tar，几批同时取；大文件逐个按段取。一批或一段卡住了换个请求重取，见 peer-fetch.ts。
+   * 对端是没有按段接口的旧版时，大文件也打成 tar，一个一批。
+   */
   private async transfer(source: Peer, build: string, payload: Payload, entries: RegularEntry[], target: string, progress: (bytes: number) => void): Promise<void> {
-    for (let start = 0; start < entries.length;) {
+    const small = entries.filter((entry) => entry.size <= SEGMENT_BYTES);
+    const large = entries.filter((entry) => entry.size > SEGMENT_BYTES);
+    const batches: string[][] = [];
+    for (let start = 0; start < small.length;) {
       let end = start;
       let bytes = 0;
-      while (end < entries.length && end - start < BATCH_FILES && (end === start || bytes + entries[end]!.size <= BATCH_BYTES)) bytes += entries[end++]!.size;
-      await this.batch(source, build, payload, entries.slice(start, end).map((entry) => entry.path), target, progress);
+      while (end < small.length && end - start < BATCH_FILES && (end === start || bytes + small[end]!.size <= SEGMENT_BYTES)) bytes += small[end++]!.size;
+      batches.push(small.slice(start, end).map((entry) => entry.path));
       start = end;
+    }
+    await parallel(batches, SEGMENT_WORKERS, (paths) => this.batch(source, build, payload, paths, target, progress));
+    for (const [index, entry] of large.entries()) {
+      try { await this.segments(source, build, payload, entry, target, progress); }
+      catch (error) {
+        if (!(error instanceof PeerError) || error.status !== 404) throw error;
+        await parallel(large.slice(index), SEGMENT_WORKERS, (rest) => this.batch(source, build, payload, [rest.path], target, progress));
+        return;
+      }
     }
   }
 
+  /** 按段取一个大文件，写进 target 下的对应位置。 */
+  private async segments(source: Peer, build: string, payload: Payload, entry: RegularEntry, target: string, progress: (bytes: number) => void): Promise<void> {
+    let fd: number | undefined;
+    try {
+      await peerDownload(this.deps.fetch, source, `/update/${build}/${payload}/file?path=${encodeURIComponent(entry.path)}`, (offset, bytes) => {
+        fd ??= openSync(join(target, entry.path), 'w');
+        writeSync(fd, bytes, 0, bytes.byteLength, offset);
+        progress(bytes.byteLength);
+      }, { signal: this.abort.signal });
+    } finally { if (fd !== undefined) closeSync(fd); }
+  }
+
+  /** 取一批文件，卡住了换个请求重取这一批；重取前把这次报过的进度退回去。对端回的错误不重取。 */
   private async batch(source: Peer, build: string, payload: Payload, paths: string[], target: string, progress: (bytes: number) => void): Promise<void> {
+    for (let attempt = 1; ; attempt++) {
+      let got = 0;
+      try {
+        await this.batchOnce(source, build, payload, paths, target, (bytes) => { got += bytes; progress(bytes); });
+        return;
+      } catch (error) {
+        progress(-got);
+        if (this.abort.signal.aborted || error instanceof PeerError || attempt >= SEGMENT_ATTEMPTS) throw error;
+      }
+    }
+  }
+
+  /** 对端给 tar 流，本机用 tar 解进 target。 */
+  private async batchOnce(source: Peer, build: string, payload: Payload, paths: string[], target: string, progress: (bytes: number) => void): Promise<void> {
     const stalled = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const alive = () => { clearTimeout(timer); timer = setTimeout(() => stalled.abort(new Error(`工作机 ${source.id} 超过 ${STALL_MS / 1000} 秒没有传来数据`)), STALL_MS); };
+    const alive = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => stalled.abort(new Error(`工作机 ${source.id} 超过 ${SEGMENT_STALL_MS / 1000} 秒没有传来数据`)), SEGMENT_STALL_MS);
+    };
     alive();
     const tar = Bun.spawn(['/usr/bin/tar', '-x', '-f', '-', '-C', target], { stdin: 'pipe', stdout: 'ignore', stderr: 'pipe', env: { PATH: '/usr/bin:/bin' } });
     try {
@@ -427,7 +477,7 @@ export class Updates {
         method: 'POST', body: JSON.stringify({ paths }), signal: AbortSignal.any([this.abort.signal, stalled.signal]),
         headers: { 'content-type': 'application/json', 'X-Kite-Machine': source.id },
       });
-      if (!response.ok || !response.body) throw new Error(`工作机 ${source.id} 返回 ${response.status}`);
+      if (!response.ok || !response.body) throw new PeerError(`工作机 ${source.id} 返回 ${response.status}`, response.status);
       for await (const chunk of response.body) {
         alive();
         await tar.stdin.write(chunk);
@@ -468,6 +518,25 @@ export class Updates {
     const app = this.localApp();
     if (!app || this.appBuild(app) !== this.version.build) throw new KiteError('这台工作机没有这个版本的 App', 404);
     return listFiles(app, (path) => path === APP_RUNTIME);
+  }
+
+  /** 清单的 JSON，按请求的 Range 给（见 byte-range.ts）；不带 Range 的旧版拉取方照旧拿到整份。 */
+  async listingResponse(req: Request, build: string, payload: Payload): Promise<Response> {
+    const key = `${payload}\n${build}`;
+    let body = this.serialized.get(key);
+    if (!body) {
+      body = new Blob([JSON.stringify(await this.listing(build, payload))]);
+      this.serialized.set(key, body);
+    }
+    return rangedResponse(req, body, new Headers({ 'Content-Type': 'application/json' }));
+  }
+
+  /** 清单里的一个文件，按请求的 Range 给，拉取方按段取大文件；只给清单里的路径。 */
+  async file(req: Request, build: string, payload: Payload, path: string): Promise<Response> {
+    const { files } = await this.listing(build, payload);
+    if (!files.some((entry) => 'sha256' in entry && entry.path === path)) throw new KiteError(`清单里没有 ${path}`, 404);
+    const root = payload === 'runtime' ? this.runtime! : this.localApp()!;
+    return rangedResponse(req, Bun.file(join(root, path)), new Headers({ 'Content-Type': 'application/octet-stream' }));
   }
 
   /** 清单里有的文件打成 tar 流；只给清单里的路径，不能借此读别的文件。请求方断开就不再打包。 */

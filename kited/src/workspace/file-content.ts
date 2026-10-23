@@ -4,6 +4,7 @@
  * 查看器据此标明没有历史版本；组网上的 App 按段取，从第一段读到它。
  */
 import { relative } from 'node:path';
+import { byteRange } from '../byte-range.ts';
 import { KiteError } from '../errors.ts';
 import type { WorkspaceFiles } from './files.ts';
 import { gitTry } from './git.ts';
@@ -40,22 +41,4 @@ export async function fileContent(req: Request, files: WorkspaceFiles, path: str
   }
   headers.set('Content-Length', String(file.size));
   return new Response(head ? null : body, { headers });
-}
-
-/** 解析 bytes=a-b、bytes=a-、bytes=-n；不是单段字节范围时返回 null，按整份处理。 */
-function byteRange(value: string | null, size: number): [number, number] | 'unsatisfiable' | null {
-  const match = value?.trim().match(/^bytes=(\d*)-(\d*)$/);
-  if (!match || (match[1] === '' && match[2] === '')) return null;
-  let start: number, end: number;
-  if (match[1] === '') {
-    const suffix = Number(match[2]);
-    if (suffix === 0) return 'unsatisfiable';
-    start = Math.max(0, size - suffix);
-    end = size - 1;
-  } else {
-    start = Number(match[1]);
-    end = match[2] === '' ? size - 1 : Math.min(Number(match[2]), size - 1);
-    if (match[2] !== '' && Number(match[2]) < start) return null;
-  }
-  return start >= size ? 'unsatisfiable' : [start, end];
 }

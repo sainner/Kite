@@ -1742,6 +1742,17 @@ export class Kite {
       });
     } finally { this.attachments.discard(upload); }
   }
+  /** 分段上传的一段，见 Attachments.receivePart；工作区不在打开或准备中时拒绝。 */
+  async saveAttachmentPart(workspaceId: string, id: string, size: number, offset: number, body: AsyncIterable<Uint8Array>): Promise<void> {
+    const { workspace } = this.workspace(workspaceId);
+    if (workspace.status !== 'open' && workspace.status !== 'preparing') throw new KiteError('工作区不能再收附件', 409);
+    await this.attachments.receivePart(workspaceId, id, size, offset, body);
+  }
+  /** 分段上传传完：核对拼好的文件，照整份上传收下（saveAttachment）。 */
+  async saveAttachmentParts(workspaceId: string, id: string, name: string, size: number, sha256: string): Promise<AttachmentRef> {
+    try { return await this.saveAttachment(workspaceId, id, name, Bun.file(await this.attachments.assembled(workspaceId, id, size, sha256)).stream()); }
+    finally { this.attachments.dropParts(workspaceId, id); }
+  }
   removeAttachment(workspaceId: string, id: string): void {
     this.attachments.remove(workspaceId, this.workspace(workspaceId).workspace.cwd, id);
   }

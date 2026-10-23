@@ -91,12 +91,14 @@ export const tracking = (branch: string) => `refs/remotes/origin/${branch}`;
 
 /** 按 refspec 取一条 ref；远程没有这条 ref 时返回 false，其他失败按 action 报错。 */
 export async function fetchRef(cwd: string, access: RemoteAccess, spec: string, action: string): Promise<boolean> {
-  // Git 没有为缺少 ref 提供单独退出码，固定语言后识别这一种失败。
   const r = await gitTry(cwd, ['fetch', '-q', '--no-tags', '--', access.url, spec], { env: { ...access.env, LC_ALL: 'C' } });
   if (r.code === 0) return true;
-  if (/couldn't find remote ref/i.test(r.stderr)) return false;
+  if (missingRef(r.stderr)) return false;
   throw gitFailure(action, r.stderr);
 }
+
+/** Git 没有为缺少 ref 提供单独退出码，固定语言（LC_ALL=C）后按说明识别这一种失败。 */
+export const missingRef = (stderr: string) => /couldn't find remote ref/i.test(stderr);
 
 /** 拉取远程上的同名分支到 origin 的跟踪引用，返回其 commit；远程还没有这个分支时为 null。 */
 export async function fetchBranch(cwd: string, branch: string, access: RemoteAccess): Promise<string | null> {

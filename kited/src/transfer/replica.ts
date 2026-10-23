@@ -13,7 +13,7 @@ import { readClaudeControl } from '../claude/control.ts';
 import { claudeRecordPath } from '../handoff/claude-records.ts';
 import { readJournal } from '../harness/journal.ts';
 import type { AgentInstance, Workspace, WorkspaceStatus } from '../model.ts';
-import { peerJSON, type Peer, type PeerFetch } from '../peer-fetch.ts';
+import { peerJSON, SEGMENT_ATTEMPTS, SEGMENT_BYTES, SEGMENT_STALL_MS, type Peer, type PeerFetch } from '../peer-fetch.ts';
 import type { WorkspaceRows } from '../store.ts';
 import { revParse } from '../workspace/git.ts';
 import { attachmentStore } from '../workspace/attachments.ts';
@@ -38,8 +38,8 @@ export interface ReplicaPage {
 /** 副本对应的 Git：快照链与工作区分支，取到本机检出的 refs/kite/replica/<工作区>/ 下。 */
 export const replicaRef = (workspaceId: string, name: 'snapshots' | 'branch') => `refs/kite/replica/${workspaceId}/${name}`;
 
-/** 一页最多带这么多字节；大文件分几页取完。 */
-const PAGE_BYTES = 8 * 1024 * 1024;
+/** 一页最多带组网上一段那么多字节，大文件分几页取完；页小，卡住了重取一页也快，见 peer-fetch.ts。 */
+const PAGE_BYTES = SEGMENT_BYTES;
 /** 判断能否接着追加时，比对已有部分末尾这么长的一段。 */
 const TAIL_BYTES = 64 * 1024;
 const sha256 = (data: Uint8Array | string) => createHash('sha256').update(data).digest('hex');
@@ -350,8 +350,9 @@ export class Replicas {
       await previous;
       let page: ReplicaPage;
       for (let retried = false; ;) {
+        // 一页按手上已有的现算，重取不会重复追加；执行设备组最后一页要读数据库与 Git，等第一个字节宽些。
         page = await peerJSON<ReplicaPage>(this.deps.fetch, holder, `/replica/${workspaceId}`,
-          { json: { known: this.store.state(workspaceId)?.files ?? {} }, stallMs: 120_000 });
+          { json: { known: this.store.state(workspaceId)?.files ?? {} }, waitMs: 20_000, stallMs: SEGMENT_STALL_MS, attempts: SEGMENT_ATTEMPTS });
         const complete = this.store.apply(workspaceId, holder.id, page);
         if (this.closed || (!page.more && (complete || retried))) break;
         // 本地被动过的文件丢掉了，再取一次整份。
