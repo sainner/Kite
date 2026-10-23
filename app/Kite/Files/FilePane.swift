@@ -37,6 +37,9 @@ struct FilePane: View {
     @State private var pdfMatches = 0
     /// 交给 PDF 预览的关键字：PDFKit 同步搜整份文档，等输入停下再给。
     @State private var pdfQuery: String?
+    /// 控制区的翻页那组开着：按读完时的样子，读着的时候不跟着变。原文先按页读一次、接着整篇读进编辑器，
+    /// 跟着变的话翻页那组先分出来又并回去。
+    @State private var paged = false
 
     private var header: PaneHeader {
         // 网页的主标题是 localhost:端口或网站；文件的是当前文件的名字，还没选时是工作区文件夹的名字
@@ -46,17 +49,24 @@ struct FilePane: View {
     }
 
     /// 信息区：网页是站点图标，文件是文件类型图标，还没选时是文件夹；占圆环的位置，提示出现时同圆环一样虚化盖住。说明是完整的路径或网址。
+    /// 换内容时同标题一起换：文件类型图标之间按系统的图标替换，文件和网页之间、换了网站或读到站点图标时模糊替换。
     private var kindIcon: some View {
-        Group {
+        let symbol = browser.selection.path == nil ? "folder" : browser.format.symbol
+        let site = "\(pageName) \(web.icon != nil)"
+        return Group {
             if browser.displayingWeb {
                 WebSiteIcon(icon: web.icon)
+                    .id(site)
             } else {
-                Image(systemName: browser.selection.path == nil ? "folder" : browser.format.symbol)
+                Image(systemName: symbol)
                     .resizable().scaledToFit()
                     .foregroundStyle(.secondary)
                     .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
+                    .contentTransition(.symbolEffect(.replace))
             }
         }
+        .transition(.blurReplace)
+        .animation(.snappy, value: browser.displayingWeb ? site : symbol)
         .paneHeaderRing(lineWidth: 0, status: browser.displayingWeb ? address : browser.selection.path ?? rootName)
     }
 
@@ -158,7 +168,12 @@ struct FilePane: View {
             // 目录铺满时控制区空着；并排时按钮在右边让出侧栏那一列
             if !browser.showDirectory || sideBySide {
                 Group {
-                    if webVisible || addressing { webControls(typing: typing) } else { fileBar }
+                    if addressing && !webVisible {
+                        addressBar(typing: typing)
+                    } else {
+                        // 文件的控制区一直有
+                        WebControls(typing: typing.wrappedValue || !webVisible) { contentBar(typing: typing) }
+                    }
                 }
                 // 目录盖住或露出文件时，按钮组跟着换，玻璃按系统的过渡变形
                 .animation(.snappy, value: fileVisible)
@@ -185,6 +200,7 @@ struct FilePane: View {
             withAnimation { searching = false }
         }
         .onChange(of: browser.showDirectory) { _, shown in if !shown { directoryQuery = "" } }
+        .onChange(of: browser.loadingText ? nil : filePage != nil, initial: true) { _, value in if let value { paged = value } }
         .onChange(of: sideBySide, initial: true) { browser.sideBySide = sideBySide }
         .discardAlert("放弃未保存的修改？", isPresented: $confirmDiscard) { Task { await browser.discard() } }
         .alert("文件在你打开以后被改过", isPresented: Bindable(browser).saveConflict) {
@@ -220,54 +236,18 @@ struct FilePane: View {
         }
     }
 
-    private func webControls(typing: FocusState<Bool>.Binding) -> some View {
-        WebControls(typing: typing.wrappedValue || addressing) {
-            if webVisible {
-                // 同文件：左边后退、前进，中间地址栏
-                HStack(spacing: Metrics.paneButtonGap) {
-                    KeyboardSwap {
-                        PaneHeaderButtonGroup {
-                            ActionButton("后退", icon: "chevron.left", action: web.back).disabled(!web.canGoBack)
-                            ActionButton("前进", icon: "chevron.right", action: web.forward).disabled(!web.canGoForward)
-                        }
-                    } shown: {
-                        KeyboardDismissButton()
-                    }
-                    addressField(typing: typing)
-                }
-                .containerValue(\.placesKeyboardButton, true)
-            } else {
-                // 看着文件时点了「打开网址」：只有地址栏，打开了或离开地址栏就换回文件的控制区
-                HStack(spacing: Metrics.paneButtonGap) {
-                    addressField(typing: typing)
-                    PaneHeaderButtonGroup {
-                        ActionButton("取消", icon: "xmark") { addressing = false }
-                    }
-                }
-                .task { typing.wrappedValue = true }
-                .onChange(of: typing.wrappedValue) { _, editing in if !editing { addressing = false } }
+    /// 看着文件时点了「打开网址」：只有地址栏，打开了或离开地址栏就换回文件的控制区。
+    private func addressBar(typing: FocusState<Bool>.Binding) -> some View {
+        HStack(spacing: Metrics.paneButtonGap) {
+            PaneHeaderButtonGroup(expands: true) {
+                WebPathField(path: "", typing: typing, reset: addressReset, prompt: "网址或端口号", centered: true, open: go)
+            }
+            PaneHeaderButtonGroup {
+                ActionButton("取消", icon: "xmark") { addressing = false }
             }
         }
-    }
-
-    /// 地址栏：中间地址（点了才输入），左边浏览记录，右边网页操作的菜单，同文件的中间信息（fileInfo）；站点图标在标题栏的信息区。
-    private func addressField(typing: FocusState<Bool>.Binding) -> some View {
-        PaneHeaderButtonGroup(expands: true) {
-            if webVisible {
-                Menu {
-                    webHistory
-                } label: {
-                    PaneHeaderButtonLabel("浏览记录", systemImage: "clock.arrow.circlepath")
-                }
-                .foregroundStyle(Color.primary)
-                .disabled(web.history.isEmpty)
-                .help("浏览记录")
-            }
-            WebPathField(path: webVisible ? address : "", typing: typing, reset: addressReset, prompt: "网址或端口号", centered: true, open: go)
-            if webVisible {
-                WebPageMenu(browser: web, typing: typing.wrappedValue, home: goHome, reload: reloadPage, clear: { addressReset += 1 })
-            }
-        }
+        .task { typing.wrappedValue = true }
+        .onChange(of: typing.wrappedValue) { _, editing in if !editing { addressing = false } }
     }
 
     /// 浏览记录：这个窗口里去过的页面从旧到新往下排，同文件的时间线；正在看的打勾，点了跳过去。
@@ -391,28 +371,54 @@ struct FilePane: View {
         return actions
     }
 
-    /// 看文件时的控制区：左边翻页，中间是路径（两头是时间线和文件操作的菜单），右边在文件里找。找的时候搜索框占满一行。
-    private var fileBar: some View {
-        HStack(spacing: Metrics.paneButtonGap) {
-            if !searching {
-                if fileVisible, browser.document == nil, let page = browser.page, browser.selection.diffId == nil,
-                   !(browser.format.renderable && browser.rendered) {
-                    PaneHeaderButtonGroup {
-                        ActionButton("上一页", icon: "chevron.left") { Task { await browser.read(offset: max(1, page.offset - 200)) } }
-                            .disabled(page.offset <= 1)
-                        ActionButton("下一页", icon: "chevron.right") { if let offset = page.nextOffset { Task { await browser.read(offset: offset) } } }
-                            .disabled(page.nextOffset == nil)
-                    }
-                }
-                fileInfo
+    /// 控制区：文件和网页同一套排法，换着看时几块玻璃原地变形，里面的字和图标换过去。左边翻页（网页是后退、前进），
+    /// 中间是路径或地址，右边在文件里找；用不着的那块并进中间（见 GlassRow）。找的时候搜索框占满一行。
+    private func contentBar(typing: FocusState<Bool>.Binding) -> some View {
+        let showsWeb = webVisible
+        let paging = !showsWeb && paged
+        let findable = searchTarget != nil
+        let finding = searching && findable
+        return GlassRow(spacing: Metrics.paneButtonGap) {
+            if !finding {
+                pager(web: showsWeb).glassMerge(showsWeb || paging ? .open : .merged(.trailing))
+                info(web: showsWeb, typing: typing).glassRowFills()
             }
-            if searchTarget != nil {
-                ExpandingSearch(presented: $searching, text: $query, submit: { step(1) }) {
-                    EmptyView()
-                } accessory: {
-                    searchAccessory
-                }
+            ExpandingSearch(presented: $searching, text: $query, submit: { step(1) }) {
+                EmptyView()
+            } accessory: {
+                searchAccessory
             }
+            .glassMerge(findable ? .open : .merged(.leading))
+            .glassRowFills(finding)
+        }
+        .containerValue(\.placesKeyboardButton, showsWeb)
+        .animation(.snappy, value: showsWeb)
+        .animation(.snappy, value: paging)
+        .animation(.snappy, value: findable)
+        .animation(.snappy, value: browser.selection.path)
+    }
+
+    /// 文件能翻页时的这一页：没在原文编辑器里打开、不是差异、不是渲染出来的长文件。
+    private var filePage: FilePage? {
+        guard fileVisible, browser.document == nil, browser.selection.diffId == nil, !(browser.format.renderable && browser.rendered) else { return nil }
+        return browser.page
+    }
+
+    /// 控制区左边：文件翻页，网页后退、前进。两边是同样的两个按钮，换着看时这块玻璃不动；网页的在 iPhone 上键盘升起时换成收起键盘。
+    private func pager(web showsWeb: Bool) -> some View {
+        KeyboardSwap(active: showsWeb) {
+            PaneHeaderButtonGroup {
+                ActionButton(showsWeb ? "后退" : "上一页", icon: "chevron.left") {
+                    if showsWeb { web.back() } else if let page = filePage { Task { await browser.read(offset: max(1, page.offset - 200)) } }
+                }
+                .disabled(showsWeb ? !web.canGoBack : (filePage?.offset ?? 1) <= 1)
+                ActionButton(showsWeb ? "前进" : "下一页", icon: "chevron.right") {
+                    if showsWeb { web.forward() } else if let offset = filePage?.nextOffset { Task { await browser.read(offset: offset) } }
+                }
+                .disabled(showsWeb ? !web.canGoForward : filePage?.nextOffset == nil)
+            }
+        } shown: {
+            KeyboardDismissButton()
         }
     }
 
@@ -505,24 +511,41 @@ struct FilePane: View {
         return Text(SearchHighlight(query: query, current: current).apply(to: text))
     }
 
-    /// 控制区中间：居中的路径，左边是这个文件的时间线，右边是文件操作的菜单；文件类型图标在标题栏的信息区。
-    private var fileInfo: some View {
+    /// 控制区中间：居中的路径或地址，左边是文件的时间线或网页的浏览记录，右边是文件或网页操作的菜单，两边的图标文件和网页相同；
+    /// 地址平时是居中的一行字，点了才输入。文件类型图标、站点图标在标题栏的信息区。
+    private func info(web showsWeb: Bool, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: true) {
             Menu {
-                timeline
+                if showsWeb { webHistory } else { timeline }
             } label: {
-                PaneHeaderButtonLabel("时间线", systemImage: "clock.arrow.circlepath")
+                PaneHeaderButtonLabel(showsWeb ? "浏览记录" : "时间线", systemImage: "clock.arrow.circlepath")
             }
             .foregroundStyle(Color.primary)
-            .disabled(browser.selection.path == nil)
-            .help("时间线")
-            Text(browser.selection.path ?? rootName)
-                .font(Theme.body)
-                .foregroundStyle(browser.selection.path == nil ? .secondary : .primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity)
-            fileMenu
+            .disabled(showsWeb ? web.history.isEmpty : browser.selection.path == nil)
+            .help(showsWeb ? "浏览记录" : "时间线")
+            Group {
+                if showsWeb {
+                    WebPathField(path: address, typing: typing, reset: addressReset, prompt: "网址或端口号", centered: true, open: go)
+                } else {
+                    Text(browser.selection.path ?? rootName)
+                        .font(Theme.body)
+                        .foregroundStyle(browser.selection.path == nil ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity)
+                        .id(browser.selection.path)
+                }
+            }
+            .transition(.blurReplace)
+            // 两边的菜单是同一个图标，当场换
+            Group {
+                if showsWeb {
+                    WebPageMenu(browser: web, typing: typing.wrappedValue, home: goHome, reload: reloadPage, clear: { addressReset += 1 })
+                } else {
+                    fileMenu
+                }
+            }
+            .transition(.identity)
         }
     }
 
@@ -900,15 +923,13 @@ private struct DirectorySearch: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        // 标题栏右组外面没有玻璃容器，自己包一个，按钮伸成搜索框时玻璃才变形
-        GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-            GlassSplit(open: open) {
-                PaneHeaderButtonGroup(expands: open) { controls }
-            } close: {
-                ActionButton("隐藏文件与网页", icon: "xmark") {
-                    focused = false
-                    show(false)
-                }
+        // 玻璃容器是标题栏右组的（PaneHeaderActions）
+        GlassSplit(open: open) {
+            PaneHeaderButtonGroup(expands: open) { controls }
+        } close: {
+            ActionButton("隐藏文件与网页", icon: "xmark") {
+                focused = false
+                show(false)
             }
         }
     }

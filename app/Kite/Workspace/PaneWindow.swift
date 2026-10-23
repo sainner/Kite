@@ -249,7 +249,7 @@ struct PaneControlsBar<Controls: View>: View {
                     }
                 }
             }
-                .modifier(PaneControlsGlassContainer())
+                .modifier(PaneGlassContainer())
                 .padding(.horizontal, Metrics.paneMargin)
                 .modifier(PaneControlsBottom())
                 .drawerShift(.bottom)
@@ -264,7 +264,8 @@ struct PaneControlsBar<Controls: View>: View {
     }
 }
 
-private struct PaneControlsGlassContainer: ViewModifier {
+/// 控制区、标题栏右组的玻璃容器，间距同按钮间距。紧凑布局里共用的那一条已经由外壳包着，不再包一层。
+struct PaneGlassContainer: ViewModifier {
     @Environment(\.compactSharedGlass) private var shared
 
     @ViewBuilder func body(content: Content) -> some View {

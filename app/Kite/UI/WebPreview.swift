@@ -508,6 +508,7 @@ struct WebPathField: View {
             .overlay {
                 if label {
                     Button { typing.wrappedValue = true } label: {
+                        // 换了网页，地址同标题一样模糊替换
                         Text(text.isEmpty ? prompt : text)
                             .font(Theme.body)
                             .foregroundStyle(text.isEmpty ? .secondary : .primary)
@@ -515,8 +516,11 @@ struct WebPathField: View {
                             .truncationMode(.middle)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .contentShape(.rect)
+                            .id(text)
+                            .transition(.blurReplace)
                     }
                     .buttonStyle(.pointingPlain)
+                    .animation(.snappy, value: text)
                     .accessibilityLabel("网页地址")
                     .accessibilityValue(text)
                 }

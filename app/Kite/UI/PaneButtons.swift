@@ -28,11 +28,12 @@ struct PaneButtonLabel: View {
 
 /// 标题栏的窗口操作与会话菜单共用一块玻璃，与 iPhone 的组合菜单按钮同一规则：
 /// 相邻内容之间隔一个按钮间距，两端留出图标在按钮高度里的空白，单个图标入口仍是圆形。
-/// 选中时玻璃使用主题色，内容统一为白色。
+/// 选中时玻璃使用主题色，内容统一为白色。在一行玻璃里并进了旁边那块时（GlassRow）缩成一个按钮大的圆，内容藏起来。
 struct PaneHeaderButtonGroup<Content: View>: View {
     var expands = false
     var selected = false
     @ViewBuilder var content: Content
+    @Environment(\.glassMerged) private var merged
 
     var body: some View {
         HStack(spacing: 0) {
@@ -42,14 +43,16 @@ struct PaneHeaderButtonGroup<Content: View>: View {
                 content
             }
         }
+        .opacity(merged ? 0 : 1)
+        .frame(width: merged ? Metrics.paneHeaderButton - 2 * Metrics.paneHeaderGroupInset : nil)
         .padding(.horizontal, Metrics.paneHeaderGroupInset)
-        .frame(maxWidth: expands ? .infinity : nil)
+        .frame(maxWidth: expands && !merged ? .infinity : nil)
         .menuStyle(.button)
         .buttonStyle(PaneHeaderButtonStyle())
         .controlSize(.large)
         .menuIndicator(.hidden)
         .glassEffect(.regular.tint(selected ? .accentColor : nil).interactive(), in: .capsule)
-        .fixedSize(horizontal: !expands, vertical: true)
+        .fixedSize(horizontal: !expands || merged, vertical: true)
     }
 }
 
@@ -57,6 +60,7 @@ struct PaneHeaderButtonGroup<Content: View>: View {
 /// 原生会话窗口交给紧凑布局外壳的也是它：所有窗口的右组是同一种视图，iPhone 紧凑布局里几个窗口共用一条标题栏，
 /// 换窗口时各组、各按钮按位置原地更新，玻璃形变、图标替换走系统自带的过渡。各窗口各写一套时右组的视图类型不同，
 /// 只能整块换掉，过渡是硬切或淡入淡出（2026-10-14 iPhone，角色上下文和签名之间；见 CompactPaneHeaderBar 的右组）。
+/// 切换器和各组排在一行玻璃里（GlassRow）：出现时从右边那块分出来，收起时并回去，右边没有就是左边那块。
 struct PaneHeaderActions: View {
     var groups: [[PaneHeaderAction]] = []
     /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度、辅助生成模板的模型。放在各组前面。
@@ -66,23 +70,57 @@ struct PaneHeaderActions: View {
     /// 窗口自己的控件，放在各组后面、最右边：浏览的侧栏开关，打开时伸成搜索框。
     var trailing: AnyView?
     @Environment(\.isEnabled) private var isEnabled
+    @State private var lingering = LingeringActions()
 
     var body: some View {
-        if let menus { menus }
-        if let switcher { PaneViewSwitcherGroup(switcher: switcher) }
-        ForEach(Array(groups.enumerated()), id: \.offset) { _, group in
-            PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(highlighted)) {
-                ForEach(Array(group.enumerated()), id: \.offset) { _, action in
-                    PaneHeaderActionButton(action: action)
+        // 收起的切换器、按钮组留着并进旁边那块；旁边没有开着的玻璃就直接拿掉
+        let fixed = menus != nil || trailing != nil
+        let shownSwitcher = lingering.switcher(switcher, keeps: fixed || !groups.isEmpty)
+        let shownGroups = lingering.groups(groups, keeps: fixed || switcher != nil || !groups.isEmpty)
+        if fixed || switcher != nil || !groups.isEmpty {
+            GlassRow(spacing: Metrics.paneButtonGap) {
+                if let menus { menus }
+                if let shownSwitcher {
+                    PaneViewSwitcherGroup(switcher: shownSwitcher)
+                        .glassMerge(switcher == nil ? .merged(.trailing) : .open)
+                        .transition(GlassMergeTransition(edge: .trailing))
                 }
+                ForEach(Array(shownGroups.enumerated()), id: \.offset) { index, group in
+                    PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(highlighted)) {
+                        ForEach(Array(group.enumerated()), id: \.offset) { _, action in
+                            PaneHeaderActionButton(action: action)
+                        }
+                    }
+                    .glassMerge(index < groups.count ? .open : .merged(.trailing))
+                    .transition(GlassMergeTransition(edge: .trailing))
+                }
+                if let trailing { trailing }
             }
+            .modifier(PaneGlassContainer())
+            .animation(.snappy, value: [switcher != nil ? 1 : 0, groups.count])
         }
-        if let trailing { trailing }
     }
 
     /// 开着的开关，或能按的确认动作；确认动作在忙时虽不能按，转圈仍留在主题色上。
     private func highlighted(_ action: PaneHeaderAction) -> Bool {
         action.on || action.prominent && (action.busy || isEnabled && !action.disabled)
+    }
+}
+
+/// 右组里收起了还留着的切换器和按钮组，见 PaneHeaderActions。在 body 里记，不观察。
+private final class LingeringActions {
+    private var lastSwitcher: PaneViewSwitcher?
+    private var lastGroups: [[PaneHeaderAction]] = []
+
+    func switcher(_ current: PaneViewSwitcher?, keeps: Bool) -> PaneViewSwitcher? {
+        if let current { lastSwitcher = current } else if !keeps { lastSwitcher = nil }
+        return lastSwitcher
+    }
+
+    /// 现在的各组，后面接着上次多出来的那几组。
+    func groups(_ current: [[PaneHeaderAction]], keeps: Bool) -> [[PaneHeaderAction]] {
+        lastGroups = keeps ? current + lastGroups.dropFirst(current.count) : current
+        return lastGroups
     }
 }
 
