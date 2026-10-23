@@ -106,10 +106,7 @@ private struct DeviceWebPreview: View {
     @State private var pathReset = 0
 
     private var compact: Bool { presentation == .compact }
-    /// 主端口还在被本工作区监听才打开。
-    private var port: Int? { status.port.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
-    /// 消息里点的链接，端口对得上才打开到它的路径（见 AppModel.openLocalPort）。
-    private var link: WebLink? { area.webLinks[instance.id].flatMap { $0.target.port == port ? $0 : nil } }
+    private var port: Int? { area.livePort(status.port) }
     private var notice: PaneNotice? {
         if let error = selectError ?? (port == nil ? nil : webFailure) { return .failure(error) }
         guard port == nil, let selected = status.port else { return nil }
@@ -123,7 +120,7 @@ private struct DeviceWebPreview: View {
     var body: some View {
         PaneWindow(header: PaneHeader(title: instance.title, subtitle: area.previewSubtitle(instance, status: status)), notice: notice, actions: headerActions) {
             if let port, let store = UUID(uuidString: instance.id) {
-                PortPreview(client: client, port: port, store: store, link: link, browser: browser,
+                PortPreview(client: client, port: port, store: store, link: area.webLink(for: instance.id, port: port), browser: browser,
                             report: { webFailure = $0 })
                     .id("\(port) \(reload)")
             } else {
@@ -143,15 +140,12 @@ private struct DeviceWebPreview: View {
                         address(port: nil, typing: typing)
                         Spacer(minLength: 0)
                     }
-                    // 没选端口时只有地址栏，收起键盘仍在最左边
-                    .containerValue(\.placesKeyboardButton, false)
                 }
             }
         }
         .onChange(of: port) {
             webFailure = nil
-            // 换到别的端口就从首页看起，回到原来的端口也不再停在之前点的链接上
-            if area.webLinks[instance.id]?.target.port != port { area.webLinks[instance.id] = nil }
+            area.portChanged(instance.id, to: port)
         }
     }
 

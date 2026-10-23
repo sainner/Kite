@@ -717,11 +717,10 @@ final class AppModel {
         guard area.workspacePorts.contains(target.port) else {
             throw KitedError(message: "localhost:\(target.port) 不是这个工作区里运行中的终端或预览在监听的端口")
         }
-        let previews = area.instances.filter { $0.status == .open && area.previewStatus(of: $0)?.screen == .web
+        let existing = area.preferredInstance { area.previewStatus(of: $0)?.screen == .web
             && $0.state?.preview?.port == target.port && $0.state?.terminal?.running == true }
-        let browsers = area.instances.filter { $0.status == .open && $0.definitionId == Self.filesDefinition && $0.state?.port == target.port }
-        for candidates in [previews, browsers] {
-            guard let existing = candidates.first(where: { area.window(of: $0.id) != nil }) ?? candidates.first else { continue }
+            ?? area.preferredInstance { $0.definitionId == Self.filesDefinition && $0.state?.port == target.port }
+        if let existing {
             area.webLinks[existing.id] = WebLink(target: target)
             let view = existing.definitionId == Self.previewDefinition ? "screen" : "files"
             openWindow(.open(.init(instanceId: existing.id, viewId: view)), in: area)
@@ -735,8 +734,8 @@ final class AppModel {
     /// 消息里的外网链接在浏览里打开（docs/成果查看与位置.md「运行中的网页」）：已有在看外网的浏览窗口就在它里面打开（开着窗口的优先），
     /// 没有就新建一个。
     func openWebAddress(_ url: URL, in area: WorkArea) {
-        let browsing = area.instances.filter { $0.status == .open && $0.definitionId == Self.filesDefinition && $0.state?.url != nil }
-        guard let existing = browsing.first(where: { area.window(of: $0.id) != nil }) ?? browsing.first, let browser = area.files[existing.id] else {
+        guard let existing = area.preferredInstance(where: { $0.definitionId == Self.filesDefinition && $0.state?.url != nil }),
+              let browser = area.files[existing.id] else {
             openWindow(.create(Self.filesDefinition, instance: UUID().uuidString.lowercased(), page: .url(url)), in: area)
             return
         }
@@ -842,9 +841,7 @@ final class AppModel {
     /// 可能是目录的引用不收，读得出目录就展开到它。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
         // 正在看网页的浏览窗口不拿来开文件
-        let viewsFiles = { (id: String) in area.files[id].map { !$0.displayingWeb } ?? false }
-        let browsing = area.windows.first { viewsFiles($0.target.instanceId) }?.target.instanceId
-            ?? area.instances.first { $0.status == .open && viewsFiles($0.id) }?.id
+        let browsing = area.preferredInstance { area.files[$0.id].map { !$0.displayingWeb } ?? false }?.id
         guard let instanceID = browsing else {
             let instanceID = UUID().uuidString.lowercased()
             if !reference.mayBeDirectory { area.referencedFiles.insert(instanceID) }

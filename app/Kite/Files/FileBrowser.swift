@@ -53,7 +53,7 @@ final class FileBrowser {
     /// Markdown、HTML 显示渲染结果还是原文。
     var rendered = true
     var displayingFile: Bool { selection.path != nil }
-    var displayingWeb: Bool { selection.page != nil }
+    var displayingWeb: Bool { selection.showsPage }
     var root: FileDirectory? { listings["."] }
     var loadingDirectory: Bool { loadingPaths.contains(".") }
     var isLocal: Bool { client?.isLocal == true }
@@ -100,8 +100,7 @@ final class FileBrowser {
             resetContent()
             loadingText = false
         }
-        receive(FileSelection(path: instance.state?.path, revision: instance.state?.revision ?? "initial", diffId: instance.state?.diffId,
-                              port: instance.state?.port, url: instance.state?.url))
+        receive(instance.state?.selection ?? FileSelection(path: nil, revision: "initial"))
     }
 
     private func receive(_ value: FileSelection) {
@@ -441,46 +440,38 @@ final class FileBrowser {
     }
 
     func select(_ path: String, diffID: String? = nil) async -> Bool {
-        await choose { Select(instanceId: instanceID, expectedRevision: $0, path: path, diffId: diffID) }
+        await choose(path: path, diffId: diffID)
     }
 
     /// 打开一个网页，各设备共用；本工作区网页的路径由窗口另在页面里打开（见 WorkArea.webLinks）。
     func openPage(_ page: BrowsePage) async throws {
         if selection.page != page {
-            let chosen = await choose { revision in
-                switch page {
-                case .port(let port): Select(instanceId: instanceID, expectedRevision: revision, path: nil, port: port)
-                case .url(let url): Select(instanceId: instanceID, expectedRevision: revision, path: nil, url: url.absoluteString)
-                }
-            }
-            guard chosen else { throw KitedError(message: directoryError ?? "无法打开网页") }
+            guard await choose(path: nil, page: page) else { throw KitedError(message: directoryError ?? "无法打开网页") }
         }
         showDirectory = false
     }
 
+    /// files.select 的请求：网页的 port 或 url 和其他参数平铺在一层，选网页时 path 明写 null。
     private struct Select: Encodable {
         let instanceId: String
         let expectedRevision: String
         let path: String?
-        var diffId: String? = nil
-        var port: Int? = nil
-        var url: String? = nil
+        let diffId: String?
+        let page: BrowsePage?
 
-        private enum Keys: String, CodingKey { case instanceId, operationId, expectedRevision, path, diffId, port, url }
+        private enum Keys: String, CodingKey { case instanceId, operationId, expectedRevision, path, diffId }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             try c.encode(instanceId, forKey: .instanceId)
             try c.encode(UUID().uuidString, forKey: .operationId)
             try c.encode(expectedRevision, forKey: .expectedRevision)
-            // 选网页时 path 明写 null
             try c.encode(path, forKey: .path)
             try c.encodeIfPresent(diffId, forKey: .diffId)
-            try c.encodeIfPresent(port, forKey: .port)
-            try c.encodeIfPresent(url, forKey: .url)
+            try page?.encode(to: encoder)
         }
     }
 
-    private func choose(_ request: (String) -> Select) async -> Bool {
+    private func choose(path: String?, diffId: String? = nil, page: BrowsePage? = nil) async -> Bool {
         guard !selecting else { return false }
         selecting = true
         directoryError = nil
@@ -488,7 +479,8 @@ final class FileBrowser {
         let before = selection.revision
         let connection = connectionRevision
         do {
-            let value = try await operation("select", body: request(before), as: FileSelection.self)
+            let request = Select(instanceId: instanceID, expectedRevision: before, path: path, diffId: diffId, page: page)
+            let value = try await operation("select", body: request, as: FileSelection.self)
             guard connectionRevision == connection, !Task.isCancelled else { return false }
             // 工作区通知可能已经带来另一端的新选择，迟到的操作响应不能覆盖它。
             if selection.revision == before { receive(value) }

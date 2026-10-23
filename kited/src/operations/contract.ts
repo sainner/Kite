@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { inputSchema, type inputVia } from '../harness/input.ts';
 import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { MAX_MESSAGE_ATTACHMENTS } from '../workspace/attachments.ts';
-import { fileSelectionSchema, readFileArgs } from '../workspace/files.ts';
+import { fileSelectionSchema, portSchema, readFileArgs, webAddressSchema } from '../workspace/files.ts';
 import { stateSchema as terminalStateSchema } from '../terminal/state.ts';
 import { deviceSchema } from '../preview/devices.ts';
 import { previewBrowsers, previewScreens, viewportEdge, workstationBrowsers } from '../preview/state.ts';
@@ -137,7 +137,9 @@ export const operationContracts = {
   'files.select': {
     title: '选择浏览内容', description: '选择工作区内的文件，或一个网页（本工作区运行中终端或预览监听的端口 port，或互联网网址 url，这时 path 为 null），各设备共用；不修改文件内容。',
     tool: null, effect: 'write', retry: 'receipt',
-    input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional(), port: z.number().optional(), url: z.string().optional() }).strict(),
+    input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional(), port: portSchema.optional(), url: webAddressSchema.optional() }).strict()
+      .refine((input) => input.port === undefined && input.url === undefined || input.path === null && !input.diffId && (input.port === undefined || input.url === undefined),
+        '文件和网页只能选一个，网页的端口和网址也只能选一个'),
     output: fileSelectionSchema,
   },
   'terminal.read': {

@@ -61,7 +61,7 @@ import { LINE_AGENTS } from './line/project.ts';
 import { Attention } from './line/attention.ts';
 import { setupLogPath, worktreePath } from './paths.ts';
 import type { Network } from './network.ts';
-import { WorkspaceFiles, fileSelection, type Page, pageSchema } from './workspace/files.ts';
+import { WorkspaceFiles, fileSelection, type Page } from './workspace/files.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
 import { TranscriptHistory } from './transcript/history.ts';
 import type { DisplayState, History, ThreadActivity } from './transcript/protocol.ts';
@@ -1344,36 +1344,33 @@ export class Kite {
       const { workspace } = this.workspace(current.workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (fileSelection(current.state).revision !== input.expectedRevision) throw new KiteError('所选内容已变化，请刷新后重试', 409);
-      if (input.port !== undefined || input.url !== undefined) {
-        if (input.path !== null || input.diffId) throw new KiteError('文件和网页只能选一个');
-        const parsed = pageSchema.safeParse(input.port !== undefined && input.url === undefined ? { port: input.port } : { url: input.url });
-        if (!parsed.success) throw new KiteError(`网页无效：${parsed.error.issues[0]?.message ?? '端口和网址只能选一个'}`);
-        const state = this.pageSelection(current.workspaceId, parsed.data);
-        this.store.setInstanceState(current.id, state);
-        this.changed(current.workspaceId);
-        return state;
-      }
-      let path: string | null = null;
-      if (input.path !== null) {
-        try {
-          const files = new WorkspaceFiles(workspace.cwd);
-          const target = files.resolve(input.path);
-          path = relative(files.root, target);
-          if (input.diffId) {
-            const diff = new FileDiffStore(join(this.home, 'diffs', workspace.id)).read(input.diffId);
-            if (!diff.files.some((file) => file.path === path)) throw new KiteError('这份差异中没有指定文件', 404);
-          } else files.regular(target);
-        }
-        catch (error) {
-          if (error instanceof KiteError) throw error;
-          throw new KiteError(`无法选择文件：${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      const state = { path, revision: randomUUID(), ...(path && input.diffId ? { diffId: input.diffId } : {}) };
+      const state = input.port !== undefined ? this.pageSelection(current.workspaceId, { port: input.port })
+        : input.url !== undefined ? this.pageSelection(current.workspaceId, { url: input.url }) : this.chooseFile(workspace, input);
       this.store.setInstanceState(current.id, state);
       this.changed(current.workspaceId);
       return state;
     });
+  }
+
+  /** 浏览选一个文件：工作区内的普通文件，带 diffId 时须属于那份历史差异；path 为 null 是清除。 */
+  private chooseFile(workspace: Workspace, input: OperationInput<'files.select'>) {
+    let path: string | null = null;
+    if (input.path !== null) {
+      try {
+        const files = new WorkspaceFiles(workspace.cwd);
+        const target = files.resolve(input.path);
+        path = relative(files.root, target);
+        if (input.diffId) {
+          const diff = new FileDiffStore(join(this.home, 'diffs', workspace.id)).read(input.diffId);
+          if (!diff.files.some((file) => file.path === path)) throw new KiteError('这份差异中没有指定文件', 404);
+        } else files.regular(target);
+      }
+      catch (error) {
+        if (error instanceof KiteError) throw error;
+        throw new KiteError(`无法选择文件：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return { path, revision: randomUUID(), ...(path && input.diffId ? { diffId: input.diffId } : {}) };
   }
 
   /** 浏览选一个网页时的状态：端口须是本工作区运行中终端或预览此刻监听的；服务停了选择保留，同一端口再被监听时接着显示。 */

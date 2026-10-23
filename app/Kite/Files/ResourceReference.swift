@@ -107,7 +107,8 @@ struct FileReference: Equatable, Hashable, Sendable {
 
 /// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内打开看这个端口的网页预览，到链接的路径（AppModel.openLocalPort）。
 struct LocalPort: Equatable {
-    private static let hosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
+    /// 本机地址的写法：这些主机名上带端口的网页按本工作区的端口打开。
+    static let hosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
     let port: Int
     /// 端口后面的路径、查询和锚点，网页视图直接打开到这里；只到首页时为空。
     let path: String

@@ -17,6 +17,8 @@ struct FilePane: View {
     @State private var addressReset = 0
     /// 看着文件时点了「打开网址」：控制区换成地址栏，打开了或离开地址栏就换回来。
     @State private var addressing = false
+    /// 互联网网页的页面从哪个网址开起；之后换网址在同一个页面里跳过去，前进后退接得上（见 webPage）。
+    @State private var webStart: URL?
     /// 窗口够宽，文件和目录可以并排。
     @State private var wide = false
     @State private var searching = false
@@ -31,8 +33,8 @@ struct FilePane: View {
     @State private var pdfQuery: String?
 
     private var header: PaneHeader {
-        // 网页的主标题是页面标题；文件的是当前文件的名字，还没选时是工作区文件夹的名字
-        if browser.displayingWeb { return PaneHeader(title: web.title ?? pageName, subtitle: "网页") }
+        // 网页的主标题是 localhost:端口或网站；文件的是当前文件的名字，还没选时是工作区文件夹的名字
+        if browser.displayingWeb { return PaneHeader(title: pageName, subtitle: "网页") }
         return PaneHeader(title: browser.selection.path.map { ($0 as NSString).lastPathComponent } ?? rootName,
                           subtitle: showingDiff ? "历史差异" : "文件")
     }
@@ -50,8 +52,7 @@ struct FilePane: View {
     /// 网页看得见：选了网页，目录没盖着它。
     private var webVisible: Bool { browser.displayingWeb && (!browser.showDirectory || wide) }
 
-    /// 选的端口还在被本工作区监听；服务停了选择留着，同一端口再被监听时接着显示。
-    private var livePort: Int? { browser.selection.port.flatMap { area.workspacePorts.contains($0) ? $0 : nil } }
+    private var livePort: Int? { area.livePort(browser.selection.port) }
 
     private var showingDiff: Bool { browser.displayingFile && browser.selection.diffId != nil }
 
@@ -79,7 +80,7 @@ struct FilePane: View {
             if browser.loadingText { return .info("正在读取文件…", symbol: "hourglass") }
             return browser.diff != nil && browser.diffRows.isEmpty ? .info("文件内容为空") : nil
         }
-        if let port = browser.selection.port, livePort == nil, !browser.showDirectory || wide {
+        if let port = browser.selection.port, livePort == nil, webVisible {
             return .info("localhost:\(port) 现在没有终端或预览在监听，服务起来后接着显示", symbol: "pause.circle")
         }
         if browser.loadingDirectory { return .info("正在读取目录…", symbol: "hourglass") }
@@ -155,26 +156,31 @@ struct FilePane: View {
             query = ""
             withAnimation { searching = false }
         }
-        .onChange(of: browser.selection.port) {
-            // 换到别的端口就从首页看起，回到原来的端口也不再停在之前点的链接上
-            if area.webLinks[browser.instanceID]?.target.port != browser.selection.port { area.webLinks[browser.instanceID] = nil }
+        .onChange(of: browser.selection.port) { area.portChanged(browser.instanceID, to: browser.selection.port) }
+        .onChange(of: browser.selection.url, initial: true) { _, url in
+            // 换网址在同一个页面里跳过去；从别的内容换到网址时从这个网址开起
+            guard let url = url.flatMap(URL.init(string:)), webStart != nil else {
+                webStart = url.flatMap(URL.init(string:))
+                return
+            }
+            web.open(url)
         }
     }
 
     // MARK: - 网页
 
     /// 本工作区的网页经端口转发打开，互联网的直接打开；页面里可以去任何网址，只是进不了工作机服务自己的地址（WebRoaming）。
+    /// 互联网网页的来源是开起时的网址，换网址不重建页面。
     @ViewBuilder
     private var webPage: some View {
         if let client = browser.connection, let store = UUID(uuidString: browser.workspaceID) {
             switch browser.selection.page {
             case .port(let port) where port == livePort:
-                PortPreview(client: client, port: port, store: store, roaming: client.roaming,
-                            link: area.webLinks[browser.instanceID].flatMap { $0.target.port == port ? $0 : nil },
+                PortPreview(client: client, port: port, store: store, roaming: client.roaming, link: area.webLink(for: browser.instanceID, port: port),
                             browser: web, report: { browser.pageError = $0 })
                     .id("\(port) \(reload)")
             case .url(let url):
-                WebPreview(source: .address(url, store: store, roaming: client.roaming), report: { browser.pageError = $0 }, browser: web)
+                WebPreview(source: .address(webStart ?? url, store: store, roaming: client.roaming), report: { browser.pageError = $0 }, browser: web)
                     .id(reload)
             default:
                 Color.clear
@@ -187,8 +193,7 @@ struct FilePane: View {
     private func webControls(typing: FocusState<Bool>.Binding) -> some View {
         WebControls(typing: typing.wrappedValue || addressing) {
             if webVisible {
-                WebPageControls(browser: web, compact: compact, typing: typing.wrappedValue, home: goHome,
-                                reload: { browser.pageError = nil; if !web.reload() { reload = UUID() } }, clear: { addressReset += 1 }) {
+                WebPageControls(browser: web, compact: compact, typing: typing.wrappedValue, home: goHome, reload: reloadPage, clear: { addressReset += 1 }) {
                     addressField(typing: typing)
                 }
             } else {
@@ -240,7 +245,7 @@ struct FilePane: View {
         }
         if let local = Int(text).flatMap({ LocalPort(path: "/", port: $0) }) ?? (LocalPort.bare(text) ?? URL(string: text)).flatMap(LocalPort.init) {
             area.webLinks[browser.instanceID] = WebLink(target: local)
-            if browser.selection.port != local.port { open(.port(local.port)) } else { browser.showDirectory = false }
+            open(.port(local.port))
             return
         }
         guard let url = URL(string: text.contains("://") ? text : "https://" + text), ["http", "https"].contains(url.scheme?.lowercased()),
@@ -260,6 +265,14 @@ struct FilePane: View {
         }
     }
 
+    /// 重新加载当前页面；还没打开成功过的重建网页视图，互联网网页从现在选的网址开起。
+    private func reloadPage() {
+        browser.pageError = nil
+        guard !web.reload() else { return }
+        webStart = browser.selection.url.flatMap(URL.init(string:))
+        reload = UUID()
+    }
+
     private func open(_ page: BrowsePage) {
         Task { try? await browser.openPage(page) }
     }
@@ -267,22 +280,13 @@ struct FilePane: View {
     /// 侧栏里本工作区运行中终端与预览监听的一个端口，点了在这个窗口里打开它的网页。
     private func pageRow(_ item: TerminalStatus.Port) -> some View {
         let selected = browser.selection.port == item.port
-        return Button { open(.port(item.port)) } label: {
+        return rowButton(selected: selected) { try? await browser.openPage(.port(item.port)) } label: {
             HStack(spacing: 8) {
                 Label("localhost:\(item.port)", systemImage: "globe").lineLimit(1)
                 Spacer(minLength: 0)
                 if !item.http { Text("不是网页").foregroundStyle(.tertiary) }
             }
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
-            .contentShape(.rect)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.accentColor.opacity(0.12))
-                        .padding(.horizontal, -6)
-                }
-            }
         }
-        .buttonStyle(.pointingPlain).disabled(browser.selecting)
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -475,9 +479,10 @@ struct FilePane: View {
                         }
                     } else {
                         let rows = browser.treeRows
+                        let ports = area.workspacePortStatus
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(area.workspacePortStatus, id: \.port) { pageRow($0) }
-                            if !area.workspacePortStatus.isEmpty { Divider().padding(.vertical, 4) }
+                            ForEach(ports, id: \.port) { pageRow($0) }
+                            if !ports.isEmpty { Divider().padding(.vertical, 4) }
                             LazyVStack(alignment: .leading, spacing: 8) {
                                 ForEach(rows) { treeRow($0).id($0.id) }
                             }
@@ -530,18 +535,23 @@ struct FilePane: View {
 
     /// 目录树和搜索结果里的一行：整行都能点，不只是文字和图标；选中的垫底色。只有文件和目录能点。
     private func entryButton(_ entry: FileDirectory.Entry, action: @escaping () async -> Void, @ViewBuilder label: () -> some View) -> some View {
+        rowButton(selected: entry.path == browser.selection.path, enabled: ["file", "directory"].contains(entry.kind), action: action, label: label)
+    }
+
+    /// 侧栏里的一行（端口、目录树、搜索结果）：整行都能点，选中的垫底色。
+    private func rowButton(selected: Bool, enabled: Bool = true, action: @escaping () async -> Void, @ViewBuilder label: () -> some View) -> some View {
         Button { Task { await action() } } label: {
             label()
                 .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
                 .contentShape(.rect)
                 .background {
-                    if entry.path == browser.selection.path {
+                    if selected {
                         RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.accentColor.opacity(0.12))
                             .padding(.horizontal, -6)
                     }
                 }
         }
-        .buttonStyle(.pointingPlain).disabled(browser.selecting || !["file", "directory"].contains(entry.kind))
+        .buttonStyle(.pointingPlain).disabled(browser.selecting || !enabled)
     }
 
     @ViewBuilder

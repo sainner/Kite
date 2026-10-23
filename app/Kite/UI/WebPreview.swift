@@ -91,7 +91,7 @@ struct WebPreview: View {
             configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)
         }
         // 浏览里新窗口打开的链接在同一个页面里打开
-        let follow: @MainActor (URL) -> Void = { [browser, openURL] url in if let browser { browser.open(url) } else { openURL(url) } }
+        let follow: @MainActor (URL) -> Void = { [browser] url in browser?.open(url) }
         let page = WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }, follow: follow))
         // Safari 的网页检查器连得上：iPhone、iPad 没有自带的检查器，接上 Mac 后从 Safari 的「开发」菜单里选设备名下的这个页面；
         // Mac 上在 Kite 里直接打开（见 WebBrowser.inspect）。检查器由用户打开，页面碰不到它，隔离不变。
@@ -119,8 +119,6 @@ struct WebPreview: View {
     @ObservationIgnored private var navigation: Task<Void, Never>?
 
     var url: URL? { page?.url }
-    /// 页面的标题，还没有时是 nil。
-    var title: String? { page.flatMap { $0.title.isEmpty ? nil : $0.title } }
     var canGoBack: Bool { page?.backForwardList.backList.isEmpty == false }
     var canGoForward: Bool { page?.backForwardList.forwardList.isEmpty == false }
 
@@ -419,15 +417,13 @@ extension KitedClient {
     /// 工作机在组网上的主机名，本机转发连向它。
     var workerHost: String? { URL(string: address)?.host(percentEncoded: false) }
     /// kited 自己的端口在本机和组网上都开着，页面开在它上面就和接口同源，能带上请求头调用接口：不为它开网页视图、不转发。
-    func servable(_ port: Int) -> Bool {
-        port != URL(string: address)?.port && port != URL(string: KitedClient.local)?.port
-    }
-    /// 浏览里的网页不能进的地址：kited 在本机回环和工作机主机名上的端口。
+    func servable(_ port: Int) -> Bool { !servicePorts.contains(port) }
+    /// 浏览里的网页不能进的地址：kited 在本机地址和工作机主机名上的端口。
     var roaming: WebRoaming {
-        let ports = [address, KitedClient.local].compactMap { URL(string: $0)?.port }
-        let hosts = ["localhost", "127.0.0.1", "::1", "0.0.0.0"] + [workerHost?.lowercased()].compactMap(\.self)
-        return WebRoaming(service: Set(hosts.flatMap { host in ports.map { "\(host):\($0)" } }))
+        let hosts = LocalPort.hosts.union([workerHost?.lowercased()].compactMap(\.self))
+        return WebRoaming(service: Set(hosts.flatMap { host in servicePorts.map { "\(host):\($0)" } }))
     }
+    private var servicePorts: [Int] { [address, KitedClient.local].compactMap { URL(string: $0)?.port } }
 }
 
 /// 宽屏卡片里的网页控制区：指针在卡片上、或正在地址栏里打字时才有，同窗口按钮（见 PaneHeaderControls）；触屏一直有。

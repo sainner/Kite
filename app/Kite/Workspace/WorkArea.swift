@@ -129,7 +129,7 @@ final class WorkArea: Identifiable {
         files = Dictionary(uniqueKeysWithValues: confirmed.map { instance in
             // 为引用或网页打开的窗口一出来就是内容，目录收着
             let browser = files[instance.id] ?? FileBrowser(instanceID: instance.id, workspaceID: id, client: client,
-                                                            showDirectory: !referencedFiles.contains(instance.id) && instance.state?.port == nil && instance.state?.url == nil)
+                                                            showDirectory: !referencedFiles.contains(instance.id) && instance.state?.selection.showsPage != true)
             browser.update(instance, client: client)
             return (instance.id, browser)
         })
@@ -166,6 +166,23 @@ final class WorkArea: Identifiable {
 
     /// 本工作区运行中终端与预览监听的端口：浏览只能开这些本机网页；设备打开着这个工作区期间都开着转发（见 PortForwarding）。
     var workspacePorts: [Int] { workspacePortStatus.map(\.port) }
+
+    /// 端口还在被本工作区监听才打开；服务停了窗口留着，同一端口再被监听时接着显示。
+    func livePort(_ port: Int?) -> Int? { port.flatMap { workspacePorts.contains($0) ? $0 : nil } }
+
+    /// 消息里点的链接（见 AppModel.openLocalPort），端口对得上才在这个实例的网页里打开到它的路径。
+    func webLink(for instance: String, port: Int?) -> WebLink? { webLinks[instance].flatMap { $0.target.port == port ? $0 : nil } }
+
+    /// 实例看的端口换了：换到别的端口就从首页看起，回到原来的端口也不再停在之前点的链接上。
+    func portChanged(_ instance: String, to port: Int?) {
+        if webLinks[instance]?.target.port != port { webLinks[instance] = nil }
+    }
+
+    /// 符合条件、打开着的实例，台面上有窗口的优先：消息里的链接和引用找窗口打开时用。
+    func preferredInstance(where matches: (RemotePluginInstance) -> Bool) -> RemotePluginInstance? {
+        let candidates = instances.filter { $0.status == .open && matches($0) }
+        return candidates.first { window(of: $0.id) != nil } ?? candidates.first
+    }
 
     /// 预览实例的画面；不是预览时为 nil。
     func previewStatus(of instance: RemotePluginInstance) -> PreviewStatus? {

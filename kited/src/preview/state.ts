@@ -5,6 +5,7 @@
 import { z } from 'zod';
 import type { PluginInstance } from '../model.ts';
 import { deviceSchema } from './devices.ts';
+import { portSchema } from '../workspace/files.ts';
 
 export const previewDefinitionId = 'kite.preview';
 
@@ -25,7 +26,6 @@ export const previewSpecSchema = z.object({ target: targetName, device: deviceSc
 export type PreviewSpec = z.infer<typeof previewSpecSchema>;
 export const previewConfig = (instance: Pick<PluginInstance, 'config'>): PreviewSpec => previewSpecSchema.parse(instance.config.preview);
 
-const portSchema = z.number().int().min(1).max(65535);
 /** 网页视口的一边（CSS 像素）：设备窗口报的尺寸、并排的一格。 */
 export const viewportEdge = z.number().int().min(200).max(4096);
 export const stateSchema = z.object({

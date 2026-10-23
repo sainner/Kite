@@ -154,6 +154,9 @@ struct RemotePluginInstance: Decodable, Identifiable {
 }
 
 extension RemotePluginInstance.State {
+    /// 浏览实例共用的选择。
+    var selection: FileSelection { FileSelection(path: path, revision: revision ?? "initial", diffId: diffId, port: port, url: url) }
+
     /// 本机先建的浏览实例：打开到这个网页。
     init(page: BrowsePage) {
         self.init(path: nil, revision: nil)
@@ -228,16 +231,26 @@ struct FileSelection: Decodable, Equatable {
     var port: Int? = nil
     var url: String? = nil
 
+    var showsPage: Bool { port != nil || url != nil }
     var page: BrowsePage? {
         if let port { return .port(port) }
         return url.flatMap(URL.init(string:)).map(BrowsePage.url)
     }
 }
 
-/// 浏览看的网页：本工作区运行中终端或预览监听的端口（路径、前进后退只在本设备），或互联网上的一个网址。
-enum BrowsePage: Equatable {
+/// 浏览看的网页：本工作区运行中终端或预览监听的端口（路径、前进后退只在本设备），或互联网上的一个网址。按 `{port}` 或 `{url}` 发给工作机。
+enum BrowsePage: Equatable, Encodable {
     case port(Int)
     case url(URL)
+
+    private enum Keys: String, CodingKey { case port, url }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: Keys.self)
+        switch self {
+        case .port(let port): try c.encode(port, forKey: .port)
+        case .url(let url): try c.encode(url.absoluteString, forKey: .url)
+        }
+    }
 }
 
 struct FileDirectory: Decodable {
@@ -369,7 +382,6 @@ struct OpenWindowRequest: Encodable {
         case create(String, instance: String, title: String? = nil, command: String? = nil, preview: PreviewSpec? = nil, page: BrowsePage? = nil)
         case open(WindowTarget)
         private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, preview, page, viewId }
-        private struct Page: Encodable { var port: Int? = nil; var url: URL? = nil }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             switch self {
@@ -380,11 +392,7 @@ struct OpenWindowRequest: Encodable {
                 try c.encodeIfPresent(title, forKey: .title)
                 try c.encodeIfPresent(command, forKey: .command)
                 try c.encodeIfPresent(preview, forKey: .preview)
-                switch page {
-                case .port(let port): try c.encode(Page(port: port), forKey: .page)
-                case .url(let url): try c.encode(Page(url: url), forKey: .page)
-                case nil: break
-                }
+                try c.encodeIfPresent(page, forKey: .page)
             case .open(let target):
                 try c.encode("open", forKey: .kind)
                 try c.encode(target.instanceId, forKey: .instanceId)
