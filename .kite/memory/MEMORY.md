@@ -36,7 +36,7 @@
 - [skill 接入](todo-skills.md) — 四层来源、skill 工具、压缩重附与资源库待真机验收；含窄窗口候选、键盘补全、二进制文件
 - [工作区协作](todo-workspace-collaboration.md) — 后台与内嵌实例的界面呈现、已归档实例的查看与恢复，待设计
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
-- [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口）、资源限制、项目收紧是否停旧命令
+- [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口、上级目录）、资源限制、项目收紧是否停旧命令
 - [开发工作流](todo-development-workflow.md) — 检查、宿主 Git、会话回退与分叉的待评估能力
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；两台 Mac 间时快时慢（10-22 实测，待测中继与局域网）；托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储

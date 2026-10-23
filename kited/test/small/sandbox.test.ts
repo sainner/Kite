@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 // 询问与放行模式的沙箱宿主按路径起子进程，不在 import 链上；按文本引入，宿主改动时 .kite/check 才会选中这里。
 import '../../src/execution/sandbox-callback-host.ts' with { type: 'text' };
 import { runCommand, type NetworkAsk } from '../../src/execution/command.ts';
@@ -27,8 +27,12 @@ function report(output: string): Record<string, any> {
  * localhost 一条挡住真实 bug：macOS 的 /etc 是指向 /private/etc 的符号链接，denyRead 含 / 时上游连链接本身的元数据
  * 也不给；mDNSResponder 的 socket 有意挡着，libinfo 的 getaddrinfo 连不上它就退回读 /etc/hosts，也读不到，
  * localhost 报 ENOTFOUND，vitest 一启动就失败。外部域名仍解析失败，说明放开的只是 hosts，DNS 没放开。
+ * 上级目录一条挡住真实 bug：macOS 上原来只给工作区的各级上级目录元数据权限、不能打开，项目里为防符号链接从 / 起
+ * 逐级 os.open(..., O_DIRECTORY|O_NOFOLLOW, dir_fd=...) 的 Python 脚本第一级就报 EPERM（'private' 或 'Users'）。
+ * 能不能打开取决于 Seatbelt 怎么区分打开目录与读文件、上游把 glob 转成正则后规则的先后，上游升级可能退回打不开，
+ * 也可能放宽成整棵子树可读；所以同时看上级目录里直接放着的文件仍读不到（兄弟目录里的文件由 externalRead 看）。
  */
-test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦住宿主凭据、外部文件、本机端口、外部域名解析和后代逃逸', async () => {
+test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，能打开各级上级目录，拦住宿主凭据、外部文件、上级目录里的文件、本机端口、外部域名解析和后代逃逸', async () => {
   const root = temp('sandbox-default-');
   const main = newRepo(root, 'main', { 'tracked.txt': '原始内容\n' });
   const cwd = gitWorktree(main, join(root, 'workspace'), 'kite/sandbox-test');
@@ -36,6 +40,11 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦
   mkdirSync(outside);
   const secret = join(outside, 'fake-secret.txt');
   writeFileSync(secret, '仅供测试的假秘密');
+  const rootSecret = join(root, 'fake-root-secret.txt');
+  writeFileSync(rootSecret, '上级目录里的假秘密');
+  // 从 / 到 cwd 的每一级；temp() 已解析符号链接，macOS 上从 /private 起。
+  const levels = [cwd];
+  while (levels[0] !== '/') levels.unshift(dirname(levels[0]!));
   const home = join(cwd, '.kite-host');
   mkdirSync(home);
   const hostDatabase = join(home, 'kite.db');
@@ -51,10 +60,13 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦
     expect(await (await fetch(server.url)).text()).toBe('reachable');
     const fixture = join(cwd, 'probe.ts');
     writeFileSync(fixture, [
-      'import { readFileSync, writeFileSync } from "node:fs";',
+      'import { readdirSync, readFileSync, writeFileSync } from "node:fs";',
       'import { createConnection } from "node:net";',
       'import { lookup } from "node:dns/promises";',
       `const cwd = ${JSON.stringify(cwd)};`,
+      `const levels: string[] = ${JSON.stringify(levels)};`,
+      `const root = ${JSON.stringify(root)};`,
+      `const rootSecret = ${JSON.stringify(rootSecret)};`,
       `const secret = ${JSON.stringify(secret)};`,
       `const authFile = ${JSON.stringify(authFile)};`,
       `const hostDatabase = ${JSON.stringify(hostDatabase)};`,
@@ -63,6 +75,9 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦
       `const port = ${server.port};`,
       'function canRead(path: string) { try { readFileSync(path); return true; } catch { return false; } }',
       'function canWrite(path: string) { try { writeFileSync(path, "改写"); return true; } catch { return false; } }',
+      // 打不开时记错误码，失败信息里能看出是哪一级、EPERM 还是别的。
+      'function list(path: string): string[] | string { try { return readdirSync(path); } catch (error) { return (error as NodeJS.ErrnoException).code ?? "error"; } }',
+      'function opened(path: string) { const entries = list(path); return Array.isArray(entries) || entries; }',
       'function dial(options: { host: string; port: number } | { path: string }) { return new Promise<string>((resolve) => {',
       '  const socket = createConnection(options);',
       '  socket.once("connect", () => { socket.destroy(); resolve("connected"); });',
@@ -77,6 +92,8 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦
       'const own = {',
       '  workspaceWrite: canWrite(`${cwd}/allowed.txt`),',
       '  externalRead: canRead(secret), externalWrite: canWrite(secret),',
+      '  ancestorsOpened: Object.fromEntries(levels.map((dir) => [dir, opened(dir)])),',
+      '  rootEntries: list(root), rootFileRead: canRead(rootSecret),',
       '  authRead: canRead(authFile), authWrite: canWrite(authFile),',
       '  databaseRead: canRead(hostDatabase),',
       '  gitMetadataWrite: canWrite(`${commonDir}/sandbox-should-not-write`),',
@@ -129,7 +146,12 @@ test('harness 沙箱允许 Git 状态、工作区写入和解析 localhost，拦
       expect(probe.directNetwork).not.toBe('timeout');
       expect(probe.unixSocket).not.toBe('connected');
       expect(probe.unixSocket).not.toBe('timeout');
-      if (process.platform === 'darwin') expect(probe.localhost).toEqual({ addresses: expect.arrayContaining(['127.0.0.1']) });
+      if (process.platform === 'darwin') {
+        expect(probe.localhost).toEqual({ addresses: expect.arrayContaining(['127.0.0.1']) });
+        expect(probe.ancestorsOpened).toEqual(Object.fromEntries(levels.map((dir) => [dir, true])));
+        expect(probe.rootEntries).toContain('workspace');
+        expect(probe.rootFileRead).toBe(false);
+      }
       expect(probe.externalDns).not.toHaveProperty('addresses');
       expect(probe).toMatchObject({ gitStatus: 0 });
       expect(probe.gitAdd).not.toBe(0);

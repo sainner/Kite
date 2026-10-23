@@ -61,7 +61,9 @@ export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionP
   // 安装包把 rg 与 Bun 放在同一个 bin 里，见 kited/scripts/package-macos.ts；从源码运行时没有，靠系统装的。
   const tools = [process.execPath, join(dirname(process.execPath), 'rg'), developerDirectory(env), env.SDKROOT]
     .filter((path): path is string => !!path && isAbsolute(path));
-  const gitConfigs = env.HOME && isAbsolute(env.HOME) ? [join(env.HOME, '.gitconfig'), join(env.HOME, '.config/git/config')] : [];
+  // git 默认读的全局配置、忽略与属性文件；读不到时每条命令都报警告，全局忽略规则也不生效。同目录的 credentials 不放行。
+  const gitConfigs = env.HOME && isAbsolute(env.HOME)
+    ? ['.gitconfig', '.config/git/config', '.config/git/ignore', '.config/git/attributes'].map((name) => join(env.HOME!, name)) : [];
   return { read: [...new Set([cwd, ...system.filter(existsSync), ...tools.filter(existsSync), ...gitConfigs].map(canonicalPath))],
     write: [realpathSync(cwd)], network: [] };
 }
@@ -93,6 +95,19 @@ function paths(values: string[]): string[] {
 }
 
 /**
+ * 放行路径的各级上级目录，每个只匹配目录本身。上游只给上级目录元数据，从 / 起逐级 openat 的程序（Python 的 dir_fd 遍历等）
+ * 第一级就被拒；Seatbelt 分不开打开目录与列目录，放开后命令能列出这些目录里的名字，仍读不到其中的文件。
+ * 确切路径上游按整棵子树放行，只能把最后一个字符写成字符类，同 /et[c]；paths() 已排除带通配符的路径。
+ */
+function ancestorDirectories(roots: string[]): string[] {
+  const found = new Set<string>();
+  for (const root of roots) {
+    for (let dir = dirname(root); dir !== '/'; dir = dirname(dir)) found.add(`${dir.slice(0, -1)}[${dir.slice(-1)}]`);
+  }
+  return [...found];
+}
+
+/**
  * network 决定名单外的主机：缺省一律拒绝；open 一律放行（项目级网络授权落地前的 .kite/setup、全放行模式）；
  * ask 逐个问宿主，宿主在返回的 askSocket 上监听，须在启动命令前开好。
  */
@@ -118,7 +133,7 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
         // macOS 的 /etc 是指向 /private/etc 的符号链接，拒绝区域里的链接上游连元数据都不给，经 /etc 的路径就打不开：
         // 解析 localhost 时 mDNSResponder 连不上，系统退回读 /etc/hosts，也读不到，vite、vitest 一启动就失败。
         // 确切路径会被上游解析成真实目标，只能写成只匹配链接本身的 glob。
-        allowRead: [...allowRead, ...(process.platform === 'darwin' ? ['/et[c]'] : [])],
+        allowRead: [...allowRead, ...(process.platform === 'darwin' ? ['/et[c]', ...ancestorDirectories(allowRead)] : [])],
         allowWrite: paths([...policy.write, scratch]),
         // 上游有少量默认可写目录；本入口只开放策略声明和本次执行的临时目录。
         denyWrite: paths([control, '/tmp/claude', '/private/tmp/claude',
