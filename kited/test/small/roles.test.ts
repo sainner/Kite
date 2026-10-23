@@ -35,12 +35,12 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
   return found;
 };
 
-/** 代理的默认协作授权：可按内置角色创建代理、开 monitor、用预览，对其他代理、monitor 与终端的操作目标默认仅后代。 */
+/** 代理的默认协作授权：可按内置角色创建代理、开 monitor、用预览，对其他代理、monitor 与终端的操作目标默认同工作区。 */
 const collaboration: OperationGrant[] = [
   { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
   ...(['preview.open', 'preview.list', 'preview.action', 'preview.inspect', 'preview.read', 'preview.stop'] as const).map((operation) => ({ operation })),
   ...(['agent.list', 'agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const)
-    .map((operation) => ({ operation, targets: { kind: 'descendants' } }) as OperationGrant),
+    .map((operation) => ({ operation, targets: { kind: 'workspace' } }) as OperationGrant),
 ];
 /** 授权按操作名排序后比较；顺序不是约定。 */
 const byOperation = (grants: OperationGrant[]) => [...grants].sort((a, b) => a.operation.localeCompare(b.operation));

@@ -6,7 +6,6 @@ import { OperationError } from '../../src/errors.ts';
 import type { Envelope } from '../../src/events.ts';
 import { responsesInput } from '../../src/harness/responses.ts';
 import type { Json, ModelItem, ModelRequest, ToolResult } from '../../src/harness/types.ts';
-import type { OperationGrant } from '../../src/operations/contract.ts';
 import { OperationReceipts } from '../../src/operations/receipts.ts';
 import { Store } from '../../src/store.ts';
 import type { PendingInput } from '../../src/transcript/protocol.ts';
@@ -185,7 +184,7 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
 }, 1000);
 
 // 模型工具到宿主身份、实例来源、授权快照与执行时重验跨模块交接；撤权后旧请求也不能再调用。
-test('模型创建记录来源，协作操作受工作区、角色工具与协作范围约束', async () => {
+test('模型创建记录来源，协作操作受工作区与角色工具约束', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
@@ -194,13 +193,8 @@ test('模型创建记录来源，协作操作受工作区、角色工具与协�
   const parent = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
     operationId: 'parent-agent', role: 'kite.work',
   });
-  const unrelated = await kk.call('POST', operationPath(workspaceId, 'agent.start'), {
-    operationId: 'unrelated-agent', role: 'kite.work', presentation: 'inline',
-  });
   expect(parent.status).toBe(200);
-  expect(unrelated.status).toBe(200);
   const parentId = parent.body.instanceId as string;
-  const unrelatedId = unrelated.body.instanceId as string;
   expect((await kk.call('POST', operationPath(workspaceId, 'agent.send'), {
     operationId: 'run-parent', instanceId: parentId, text: '创建审查线程',
   })).status).toBe(200);
@@ -223,9 +217,6 @@ test('模型创建记录来源，协作操作受工作区、角色工具与协�
     .rejects.toMatchObject({ outcome: 'denied' });
   await expect(kk.daemon.kite.operations.invoke({ kind: 'model', instanceId: child.id }, workspaceId, 'agent.list', {}))
     .rejects.toMatchObject({ outcome: 'denied' });
-  await expect(kk.daemon.kite.operations.invoke(modelCaller, workspaceId, 'agent.send', {
-    operationId: 'send-unrelated', instanceId: unrelatedId, text: '不应发送',
-  })).rejects.toMatchObject({ outcome: 'denied' });
   second.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === parentId);
 }, 1000);
@@ -486,7 +477,7 @@ const failedOutcome = (result: ToolResult | undefined) => {
  * 真实出过的 bug：代理用 agent_stop 停下别的线程，用户排在那个线程队里的话被退进了停止方的工具结果，待发送里没了、也不回输入框；
  * 停下后队里留着输入时停止按钮一直在、再停什么也不做；用户再发一条被标成插话（midTurn），因为队里有留下的消息。
  */
-test('同工作区范围的代理停非后代的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；仅后代范围下直接拒绝、不问；停下时用户排在对方队里的话不退给停止方，留在队里等继续、不能再停，用户再发一条开新一轮、不算插话', async () => {
+test('同工作区范围的代理停非后代的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；停下时用户排在对方队里的话不退给停止方，留在队里等继续、不能再停，用户再发一条开新一轮、不算插话', async () => {
   const models = threadModels();
   kited = startKited(models.factory);
   const kk = kited;
@@ -517,33 +508,14 @@ test('同工作区范围的代理停非后代的代理要逐次等用户批准�
     return since;
   };
 
-  // 仅后代（默认）：B 不是 A 建的，直接拒绝，不挂审批。
+  // 同工作区（默认）：B 不是 A 建的，每次停止都先问；拒绝时这次工具调用失败，B 照跑。
   expect((await kk.call('POST', `/threads/${aId}/messages`, { text: '停掉 B' })).status).toBe(200);
-  let since = await stopB(await a.call(1), 'stop-out-of-scope');
-  const refused = await a.call(2);
-  expect(failedOutcome(resultOf(refused.request, 'stop-out-of-scope'))).toBe('denied');
-  expect(kk.events.filter(isApproval(since))).toEqual([]);
-  expect(running.signal.aborted).toBe(false);
-  since = mark(kk);
-  refused.response.complete();
-  await waitIdle(kk, aId, since);
-
-  // 改成同工作区：把目标是仅后代的那几项授权的目标都改成同工作区。
-  const grantsPath = `/instances/${aId}/operation-grants`;
-  const grants = await kk.call('GET', grantsPath);
-  const widened = (grants.body.grants as OperationGrant[]).map((grant) =>
-    'targets' in grant && grant.targets.kind === 'descendants' ? { ...grant, targets: { kind: 'workspace' } } : grant);
-  expect(widened).toContainEqual({ operation: 'agent.stop', targets: { kind: 'workspace' } });
-  expect((await kk.call('PUT', grantsPath, { expectedRevision: grants.body.revision, grants: widened })).status).toBe(200);
-
-  // 同工作区：每次停止都先问；拒绝时这次工具调用失败，B 照跑。
-  expect((await kk.call('POST', `/threads/${aId}/messages`, { text: '还是停掉 B' })).status).toBe(200);
-  const first = await approval(await stopB(await a.call(3), 'stop-denied'));
+  const first = await approval(await stopB(await a.call(1), 'stop-denied'));
   expect(first.mustAsk).toBe(true);
   expect(await waitingOf()).toEqual(first);
   expect(running.signal.aborted).toBe(false);
   expect(await respond(first.id, 'deny')).toEqual({ status: 200, body: { ok: true } });
-  const denied = await a.call(4);
+  const denied = await a.call(2);
   expect(failedOutcome(resultOf(denied.request, 'stop-denied'))).toBe('denied');
   expect(await waitingOf()).toBeUndefined();
   expect(running.signal.aborted).toBe(false);
@@ -555,7 +527,7 @@ test('同工作区范围的代理停非后代的代理要逐次等用户批准�
   expect(running.signal.aborted).toBe(false);
   const stopping = mark(kk);
   expect(await respond(second.id, 'once')).toEqual({ status: 200, body: { ok: true } });
-  const approved = await a.call(5);
+  const approved = await a.call(3);
   expect(resultOf(approved.request, 'stop-approved')?.status).toBe('success');
   expect(running.signal.aborted).toBe(true);
   // A 停 B 只退 A 自己发去的，用户的话不进 A 的工具结果，留在 B 的待发送里；B 等继续，停止按钮没了。
@@ -565,7 +537,7 @@ test('同工作区范围的代理停非后代的代理要逐次等用户批准�
   const stoppedB = (await kk.call('GET', `/threads/${bId}/history`)).body;
   expect(stoppedB.pending).toEqual([expect.objectContaining({ id: 'user-queued', text: '用户排着的话', source: 'human' })]);
   expect(stoppedB.state).toMatchObject({ busy: false, waitingForResume: true, capabilities: { interrupt: false } });
-  since = mark(kk);
+  let since = mark(kk);
   approved.response.complete();
   await waitIdle(kk, aId, since);
 

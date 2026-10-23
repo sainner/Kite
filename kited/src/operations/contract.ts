@@ -305,12 +305,12 @@ export function grantTools(grant: OperationGrant): string[] {
   return tool ? [tool] : [];
 }
 
-/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、用预览，协作范围默认仅后代。自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、用预览，协作范围默认同工作区。自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
   if (definitionId !== 'kite.agent') return [];
   return [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
     ...previewOperations.map((operation) => ({ operation })),
-    ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'descendants' } }) as OperationGrant)];
+    ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'workspace' } }) as OperationGrant)];
 }
 
 /** 授权里的协作范围：目标是仅后代或同工作区的那几项共用的范围，没有这类授权时为 undefined。 */

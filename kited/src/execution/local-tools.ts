@@ -102,6 +102,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
   });
   const background = options.background;
   const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建与测试。网络和工作区外的资源按宿主授权访问；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
+    + '临时文件写 $TMPDIR，每条命令一个、命令结束就删；/tmp 等工作区外的位置写不了，要留给下一条命令的放进工作区。'
     + (background
       ? `超过 timeout_ms（默认 ${SHELL_TIMEOUT_MS / 60_000} 分钟）的命令转到后台终端接着跑，结束时宿主会通知你，不要用 sleep 或轮询等它。带 secrets 的命令不转后台，到时限就停。`
       : '不支持后台任务。')
