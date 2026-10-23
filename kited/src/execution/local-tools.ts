@@ -1,12 +1,13 @@
-/** 文件工具限定在工作目录内；shell 通过工作机共用的操作系统沙箱执行。 */
+/** 文件工具限定在工作目录内，read 另可读 skill 文件夹；shell 通过工作机共用的操作系统沙箱执行。 */
 import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { applyDiff } from '@openai/agents-core/utils';
 import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs } from '../workspace/files.ts';
+import { within } from '../paths.ts';
 import { projectSkills } from '../harness/context/project.ts';
-import { loadSkill, readSkillFile } from '../harness/context/skills.ts';
+import { loadSkill } from '../harness/context/skills.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
@@ -25,7 +26,6 @@ const readArgs = readFileArgs.extend({
 }).strict();
 const skillArgs = z.object({
   name: z.string().min(1).describe('清单里的 skill 名字。'),
-  file: z.string().min(1).optional().describe('只看 skill 文件夹里的某个文件时给相对路径，如 templates/AGENTS.md；不给时加载 SKILL.md 正文。'),
 }).strict();
 const shellArgs = z.object({
   description: z.string().min(1).regex(/\S/, 'description 不能为空白')
@@ -64,9 +64,9 @@ diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
 
 const skillDescription = '加载一个 skill：按名字取它的 SKILL.md 正文（去掉头部元数据），连同文件夹位置和里面的文件清单，之后按正文做；'
-  + '同一个 skill 内容没变时再加载只回一句已加载过。给 file 时改为返回文件夹里那个文件的文本，脚本用 shell 跑。可用的 skill 见基础上下文里的清单。';
+  + '同一个 skill 内容没变时再加载只回一句已加载过。文件夹里的其他文件用 read 按绝对路径读，脚本用 shell 跑。可用的 skill 见基础上下文里的清单。';
 
-const readDescription = `读取当前工作目录内的文件，按内容自动区分：
+const readDescription = `读取当前工作目录内的文件，或 skill 文件夹里的文件（用 skill 工具给出的文件夹拼绝对路径），按内容自动区分：
 文本按行返回并带行号，offset 从 1 开始，默认最多 200 行。
 图片（PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC）附给你直接查看，过大时先缩放。
 PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数和续读的 pages。没有文本层的扫描页给出 OCR 结果并附上页面图片。`;
@@ -75,6 +75,15 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
   secrets?: SecretProvider; background?: ShellBackground; outside?: ShellOutside }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
+  /** read 的范围：工作目录，或这个工作目录能加载的某个 skill 的文件夹（绝对路径落在里面时），按那个文件夹的边界解析。 */
+  const readScope = (path: string): { files: WorkspaceFiles; path: string } => {
+    const target = resolve(root, path);
+    if (within(target, root)) return { files, path };
+    // skill 的文件夹是真实路径；经软链接写的路径（如 ~/.claude/skills 本身链到别处）按真实位置认。
+    const real = canonicalPath(target);
+    const skill = projectSkills(root).find((entry) => within(real, entry.directory));
+    return skill ? { files: new WorkspaceFiles(skill.directory), path: relative(skill.directory, real) } : { files, path };
+  };
   const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env);
   const diffs = new FileDiffStore(options.diffDir ?? join(options.logDir, 'diffs'));
   const limit = options.outputLimit ?? 20_000;
@@ -102,7 +111,8 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
     + 'Git 元数据只读。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。';
   return [
     make('read', readDescription, readArgs, async ({ pages, ...args }, { signal }) => {
-      const target = files.resolve(args.path);
+      const scope = readScope(args.path);
+      const target = scope.files.resolve(scope.path);
       assertFileAccess(target, 'read', policy());
       const kind = fileKind(target);
       if (kind !== 'pdf' && pages !== undefined) throw new Error('pages 只用于 PDF');
@@ -112,26 +122,25 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
           if (kind === 'pdf') return { status: 'success', ...await pdfs.read(target, pages, limit, signal) };
           const { image, width, height, source } = await readImage(target);
           const size = width === source.width && height === source.height ? `${width}×${height}` : `原始 ${source.width}×${source.height}，已缩放到 ${width}×${height}`;
-          return { status: 'success', output: `图片 ${relative(root, target)}（${source.format.toUpperCase()}，${size}），已附上供查看。`, images: [image] };
+          return { status: 'success', output: `图片 ${scope.files === files ? relative(root, target) : target}（${source.format.toUpperCase()}，${size}），已附上供查看。`, images: [image] };
         } catch (error) {
           // 读取没有副作用，停止时按普通错误结束，不进入结果未知的恢复流程。
           if (signal.aborted) return { status: 'error', output: '读取已停止' };
           throw error;
         }
       }
-      const result = files.read(args);
+      const result = scope.files.read({ ...args, path: scope.path });
       const selected = result.offset > result.totalLines ? '' : result.text.split('\n').map((line, i) => `${result.offset + i}: ${line}`).join('\n');
       const output = selected.length > limit ? `${selected.slice(0, limit)}\n（输出已截断，请缩小读取范围）` : selected;
-      versions.set(realpathSync(files.resolve(args.path)), result.version);
+      versions.set(realpathSync(target), result.version);
       return { status: 'success', output: `共 ${result.totalLines} 行\n${output}` };
     }, true),
-    make('skill', skillDescription, skillArgs, async ({ name, file }) => {
+    make('skill', skillDescription, skillArgs, async ({ name }) => {
       const skills = projectSkills(root);
       const skill = skills.find((entry) => entry.name === name);
       if (!skill) {
         return { status: 'error', output: skills.length ? `没有叫 ${name} 的 skill；可用的：${skills.map((entry) => entry.name).join('、')}` : `没有叫 ${name} 的 skill，现在一个 skill 都没有` };
       }
-      if (file !== undefined) return { status: 'success', output: readSkillFile(skill, file) };
       const text = loadSkill(skill);
       const digest = hash(text);
       if (loadedSkills.get(name) === digest) return { status: 'success', output: `skill「${name}」已经加载过，内容没变，按前面已有的正文做。` };

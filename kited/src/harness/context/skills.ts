@@ -5,8 +5,7 @@
  */
 import { isUtf8 } from 'node:buffer';
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { safePath, within } from '../../paths.ts';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import type { ContextBinding } from './types.ts';
 
 /** 随 kited 带的 skill，都在仓库的 .claude/skills 下；打包复制到运行目录的同一位置，见 kited/scripts/package-macos.ts。 */
@@ -19,12 +18,12 @@ const bundledSkills = resolve(import.meta.dir, '../../../../.claude/skills');
 export const systemSkillsDirectory = existsSync(bundledSkills) ? realpathSync(bundledSkills) : bundledSkills;
 
 export type SkillLayer = 'system' | 'user' | 'machine' | 'project';
-export interface Skill { name: string; description: string; /** SKILL.md 的路径。 */ path: string; directory: string; layer: SkillLayer }
+export interface Skill { name: string; description: string; /** SKILL.md 的路径。 */ path: string; /** 真实路径，见 collectSkills。 */ directory: string; layer: SkillLayer }
 const layerTitles: Record<SkillLayer, string> = { system: '系统', user: '用户', machine: '机器', project: '项目' };
 
 /** 清单里一句说明的上限，与 Claude Code 的列表一致；超出的截断加省略号。 */
 const skillDescriptionLimit = 1536;
-/** skill 工具一次给模型的正文或文件上限（字节），再大的让模型分段 read。 */
+/** skill 工具一次给模型的正文上限（字节），再大的让模型分段 read。 */
 const skillTextLimit = 2 * 1024 * 1024;
 
 /** 项目层在每个文件夹里的两个位置：Claude Code 读前者，Codex 读后者；后处理的同名盖前面的。 */
@@ -34,10 +33,14 @@ const projectSkillRoots = ['.claude/skills', '.agents/skills'];
 export interface SkillSources { system: string; user?: string; machine?: string[] }
 let sources: SkillSources = { system: systemSkillsDirectory };
 export function setSkillSources(value: Partial<SkillSources>): void { sources = { ...sources, ...value }; }
-/** 工作目录以外、代理要能读的 skill 目录：系统层、用户层和机器层里实际存在的，沙箱放行只读用。 */
-export function skillSourceDirectories(): string[] {
-  return [sources.system, sources.user, ...(sources.machine ?? [])].filter((directory): directory is string => !!directory && existsSync(directory))
-    .map((directory) => realpathSync(directory));
+/**
+ * 代理要能读的 skill 位置，沙箱放行只读用：四层的根目录里实际存在的（项目层在仓库根目录时可能在工作目录以外），
+ * 再加上现有 skill 的文件夹，软链接到这些根目录以外的也读得到。folders 同 collectSkills。
+ */
+export function skillSourceDirectories(folders: string[]): string[] {
+  const roots = [sources.system, sources.user, ...(sources.machine ?? []), ...folders.flatMap((folder) => projectSkillRoots.map((root) => join(folder, root)))];
+  return [...roots.filter((directory): directory is string => !!directory && existsSync(directory)).map((directory) => realpathSync(directory)),
+    ...collectSkills(folders).map((skill) => skill.directory)];
 }
 
 /** SKILL.md 开头用 --- 包起来的 YAML 头的各行，与之后的正文；没有头或头不完整时头为空、正文是全文。 */
@@ -71,7 +74,7 @@ export function parseFrontmatter(content: string): Record<string, string> {
   return fields;
 }
 
-/** 文件的字节按文本给出：须是合法的 UTF-8 且不含 NUL，不是文本时为 undefined。打包与 skill 工具读文件按同一个标准。 */
+/** 文件的字节按文本给出：须是合法的 UTF-8 且不含 NUL，不是文本时为 undefined。资源库打包 skill 文件时按它分文本与二进制。 */
 export function textContent(bytes: Buffer): string | undefined {
   return isUtf8(bytes) && !bytes.includes(0) ? bytes.toString('utf8') : undefined;
 }
@@ -103,16 +106,17 @@ function skillsUnder(root: string | undefined, layer: SkillLayer, names?: readon
 /**
  * 四层合成的清单。folders 是从仓库根目录到工作目录的各级文件夹，由外到内；同名里层盖外层，
  * 同一个文件夹经软链接重复到达只算一次（仓库里常把 .agents/skills/x 链到 .claude/skills/x）。
+ * 文件夹取真实路径：给模型的路径、read 认的 skill 文件夹和沙箱放行的路径要对得上。
  */
 export function collectSkills(folders: string[], override: Partial<SkillSources> = {}): Skill[] {
   const from = { ...sources, ...override };
   const byName = new Map<string, Skill>();
   const seen = new Set<string>();
   const add = (skill: Skill) => {
-    const real = realpathSync(dirname(skill.path));
-    if (seen.has(real)) return;
-    seen.add(real);
-    byName.set(skill.name, skill);
+    const directory = realpathSync(skill.directory);
+    if (seen.has(directory)) return;
+    seen.add(directory);
+    byName.set(skill.name, { ...skill, directory, path: join(directory, 'SKILL.md') });
   };
   for (const skill of skillsUnder(from.system, 'system', SYSTEM_SKILLS)) add(skill);
   for (const skill of skillsUnder(from.user, 'user')) add(skill);
@@ -157,31 +161,17 @@ export function skillBlocks(text: string): Array<{ name: string; text: string }>
   return blocks;
 }
 
-/** skill 工具交给模型的内容：包装行里写名字、所在层和文件夹，正文前列出文件夹里的文件，正文里的相对路径按这个文件夹解析。 */
+/**
+ * skill 工具交给模型的内容：包装行里写名字、所在层和文件夹，正文前列出文件夹里的文件，正文里的相对路径按这个文件夹解析，
+ * 文件用 read 按绝对路径读。正文里的 ${CLAUDE_SKILL_DIR} 换成文件夹路径，照 Claude Code 的写法写的 skill 也能用。
+ */
 export function loadSkill(skill: Skill): string {
   const content = readFileSync(skill.path, 'utf8');
   if (Buffer.byteLength(content) > skillTextLimit) throw new Error(`${skill.name} 的 SKILL.md 超过 2 MiB，请用 read 或 shell 分段读`);
   const files = skillFiles(skill.directory).filter((file) => file !== 'SKILL.md');
   return [`${OPEN}${skill.name}" layer="${layerTitles[skill.layer]}" folder="${skill.directory.replaceAll('"', '')}">`,
     `这是 skill「${skill.name}」（${layerTitles[skill.layer]}层）的正文，文件夹在 ${skill.directory}。`
-      + (files.length ? `文件夹里另有：${files.join('、')}。正文里提到的文件按相对这个文件夹的路径找；要看其中一个，用 skill 工具加 file 参数，脚本用 shell 跑。` : '正文里提到的路径相对这个文件夹。'),
-    '', splitFrontmatter(content).body, CLOSE].join('\n');
-}
-
-/** skill 文件夹里的一个文件（相对路径）：只给文本，不能越出文件夹，软链接按真实位置算。 */
-export function readSkillFile(skill: Skill, file: string): string {
-  if (!safePath(file)) {
-    throw new Error('file 须是 skill 文件夹里的相对路径，不含 . 或 ..');
-  }
-  const root = realpathSync(skill.directory);
-  const target = resolve(root, file);
-  let real: string;
-  try { real = realpathSync(target); } catch { throw new Error(`skill「${skill.name}」里没有 ${file}；有的是：${skillFiles(skill.directory).join('、') || '只有 SKILL.md'}`); }
-  if (!within(real, root)) throw new Error(`${file} 指向 skill 文件夹之外`);
-  const stat = statSync(real);
-  if (!stat.isFile()) throw new Error(`${file} 不是文件`);
-  if (stat.size > skillTextLimit) throw new Error(`${file} 超过 2 MiB，请用 shell 分段读`);
-  const content = textContent(readFileSync(real));
-  if (content === undefined) throw new Error(`${file} 不是文本文件，用 shell 处理；文件路径：${real}`);
-  return content;
+      + (files.length ? `文件夹里另有：${files.join('、')}。` : '')
+      + '正文里提到的路径相对这个文件夹；里面的文件用 read 按绝对路径读，脚本用 shell 跑。',
+    '', splitFrontmatter(content).body.replaceAll('${CLAUDE_SKILL_DIR}', skill.directory), CLOSE].join('\n');
 }

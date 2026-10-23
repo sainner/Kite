@@ -51,7 +51,7 @@ harness 管理模型请求、结构化历史、工具执行及回合结束；模
 
 ### read
 
-参数为 `{path, offset?, limit?, pages?}`，按文件头区分文本、图片和 PDF，不看扩展名。
+参数为 `{path, offset?, limit?, pages?}`，按文件头区分文本、图片和 PDF，不看扩展名。读取范围是工作目录，以及这个工作目录能加载的 skill 的文件夹：后者用 skill 工具给出的文件夹拼绝对路径，文件夹里的软链接不能越出文件夹。
 
 - 文本：按行读取，offset 从 1 开始，结果带行号。
 - 图片：PNG、JPEG、WebP、GIF、BMP、TIFF、HEIC 作为工具结果中的图片交给模型。长边超过 2000 像素或体积过大时先缩放、重新编码，结果文字说明原始与实际尺寸。
@@ -63,7 +63,7 @@ harness 管理模型请求、结构化历史、工具执行及回合结束；模
 
 ### skill
 
-参数为 `{name, file?}`。不带 `file` 时返回这个 skill 的正文：一个 `<skill name=… layer=… folder=…>` 包装块，开头写所在层、文件夹路径和文件夹里的其他文件，再接去掉 YAML 头的 SKILL.md；同一个 skill 在本次运行里再加载、内容没变时只回一句「已加载过」。带 `file` 时返回文件夹里那个文件的文本，路径相对 skill 文件夹、不能越出；二进制文件保留在原路径供脚本使用，工具会提示路径，不把它当文本返回；脚本用 shell 跑。可加载的 skill 就是基础上下文清单里的那些（`project.skills`，见 [上下文模板](harness-上下文组装.md#公共变量)），名字不存在时报错并列出可用的。工作目录以外的 skill 文件夹对代理放行只读，`read` 仍限工作目录。
+参数为 `{name}`，返回这个 skill 的正文：一个 `<skill name=… layer=… folder=…>` 包装块，开头写所在层、文件夹的绝对路径和文件夹里的其他文件，再接去掉 YAML 头的 SKILL.md，其中的 `${CLAUDE_SKILL_DIR}` 换成文件夹路径（沿用 Claude Code 的写法）；同一个 skill 在本次运行里再加载、内容没变时只回一句「已加载过」。工具只给正文，与 Claude Code 的 Skill 工具一样：文件夹里的其他文件用 `read` 按绝对路径读，脚本用 shell 跑。可加载的 skill 就是基础上下文清单里的那些（`project.skills`，见 [上下文模板](harness-上下文组装.md#公共变量)），名字不存在时报错并列出可用的。工作目录以外的 skill 文件夹对代理放行只读。
 
 ### patch
 
