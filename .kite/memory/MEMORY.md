@@ -27,12 +27,12 @@
 - [讲方案说大白话](feedback-plain-explanations.md) — 先讲现状、解释工程术语、一次问一件事，流程选择给自动默认值
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
-- [旧数据出错就删](feedback-stale-data.md) — 旧格式的本机数据读不了时删数据，不改代码兼容；删前确认并征得同意
+- [旧数据出错就删](feedback-stale-data.md) — 旧数据读不了就删、不兼容；方案取舍不把已有会话角色对不上当代价；删前确认
 
 ## 未决事项
 
 - [真机与线上验收](todo-device-validation.md) — 角色、插件、托管账号、跨机目录与 Git 的验收范围
-- [上下文能力](todo-context-capabilities.md) — 外部 MCP 接入范围、观察账本、预览、开场白与个人记忆
+- [上下文能力](todo-context-capabilities.md) — 外部 MCP 已合回待真机手测、观察账本、预览、开场白与个人记忆
 - [skill 接入](todo-skills.md) — 四层来源、skill 工具、压缩重附与资源库待真机验收；含窄窗口候选、键盘补全、二进制文件
 - [工作区协作](todo-workspace-collaboration.md) — 后台与内嵌实例的界面呈现、已归档实例的查看与恢复，待设计
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
