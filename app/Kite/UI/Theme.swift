@@ -5,6 +5,8 @@ enum Theme {
     // 颜色资源带浅色、深色两套值，由当前窗口的外观解析。
     static let background = Color("WorkspaceBackground")
     static let card = Color("CardBackground")
+    /// 窗口里和内容并排的侧栏（浏览的文件与网页）的底色：比卡片底色深一点的很淡的灰。
+    static let panel = Color("PanelBackground")
     /// 宽屏台面上展开的窗口外框的描边：白色（深色同卡片底色）。收起成头像时换成头像的本色，见 CardView。
     static let windowStroke = Color("WindowStroke")
     /// 占位里要显眼一点的，比如标题。

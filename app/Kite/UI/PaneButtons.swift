@@ -53,7 +53,7 @@ struct PaneHeaderButtonGroup<Content: View>: View {
     }
 }
 
-/// 窗口标题栏的右组：前面可以有一块菜单和视图切换器，后面几组图标按钮（每组一块玻璃）。窗口只交数据，由 PaneWindow 统一画，
+/// 窗口标题栏的右组：前面可以有一块菜单和视图切换器，后面几组图标按钮（每组一块玻璃），最后可以有窗口自己的一块控件。窗口只交数据，由 PaneWindow 统一画，
 /// 原生会话窗口交给紧凑布局外壳的也是它：所有窗口的右组是同一种视图，iPhone 紧凑布局里几个窗口共用一条标题栏，
 /// 换窗口时各组、各按钮按位置原地更新，玻璃形变、图标替换走系统自带的过渡。各窗口各写一套时右组的视图类型不同，
 /// 只能整块换掉，过渡是硬切或淡入淡出（2026-10-14 iPhone，角色上下文和签名之间；见 CompactPaneHeaderBar 的右组）。
@@ -63,6 +63,8 @@ struct PaneHeaderActions: View {
     var menus: AnyView?
     /// 实例有几个视图时由 PaneWindow 加上，放在菜单后面、各组前面。
     var switcher: PaneViewSwitcher?
+    /// 窗口自己的控件，放在各组后面、最右边：浏览的侧栏开关，打开时伸成搜索框。
+    var trailing: AnyView?
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
@@ -75,6 +77,7 @@ struct PaneHeaderActions: View {
                 }
             }
         }
+        if let trailing { trailing }
     }
 
     /// 开着的开关，或能按的确认动作；确认动作在忙时虽不能按，转圈仍留在主题色上。

@@ -47,6 +47,11 @@ final class FileBrowser {
     private(set) var infoNote: String?
     /// 正在下载时的进度。
     private(set) var download: Progress?
+    /// 所选文件内容变过的工作区快照（files.history），时间线用；换了文件清掉，nil 是还没读到。
+    private(set) var history: FileHistory?
+    /// 时间线读不到的原因。
+    private(set) var historyError: String?
+    private var historyRequest = UUID()
     var showDirectory = true
     /// 目录和内容并排（FilePane.sideBySide），由窗口设上：这时打开文件、网页不收起目录。
     var sideBySide = false
@@ -108,7 +113,12 @@ final class FileBrowser {
     private func receive(_ value: FileSelection) {
         guard selection != value else { return }
         endFind()
-        if selection.path != value.path || selection.diffId != value.diffId { focus = nil }
+        if selection.path != value.path || selection.diffId != value.diffId || selection.version != value.version { focus = nil }
+        if selection.path != value.path {
+            historyRequest = UUID()
+            history = nil
+            historyError = nil
+        }
         selection = value
         diff = nil
         diffRows = []
@@ -134,6 +144,8 @@ final class FileBrowser {
         let path: String
         let offset: Int
         var limit = 200
+        /// 读哪枚快照里的这个文件，nil 是现在的。
+        var version: String?
     }
 
     private func operation<T: Decodable>(_ name: String, body: any Encodable, as type: T.Type) async throws -> T {
@@ -210,7 +222,7 @@ final class FileBrowser {
         }
         guard let path = selection.path, let client else { return }
         do {
-            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path)
+            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path, version: selection.version)
             // 读整份、逐行找放到后台，大文件不卡界面。
             let found = try await Task.detached(priority: .userInitiated) {
                 try String(contentsOf: file.url, encoding: .utf8).components(separatedBy: "\n").enumerated().flatMap { index, line in
@@ -289,7 +301,8 @@ final class FileBrowser {
         loadingText = true
         defer { if textRequest == request { loadingText = false } }
         do {
-            let value = try await operation("read", body: PathRequest(instanceId: instanceID, path: path, offset: offset), as: FilePage.self)
+            let value = try await operation("read", body: PathRequest(instanceId: instanceID, path: path, offset: offset, version: selection.version),
+                                            as: FilePage.self)
             guard textRequest == request, !Task.isCancelled else { return }
             if offset > 1 && offset > value.totalLines {
                 await read(offset: 1)
@@ -311,13 +324,35 @@ final class FileBrowser {
     }
 
     func loadSelection() async {
-        if let id = selection.diffId { await loadDiff(id); return }
-        switch format {
-        case .text: await read(offset: focus?.startLine ?? 1)
-        case .markdown, .html:
-            if rendered { await fetch() } else { await read(offset: focus?.startLine ?? 1) }
-        case .pdf, .quickLook: await fetch()
-        case .other: await describe()
+        async let versions: Void = loadHistory()
+        if let id = selection.diffId {
+            await loadDiff(id)
+        } else {
+            switch format {
+            case .text: await read(offset: focus?.startLine ?? 1)
+            case .markdown, .html:
+                if rendered { await fetch() } else { await read(offset: focus?.startLine ?? 1) }
+            case .pdf, .quickLook: await fetch()
+            case .other: await describe()
+            }
+        }
+        await versions
+    }
+
+    /// 读所选文件的时间线：内容变过的工作区快照，新的在前。读不到时记下原因，时间线里说明。
+    func loadHistory() async {
+        guard let path = selection.path else { return }
+        let request = UUID()
+        historyRequest = request
+        do {
+            struct Request: Encodable { let instanceId: String; let path: String }
+            let value = try await operation("history", body: Request(instanceId: instanceID, path: path), as: FileHistory.self)
+            guard historyRequest == request, !Task.isCancelled else { return }
+            history = value
+            historyError = nil
+        } catch {
+            guard historyRequest == request, !Task.isCancelled else { return }
+            historyError = error.localizedDescription
         }
     }
 
@@ -330,7 +365,8 @@ final class FileBrowser {
         loadingText = true
         defer { if textRequest == request { loadingText = false; download = nil } }
         do {
-            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path) { [weak self] progress in
+            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path,
+                                                              version: selection.version) { [weak self] progress in
                 Task { @MainActor in if self?.textRequest == request { self?.download = progress } }
             }
             guard textRequest == request, !Task.isCancelled else { return }
@@ -358,7 +394,7 @@ final class FileBrowser {
         loadingText = true
         defer { if textRequest == request { loadingText = false } }
         do {
-            let value = try await FileContentCache.shared.info(client: client, workspace: workspaceID, path: path)
+            let value = try await FileContentCache.shared.info(client: client, workspace: workspaceID, path: path, version: selection.version)
             guard textRequest == request, !Task.isCancelled else { return }
             info = value
         } catch {
@@ -373,7 +409,8 @@ final class FileBrowser {
             data = try await URLSession.shared.data(from: url).0
         } else {
             guard let client, let path = selection.path else { throw KitedError(message: "请先连接工作机") }
-            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: Self.resolve(source, from: path))
+            let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: Self.resolve(source, from: path),
+                                                              version: selection.version)
             data = try Data(contentsOf: file.url)
         }
         guard let image = PlatformImage(data: data) else { throw KitedError(message: "不是能显示的图片") }
@@ -431,7 +468,7 @@ final class FileBrowser {
     }
 
     func navigate(_ reference: FileReference) async throws {
-        if selection.path != reference.path || selection.diffId != reference.diffID {
+        if selection.path != reference.path || selection.diffId != reference.diffID || selection.version != nil {
             guard await select(reference.path, diffID: reference.diffID) else { throw KitedError(message: directoryError ?? "无法选择文件") }
         }
         focus = reference
@@ -443,6 +480,12 @@ final class FileBrowser {
 
     func select(_ path: String, diffID: String? = nil) async -> Bool {
         await choose(path: path, diffId: diffID)
+    }
+
+    /// 换看所选文件的哪个版本（files.history 里的快照），nil 回到现在的内容；各设备共用。
+    func selectVersion(_ version: String?) async {
+        guard let path = selection.path else { return }
+        _ = await choose(path: path, version: version)
     }
 
     /// 打开一个网页，各设备共用；本工作区网页的路径由窗口另在页面里打开（见 WorkArea.webLinks）。
@@ -459,9 +502,10 @@ final class FileBrowser {
         let expectedRevision: String
         let path: String?
         let diffId: String?
+        let version: String?
         let page: BrowsePage?
 
-        private enum Keys: String, CodingKey { case instanceId, operationId, expectedRevision, path, diffId }
+        private enum Keys: String, CodingKey { case instanceId, operationId, expectedRevision, path, diffId, version }
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: Keys.self)
             try c.encode(instanceId, forKey: .instanceId)
@@ -469,11 +513,12 @@ final class FileBrowser {
             try c.encode(expectedRevision, forKey: .expectedRevision)
             try c.encode(path, forKey: .path)
             try c.encodeIfPresent(diffId, forKey: .diffId)
+            try c.encodeIfPresent(version, forKey: .version)
             try page?.encode(to: encoder)
         }
     }
 
-    private func choose(path: String?, diffId: String? = nil, page: BrowsePage? = nil) async -> Bool {
+    private func choose(path: String?, diffId: String? = nil, version: String? = nil, page: BrowsePage? = nil) async -> Bool {
         guard !selecting else { return false }
         selecting = true
         directoryError = nil
@@ -481,12 +526,12 @@ final class FileBrowser {
         let before = selection.revision
         let connection = connectionRevision
         do {
-            let request = Select(instanceId: instanceID, expectedRevision: before, path: path, diffId: diffId, page: page)
+            let request = Select(instanceId: instanceID, expectedRevision: before, path: path, diffId: diffId, version: version, page: page)
             let value = try await operation("select", body: request, as: FileSelection.self)
             guard connectionRevision == connection, !Task.isCancelled else { return false }
             // 工作区通知可能已经带来另一端的新选择，迟到的操作响应不能覆盖它。
             if selection.revision == before { receive(value) }
-            guard selection.path == value.path, selection.diffId == value.diffId, selection.page == value.page else {
+            guard selection.path == value.path, selection.diffId == value.diffId, selection.version == value.version, selection.page == value.page else {
                 throw KitedError(message: "另一端已选择其他内容，请重新打开")
             }
             return true
@@ -495,6 +540,22 @@ final class FileBrowser {
             return false
         }
     }
+}
+
+/// 一个文件的时间线，见 files.history：内容变过的工作区快照，新的在前。current 是和现在的内容一样的那一版，没有是 nil。
+struct FileHistory: Decodable {
+    struct Version: Decodable, Identifiable {
+        let commit: String
+        /// 毫秒。
+        let at: Double
+        let label: String
+        let threadId: String?
+        var id: String { commit }
+        var date: Date { Date(timeIntervalSince1970: at / 1000) }
+    }
+    let versions: [Version]
+    let current: String?
+    let truncated: Bool
 }
 
 struct FileDiffRecord: Decodable {

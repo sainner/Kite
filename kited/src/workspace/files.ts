@@ -21,8 +21,11 @@ export const webAddressSchema = z.url({ protocol: /^https?$/ }).max(8192)
 /** 浏览看的网页（docs/成果查看与位置.md「浏览」）：本工作区运行中终端或预览监听的端口，路径、前进后退只在各设备上；或互联网上的一个网址。 */
 export const pageSchema = z.union([z.object({ port: portSchema }).strict(), z.object({ url: webAddressSchema }).strict()]);
 export type Page = z.infer<typeof pageSchema>;
-/** 浏览实例共用的选择：一个文件（可带历史差异），或一个网页（port、url 二选一），都没有时 path 为 null。 */
-export const fileSelectionSchema = z.object({ path: z.string().nullable(), diffId: diffID.optional(), port: portSchema.optional(), url: z.string().optional(), revision: z.string() }).strict();
+/** 一枚工作区快照的完整提交号，见 workspace/file-versions.ts。 */
+export const snapshotCommit = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
+/** 浏览实例共用的选择：一个文件（可带历史差异，或是某枚快照里的版本），或一个网页（port、url 二选一），都没有时 path 为 null。 */
+export const fileSelectionSchema = z.object({ path: z.string().nullable(), diffId: diffID.optional(), version: snapshotCommit.optional(),
+  port: portSchema.optional(), url: z.string().optional(), revision: z.string() }).strict();
 export type FileSelection = z.infer<typeof fileSelectionSchema>;
 export const fileSelection = (state: Record<string, unknown>): FileSelection => fileSelectionSchema.parse({ path: null, revision: 'initial', ...state });
 
@@ -38,6 +41,23 @@ function page<T extends { name: string; kind: EntryKind }, R>(entries: T[], offs
   entries.sort((a, b) => Number(b.kind === 'directory') - Number(a.kind === 'directory') || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   return { entries: entries.slice(offset, offset + limit).map(entry), total: entries.length,
     nextOffset: offset + limit < entries.length ? offset + limit : null };
+}
+
+/** 当文本读的内容：超过 2 MiB 或含 NUL 的不读，查看器改按字节看。按版本读的同样处理，见 file-versions.ts。 */
+export function textContent(size: number, read: () => string): string {
+  if (size > 2 * 1024 * 1024) throw new KiteError('文件超过 2 MiB，请用 shell 按范围读取', 413);
+  const content = read();
+  if (content.includes('\0')) throw new KiteError('文件不是可直接处理的文本', 415);
+  return content;
+}
+
+/** 文本的一页：从 offset 行起最多 limit 行；version 是完整内容的摘要。 */
+export function textPage(path: string, content: string, offset = 1, limit = 200) {
+  const lines = content.split('\n');
+  const end = Math.min(offset - 1 + limit, lines.length);
+  return { path, text: lines.slice(offset - 1, end).join('\n'), offset,
+    totalLines: lines.length, nextOffset: end < lines.length ? end + 1 : null,
+    version: createHash('sha256').update(content).digest('hex') };
 }
 
 export class WorkspaceFiles {
@@ -72,20 +92,12 @@ export class WorkspaceFiles {
 
   text(path: string): string {
     const { target, size } = this.regular(path);
-    if (size > 2 * 1024 * 1024) throw new KiteError('文件超过 2 MiB，请用 shell 按范围读取', 413);
-    const content = readFileSync(target, 'utf8');
-    if (content.includes('\0')) throw new KiteError('文件不是可直接处理的文本', 415);
-    return content;
+    return textContent(size, () => readFileSync(target, 'utf8'));
   }
 
   read({ path, offset = 1, limit = 200 }: z.infer<typeof readFileArgs>) {
     const target = this.resolve(path);
-    const content = this.text(target);
-    const lines = content.split('\n');
-    const end = Math.min(offset - 1 + limit, lines.length);
-    return { path: relative(this.root, target), text: lines.slice(offset - 1, end).join('\n'), offset,
-      totalLines: lines.length, nextOffset: end < lines.length ? end + 1 : null,
-      version: createHash('sha256').update(content).digest('hex') };
+    return textPage(relative(this.root, target), this.text(target), offset, limit);
   }
 
   list(path = '.', offset = 0, limit = 200) {

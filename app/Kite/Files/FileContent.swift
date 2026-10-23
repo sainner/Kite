@@ -57,7 +57,8 @@ struct CachedFile: Equatable, Sendable {
     let info: FileInfo
 }
 
-/// 文件内容按「工作机、工作区、路径」各留最新一版，打开时带版本向工作机校验。总量超过上限时删最久没用的。
+/// 文件内容按「工作机、工作区、路径」各留最新一版，打开时带版本向工作机校验；历史版本（version，快照的提交号）另按版本各留一份。
+/// 总量超过上限时删最久没用的。
 final class FileContentCache {
     static let shared = FileContentCache()
     private nonisolated static let limit = 1 << 30
@@ -74,23 +75,24 @@ final class FileContentCache {
     }
 
     /// 同一文件同时只下载一次；后来的请求等同一个结果，进度只报给第一个。
-    func file(client: KitedClient, workspace: String, path: String,
+    func file(client: KitedClient, workspace: String, path: String, version: String? = nil,
               progress: (@Sendable (Progress) -> Void)? = nil) async throws -> CachedFile {
-        let key = Self.key(client.machineID ?? client.address, workspace, path)
+        let machine = client.machineID ?? client.address
+        let key = version.map { Self.key(machine, workspace, path, $0) } ?? Self.key(machine, workspace, path)
         if let task = loading[key] { return try await task.value }
-        let task = Task { try await fetch(key: key, client: client, workspace: workspace, path: path, progress: progress) }
+        let task = Task { try await fetch(key: key, client: client, workspace: workspace, path: path, version: version, progress: progress) }
         loading[key] = task
         defer { loading[key] = nil }
         return try await task.value
     }
 
     /// 只取大小、类型和修改时间，不下载。
-    func info(client: KitedClient, workspace: String, path: String) async throws -> FileInfo {
-        let (_, response) = try await client.download(Self.contentPath(workspace, path), method: "HEAD")
+    func info(client: KitedClient, workspace: String, path: String, version: String? = nil) async throws -> FileInfo {
+        let (_, response) = try await client.download(Self.contentPath(workspace, path, version: version), method: "HEAD")
         return Self.info(response)
     }
 
-    private func fetch(key: String, client: KitedClient, workspace: String, path: String,
+    private func fetch(key: String, client: KitedClient, workspace: String, path: String, version: String?,
                        progress: (@Sendable (Progress) -> Void)?) async throws -> CachedFile {
         let directory = root.appending(path: key, directoryHint: .isDirectory)
         let metaURL = directory.appending(path: "meta.json")
@@ -100,7 +102,8 @@ final class FileContentCache {
         if let cached, let cachedURL, FileManager.default.fileExists(atPath: cachedURL.path(percentEncoded: false)) {
             headers["If-None-Match"] = cached.version
         }
-        let (file, response) = try await client.download(Self.contentPath(workspace, path), headers: headers, segmented: true, progress: progress)
+        let (file, response) = try await client.download(Self.contentPath(workspace, path, version: version), headers: headers, segmented: true,
+                                                         progress: progress)
         if let cached, let cachedURL, response.statusCode == 304 {
             // 修改时间当作最近使用时间，清理时按它排
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: directory.path(percentEncoded: false))
@@ -154,8 +157,8 @@ final class FileContentCache {
         }
     }
 
-    static func contentPath(_ workspace: String, _ path: String) -> String {
-        "/workspaces/\(workspace.pathComponent)/files/content?path=\(path.pathComponent)"
+    static func contentPath(_ workspace: String, _ path: String, version: String? = nil) -> String {
+        "/workspaces/\(workspace.pathComponent)/files/content?path=\(path.pathComponent)" + (version.map { "&version=\($0)" } ?? "")
     }
 
     private static func key(_ parts: String...) -> String {

@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 19
+    static let version = 20
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -228,6 +228,8 @@ struct FileSelection: Decodable, Equatable {
     let path: String?
     let revision: String
     var diffId: String? = nil
+    /// 看的是这个文件在哪枚工作区快照里的样子（files.history 列出的版本），nil 是现在的内容。
+    var version: String? = nil
     var port: Int? = nil
     var url: String? = nil
 

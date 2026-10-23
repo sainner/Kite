@@ -68,7 +68,7 @@ const definitions: PluginDefinition[] = [
   { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
     agent, operations: ['agent.send', 'agent.resume', 'agent.stop', 'agent.merge'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
   /** 看工作区的文件、本工作区运行中的网页和互联网，见 workspace/files.ts 的 pageSchema。 */
-  { id: filesDefinitionId, title: '浏览', description: '查看文件、运行中的网页和互联网', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'], views: [
+  { id: filesDefinitionId, title: '浏览', description: '查看文件、运行中的网页和互联网', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.history', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '浏览', renderer: 'files' },
   ] },
   /** 一个实例一个 PTY 会话，见 terminal/terminals.ts。 */

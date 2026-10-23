@@ -454,8 +454,14 @@ struct PaneHeaderReports: ViewModifier {
 /// 正文标题栏给窗口按钮让位也按它算（PaneHeaderControlsSpace），悬停一变只有标题栏读它的那一层更新。
 @Observable final class PaneCardHeader: PaneHeaderControlsSpace {
     var hovered = false
-    /// 正文标题栏右侧菜单的宽度。
-    var menuWidth: CGFloat = 0
+    /// 正文标题栏右侧菜单的宽度。改了宽，右组正在伸缩，见 actionsResizing。
+    var menuWidth: CGFloat = 0 {
+        didSet { if oldValue > 0, menuWidth != oldValue { resizeActions() } }
+    }
+    /// 右组正在伸缩（浏览的侧栏开关伸成搜索框）：报上来的已是终点宽度，窗口按钮这时露出来会先跳过去。
+    /// 藏到右组按 Animation.paneHeaderActions 伸缩完，同窗口在动时不接悬停；给它们留的地方照留，标题不跟着来回让。
+    private(set) var actionsResizing = false
+    @ObservationIgnored private var actionsSettle: Task<Void, Never>?
     /// 窗口按钮组（缩小、展开、关闭、固定）的实际尺寸。
     var controlsSize = CGSize.zero
     /// 固定的窗口按钮组藏着时单独露出来的图钉的尺寸，见 PaneHeaderControls.pinShown。
@@ -470,11 +476,21 @@ struct PaneHeaderReports: ViewModifier {
         guard let layout else { return 0 }
         let controls = PaneHeaderControls(header: self, layout: layout, minimized: placement.minimized, width: placement.width,
                                           hasThread: placement.hasThread, pinned: placement.pinned)
-        if controls.shown { return controlsSize.width + Metrics.paneButtonGap }
-        return controls.pinShown ? pinSize.width + Metrics.paneButtonGap : 0
+        if controls.revealed { return controlsSize.width + Metrics.paneButtonGap }
+        return controls.pinRevealed ? pinSize.width + Metrics.paneButtonGap : 0
     }
 
     var minHeight: CGFloat { controlsSize.height }
+
+    private func resizeActions() {
+        actionsResizing = true
+        actionsSettle?.cancel()
+        actionsSettle = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Animation.paneHeaderActionsDuration))
+            guard !Task.isCancelled else { return }
+            self?.actionsResizing = false
+        }
+    }
 }
 
 /// 窗口按钮放不放得下、该不该露出来要看的卡片状态。
@@ -502,16 +518,21 @@ struct PaneHeaderControls {
         return width < required
     }
 
-    var shown: Bool {
+    /// 按悬停该露出来；标题栏按它给窗口按钮留地方。右组正在伸缩时先藏着（shown），见 PaneCardHeader.actionsResizing。
+    var revealed: Bool {
         !layout.isFixed && !inMenu && InputMode.current.revealsControls(hovered: header.hovered) && !minimized
             && layout.drag == nil && layout.resizing == nil
     }
 
+    var shown: Bool { revealed && !header.actionsResizing }
+
     /// 固定的窗口按钮组藏着时（Mac 上指针不在卡片上）单独露出图钉，看得出固定了；指针一到卡片上就换成整组。
     /// 收进更多菜单、缩成停靠形状、拖动和拖缝时不露。
-    var pinShown: Bool {
-        pinned && !shown && !layout.isFixed && !inMenu && !minimized && layout.drag == nil && layout.resizing == nil
+    var pinRevealed: Bool {
+        pinned && !revealed && !layout.isFixed && !inMenu && !minimized && layout.drag == nil && layout.resizing == nil
     }
+
+    var pinShown: Bool { pinRevealed && !header.actionsResizing }
 }
 
 /// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。

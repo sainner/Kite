@@ -593,6 +593,12 @@ private struct PaneHeaderRing: ViewModifier {
     }
 }
 
+extension Animation {
+    /// 标题栏右组里自己伸缩的控件（浏览的侧栏开关伸成搜索框）用的动画。右组改宽时卡片的窗口按钮藏到它走完，见 PaneCardHeader.actionsResizing。
+    static let paneHeaderActions = Animation.smooth(duration: paneHeaderActionsDuration)
+    static let paneHeaderActionsDuration: TimeInterval = 0.3
+}
+
 /// 卡片拖动层按菜单的实际宽度留空，菜单接收自己的点击。
 nonisolated struct PaneHeaderActionsWidth: PreferenceKey {
     static let defaultValue: CGFloat = 0

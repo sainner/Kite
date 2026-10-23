@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { inputSchema, type inputVia } from '../harness/input.ts';
 import { diffID, fileDiffSchema } from '../workspace/file-diffs.ts';
 import { MAX_MESSAGE_ATTACHMENTS } from '../workspace/attachments.ts';
-import { fileSelectionSchema, portSchema, readFileArgs, webAddressSchema } from '../workspace/files.ts';
+import { fileSelectionSchema, portSchema, readFileArgs, snapshotCommit, webAddressSchema } from '../workspace/files.ts';
+import { fileVersionSchema } from '../workspace/file-versions.ts';
 import { stateSchema as terminalStateSchema } from '../terminal/state.ts';
 import { deviceSchema } from '../preview/devices.ts';
 import { previewBrowsers, previewScreens, viewportEdge, workstationBrowsers } from '../preview/state.ts';
@@ -121,9 +122,15 @@ export const operationContracts = {
     output: z.object({ query: z.string(), entries: z.array(fileEntry), truncated: z.boolean() }).strict(),
   },
   'files.read': {
-    title: '读取文本', description: '按行读取文件实例所属工作区内的文本，与 agent 的 read 使用同一文件服务。',
-    tool: null, effect: 'read', retry: 'read', input: readFileArgs.extend({ instanceId: id }).strict(),
+    title: '读取文本', description: '按行读取文件实例所属工作区内的文本，与 agent 的 read 使用同一文件服务；带 version 时读那一个历史版本。',
+    tool: null, effect: 'read', retry: 'read', input: readFileArgs.extend({ instanceId: id, version: snapshotCommit.optional() }).strict(),
     output: z.object({ path: id, text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable(), version: id }).strict(),
+  },
+  'files.history': {
+    title: '读取历史版本', description: '列出文件实例所属工作区内一个文件的历史版本：工作区快照里这个文件内容变过的那些，新的在前，最多 100 个。',
+    tool: null, effect: 'read', retry: 'read',
+    input: z.object({ instanceId: id, path: id }).strict(),
+    output: z.object({ versions: z.array(fileVersionSchema), current: snapshotCommit.nullable(), truncated: z.boolean() }).strict(),
   },
   'files.diff': {
     title: '读取历史差异', description: '读取当前工作区某次修改保存的前后内容，不受当前文件变化影响。',
@@ -135,11 +142,13 @@ export const operationContracts = {
     tool: null, effect: 'read', retry: 'read', input: z.object({ instanceId: id }).strict(), output: fileSelectionSchema,
   },
   'files.select': {
-    title: '选择浏览内容', description: '选择工作区内的文件，或一个网页（本工作区运行中终端或预览监听的端口 port，或互联网网址 url，这时 path 为 null），各设备共用；不修改文件内容。',
+    title: '选择浏览内容', description: '选择工作区内的文件（可带历史差异 diffId，或历史版本 version），或一个网页（本工作区运行中终端或预览监听的端口 port，或互联网网址 url，这时 path 为 null），各设备共用；不修改文件内容。',
     tool: null, effect: 'write', retry: 'receipt',
-    input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional(), port: portSchema.optional(), url: webAddressSchema.optional() }).strict()
+    input: target.extend({ expectedRevision: id, path: id.nullable(), diffId: diffID.optional(), version: snapshotCommit.optional(),
+      port: portSchema.optional(), url: webAddressSchema.optional() }).strict()
       .refine((input) => input.port === undefined && input.url === undefined || input.path === null && !input.diffId && (input.port === undefined || input.url === undefined),
-        '文件和网页只能选一个，网页的端口和网址也只能选一个'),
+        '文件和网页只能选一个，网页的端口和网址也只能选一个')
+      .refine((input) => input.version === undefined || input.path !== null && !input.diffId, '历史版本要和文件一起选，不能同时带历史差异'),
     output: fileSelectionSchema,
   },
   'terminal.read': {
@@ -291,7 +300,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('monitor.start') }).strict(),
   /** 预览的操作不分目标：本工作区的预览都能起、看、操作和停，不限创建来源。 */
   ...previewOperations.map((operation) => z.object({ operation: z.literal(operation) }).strict()),
-  ...(['files.list', 'files.search', 'files.read', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
+  ...(['files.list', 'files.search', 'files.read', 'files.history', 'files.diff', 'files.state', 'files.select'] as const).map((operation) => z.object({ operation: z.literal(operation),
     targets: z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict() }).strict()),
   /** Line 的管理动作，目标范围是工作机目录里的全部工作区；actions 是用户允许的白名单。 */
   z.object({ operation: z.literal('line'), actions: z.array(z.enum(lineActions)) }).strict(),

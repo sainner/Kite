@@ -5,9 +5,11 @@ import AppKit
 
 /// 浏览窗口（docs/成果查看与位置.md「浏览」）：工作区的文件（目录、原文、渲染与历史差异），本工作区运行中的网页和互联网共用一个窗口。
 /// 看什么各设备共用（FileBrowser.selection）；行号定位、网页里点到哪仅属于当前设备。侧栏上面是本工作区监听的端口，下面是文件目录，
-/// 从右边划进划出：宽排时是右边一列，和内容并排，有没有选东西都一样；窄排时铺满窗口、盖住内容。开关在控制区右下角，侧栏打开时伸成搜索框，
-/// 按名字搜整个工作区，也能输网址或端口号。
-/// 网页在设备自己的网页视图里看，控制区同预览的网页画面（WebPageControls），地址栏里能输网址、端口号或 localhost:端口；
+/// 从右边划进划出：宽排时是右边一列，和内容并排，有没有选东西都一样；窄排时铺满窗口、盖住内容。开关在标题栏右边，侧栏打开时伸成搜索框，
+/// 按名字搜本工作区的网页和整个工作区的文件。并排时控制区的按钮在右边让出侧栏那一列。
+/// 控制区左边翻页（网页是后退、前进），中间是路径或地址，右边在文件里找；文件的路径点开是它的时间线（工作区快照里的历史版本，从旧到新），能换看哪一版。
+/// 能渲染的文件在标题栏里切换原文和预览。
+/// 网页在设备自己的网页视图里看，地址栏里能输网址、端口号或 localhost:端口；
 /// 网站数据按工作区分开，同一工作区的浏览窗口共用登录状态。
 struct FilePane: View {
     let browser: FileBrowser
@@ -21,8 +23,6 @@ struct FilePane: View {
     @State private var addressing = false
     /// 侧栏搜索框里的字，侧栏收起时清掉。
     @State private var directoryQuery = ""
-    /// 并排时目录面板的顶边离目录自己的顶边多远：滚动区伸到标题栏后面时是标题栏的高度，面板从标题栏底边画起。
-    @State private var directoryTop: CGFloat = 0
     /// 在文件里找。
     @State private var searching = false
     @State private var query = ""
@@ -39,7 +39,13 @@ struct FilePane: View {
         // 网页的主标题是 localhost:端口或网站；文件的是当前文件的名字，还没选时是工作区文件夹的名字
         if browser.displayingWeb { return PaneHeader(title: pageName, subtitle: "网页") }
         return PaneHeader(title: browser.selection.path.map { ($0 as NSString).lastPathComponent } ?? rootName,
-                          subtitle: showingDiff ? "历史差异" : "文件")
+                          subtitle: showingDiff ? "历史差异" : browser.selection.version != nil ? versionSubtitle : "文件")
+    }
+
+    /// 看历史版本时的副标题：哪个时候的版本。
+    private var versionSubtitle: String {
+        guard let version = browser.history?.versions.first(where: { $0.commit == browser.selection.version }) else { return "历史版本" }
+        return "\(Self.time(version.date)) 的版本"
     }
 
     private var pageName: String {
@@ -75,7 +81,7 @@ struct FilePane: View {
         if browser.showDirectory, !directoryTerm.isEmpty {
             if browser.searchingFiles { return .info("正在搜索…", symbol: "magnifyingglass") }
             if let results = browser.searchResults {
-                if results.entries.isEmpty { return .info("没有名字含「\(results.query)」的文件", symbol: "magnifyingglass") }
+                if results.entries.isEmpty && matchedPorts.isEmpty { return .info("没有名字含「\(results.query)」的文件或网页", symbol: "magnifyingglass") }
                 if results.truncated { return .info("只列出最相近的 \(results.entries.count) 个", symbol: "magnifyingglass") }
             }
         }
@@ -107,7 +113,7 @@ struct FilePane: View {
     }
 
     var body: some View {
-        PaneWindow(header: header, notice: notice) {
+        PaneWindow(header: header, notice: notice, actions: headerActions) {
             ZStack(alignment: .topTrailing) {
                 // 文件不参与目录的动画：排布在开关时当场变好，窄排时留在原地让目录盖住，网页、PDF 也不用重新加载
                 HStack(spacing: 0) {
@@ -119,7 +125,7 @@ struct FilePane: View {
                 .accessibilityHidden(browser.showDirectory && !sideBySide)
                 .transaction { $0.animation = nil }
                 if browser.showDirectory {
-                    // 从右边划进划出，和控制区的侧栏开关同一边
+                    // 从右边划进划出，和标题栏的侧栏开关同一边
                     directoryColumn
                         .transition(.move(edge: .trailing))
                         // ZStack 里移除的视图划出时会排到下面，文件就画在目录的底色上面了
@@ -130,15 +136,15 @@ struct FilePane: View {
             .animation(Self.directoryMotion, value: browser.showDirectory)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } controls: { typing in
-            // 目录铺满时控制区整行是它的搜索框
+            // 目录铺满时控制区空着；并排时按钮在右边让出侧栏那一列
             if !browser.showDirectory || sideBySide {
                 Group {
-                    if webVisible || addressing { webControls(typing: typing) } else { controls }
+                    if webVisible || addressing { webControls(typing: typing) } else { fileBar }
                 }
                 // 目录盖住或露出文件时，按钮组跟着换，玻璃按系统的过渡变形
                 .animation(.snappy, value: fileVisible)
+                .padding(.trailing, browser.showDirectory ? Self.directoryWidth : 0)
             }
-            directorySearch
         }
         .task(id: browser.connectionRevision) { await browser.list() }
         .task(id: browser.requestKey) { await browser.loadSelection() }
@@ -189,9 +195,19 @@ struct FilePane: View {
     private func webControls(typing: FocusState<Bool>.Binding) -> some View {
         WebControls(typing: typing.wrappedValue || addressing) {
             if webVisible {
-                WebPageControls(browser: web, typing: typing.wrappedValue, home: goHome, reload: reloadPage, clear: { addressReset += 1 }) {
+                // 同文件：左边后退、前进，中间地址栏
+                HStack(spacing: Metrics.paneButtonGap) {
+                    KeyboardSwap {
+                        PaneHeaderButtonGroup {
+                            ActionButton("后退", icon: "chevron.left", action: web.back).disabled(!web.canGoBack)
+                            ActionButton("前进", icon: "chevron.right", action: web.forward).disabled(!web.canGoForward)
+                        }
+                    } shown: {
+                        KeyboardDismissButton()
+                    }
                     addressField(typing: typing)
                 }
+                .containerValue(\.placesKeyboardButton, true)
             } else {
                 // 看着文件时点了「打开网址」：只有地址栏，打开了或离开地址栏就换回文件的控制区
                 HStack(spacing: Metrics.paneButtonGap) {
@@ -206,13 +222,13 @@ struct FilePane: View {
         }
     }
 
-    /// 地址栏：站点图标和地址。窄排时最右边是网页操作的菜单，和站点图标对称。
+    /// 地址栏：站点图标、地址、网页操作的菜单，同文件的中间信息（fileInfo）；不打字时地址居中。
     private func addressField(typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: true) {
             WebSiteIcon(icon: webVisible ? web.icon : nil)
-                .padding(.leading, Metrics.paneHeaderButtonGap / 2)
-            WebPathField(path: webVisible ? address : "", typing: typing, reset: addressReset, prompt: "网址或端口号", open: go)
-            if narrow, webVisible {
+                .frame(width: Metrics.paneHeaderIconWidth)
+            WebPathField(path: webVisible ? address : "", typing: typing, reset: addressReset, prompt: "网址或端口号", centered: true, open: go)
+            if webVisible {
                 WebPageMenu(browser: web, typing: typing.wrappedValue, home: goHome, reload: reloadPage, clear: { addressReset += 1 })
             }
         }
@@ -285,34 +301,53 @@ struct FilePane: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private static let directoryMotion = Animation.smooth(duration: 0.3)
+    /// 侧栏划进划出、标题栏里开关伸成搜索框都用它；悬停时的窗口按钮藏到它走完。
+    private static let directoryMotion = Animation.paneHeaderActions
 
-    /// 控制区右下角的侧栏开关。打开后伸成的搜索框和关闭按钮：并排时占侧栏这一列，两边各留窗口边距，同控制区到窗口边的距离；铺满时占满整行。
+    /// 标题栏右边的侧栏开关。打开后伸成的搜索框和关闭按钮占侧栏一列的宽，两边各留窗口边距，同标题栏到窗口边的距离；
+    /// 窄排侧栏铺满时也是这么宽，左边留着标题。
     private var directorySearch: some View {
         let open = browser.showDirectory
-        return DirectorySearch(open: open, text: $directoryQuery, submit: submitDirectorySearch) { shown in
+        return DirectorySearch(open: open, text: $directoryQuery) { shown in
             withAnimation(Self.directoryMotion) { browser.showDirectory = shown }
         }
-        .frame(width: open && sideBySide ? Self.directoryWidth - 2 * Metrics.paneMargin : nil)
-        .frame(maxWidth: open && !sideBySide ? .infinity : nil)
-        .padding(.leading, open && sideBySide ? 2 * Metrics.paneMargin - Metrics.paneButtonGap : 0)
+        .frame(width: open ? Self.directoryWidth - 2 * Metrics.paneMargin : nil)
         // 从目录或引用打开文件时收起侧栏不经这里的按钮，也跟着变形
         .animation(Self.directoryMotion, value: open)
     }
 
-    private var controls: some View {
-        FileControlsLayout(spacing: Metrics.paneButtonGap) {
+    /// 标题栏右边：能渲染的文件（Markdown、HTML）在原文和预览之间切换，最右边是侧栏开关。
+    private var headerActions: PaneHeaderActions {
+        var actions = PaneHeaderActions(trailing: AnyView(directorySearch))
+        if fileVisible, browser.format.renderable, browser.selection.diffId == nil {
+            actions.switcher = PaneViewSwitcher(items: [
+                .init(id: "source", title: "原文", systemImage: "chevron.left.forwardslash.chevron.right"),
+                .init(id: "preview", title: "预览", systemImage: "eye"),
+            ], current: browser.rendered ? "preview" : "source") { [browser] in browser.rendered = $0 == "preview" }
+        }
+        return actions
+    }
+
+    /// 看文件时的控制区：左边翻页，中间是路径（点开是时间线，最右边是文件操作的菜单），右边在文件里找。找的时候搜索框占满一行。
+    private var fileBar: some View {
+        HStack(spacing: Metrics.paneButtonGap) {
+            if !searching {
+                if fileVisible, let page = browser.page, browser.selection.diffId == nil, !(browser.format.renderable && browser.rendered) {
+                    PaneHeaderButtonGroup {
+                        ActionButton("上一页", icon: "chevron.left") { Task { await browser.read(offset: max(1, page.offset - 200)) } }
+                            .disabled(page.offset <= 1)
+                        ActionButton("下一页", icon: "chevron.right") { if let offset = page.nextOffset { Task { await browser.read(offset: offset) } } }
+                            .disabled(page.nextOffset == nil)
+                    }
+                }
+                fileInfo
+            }
             if searchTarget != nil {
                 ExpandingSearch(presented: $searching, text: $query, submit: { step(1) }) {
                     EmptyView()
                 } accessory: {
                     searchAccessory
                 }
-                .layoutValue(key: FileControlsLayout.Fills.self, value: searching)
-            }
-            if !searching {
-                viewControls
-                fileControls.layoutValue(key: FileControlsLayout.Trailing.self, value: true)
             }
         }
     }
@@ -406,62 +441,106 @@ struct FilePane: View {
         return Text(SearchHighlight(query: query, current: current).apply(to: text))
     }
 
-    /// 左边是正文怎么看：原文开关，或者从历史差异回到当前文件。
-    private var viewControls: some View {
-        HStack(spacing: Metrics.paneButtonGap) {
-            if fileVisible, browser.selection.diffId != nil {
-                PaneHeaderButtonGroup {
-                    Button {
-                        if let path = browser.selection.path { Task { try? await browser.navigate(FileReference(path: path)) } }
-                    } label: { PaneHeaderButtonLabel("回到当前文件") }
-                        .foregroundStyle(Color.primary)
-                        .help("回到这个文件现在的内容")
+    /// 控制区中间：文件类型图标和居中的路径，点开是这个文件的时间线；最右边是文件操作的菜单，和图标对称。
+    private var fileInfo: some View {
+        PaneHeaderButtonGroup(expands: true) {
+            Menu {
+                timeline
+            } label: {
+                HStack(spacing: 0) {
+                    Image(systemName: browser.selection.path == nil ? "folder" : browser.format.symbol)
+                        .foregroundStyle(.secondary)
+                        .frame(width: Metrics.paneHeaderIconWidth)
+                    Text(browser.selection.path ?? rootName)
+                        .font(Theme.body)
+                        .foregroundStyle(browser.selection.path == nil ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity)
                 }
-            } else if fileVisible, browser.format.renderable {
-                PaneHeaderActions(groups: [[PaneHeaderAction(title: "显示原文", systemImage: "chevron.left.forwardslash.chevron.right",
-                                                             help: browser.rendered ? "显示原文" : "显示预览", on: !browser.rendered) { browser.rendered.toggle() }]])
+                .frame(height: Metrics.paneHeaderButton)
+                .contentShape(.rect)
             }
+            .disabled(browser.selection.path == nil)
+            .help("时间线")
+            fileMenu
         }
     }
 
-    /// 右边是对文件的操作：翻页一组，打开、下载、共享与刷新一组。
-    private var fileControls: some View {
-        HStack(spacing: Metrics.paneButtonGap) {
-            if fileVisible, let page = browser.page, browser.selection.diffId == nil,
-               !(browser.format.renderable && browser.rendered) {
-                PaneHeaderButtonGroup {
-                    ActionButton("上一页", icon: "chevron.left") { Task { await browser.read(offset: max(1, page.offset - 200)) } }
-                        .disabled(page.offset <= 1)
-                    ActionButton("下一页", icon: "chevron.right") { if let offset = page.nextOffset { Task { await browser.read(offset: offset) } } }
-                        .disabled(page.nextOffset == nil)
-                }
+    /// 时间线：内容变过的工作区快照从旧到新往下排，最下面是现在的内容，点了换看那一版。
+    /// 现在的内容和最新那一版一样时合成一行。看着历史差异时点「当前」回到现在的内容。
+    @ViewBuilder
+    private var timeline: some View {
+        let selection = browser.selection
+        let history = browser.history
+        let current = history?.versions.first { $0.commit == history?.current }
+        if history?.truncated == true {
+            Text("只列出最近 \(history?.versions.count ?? 0) 个版本")
+        } else if let error = browser.historyError {
+            Text("读不到历史版本：\(error)")
+        } else if history?.versions.isEmpty == true, selection.path != nil {
+            Text("还没有历史版本")
+        }
+        // 工作机给的是新的在前
+        ForEach(history?.versions.filter { $0.commit != history?.current }.reversed() ?? []) { version in
+            Toggle(isOn: versionBinding(version.commit)) {
+                Text("\(Self.time(version.date)) \(Self.label(version.label))")
             }
-            PaneHeaderButtonGroup {
-                #if os(macOS)
-                if let url = defaultAppURL {
-                    ActionButton("用默认 App 打开", icon: "arrow.up.forward.app") { NSWorkspace.shared.open(url) }
-                }
-                #endif
-                if fileVisible, browser.format == .other, browser.content == nil, !browser.isLocal {
-                    ActionButton("下载", icon: "arrow.down.circle") { Task { await browser.fetch() } }
-                        .disabled(browser.loadingText)
-                }
-                if fileVisible, let content = browser.content {
-                    ShareLink(item: content.url) { PaneHeaderButtonLabel("共享", systemImage: "square.and.arrow.up") }
-                        .foregroundStyle(Color.primary)
-                        .help("共享")
-                }
-                ActionButton("刷新", icon: "arrow.clockwise", action: refresh)
-                    .disabled(browser.loadingDirectory || browser.loadingText)
-                ActionButton("打开网址", icon: "globe") { addressing = true }
-            }
+        }
+        Toggle(isOn: versionBinding(nil)) {
+            Text(current.map { "当前 · \(Self.time($0.date)) \(Self.label($0.label))" } ?? "当前")
         }
     }
 
-    /// 认不出的格式用默认 App 打开：工作机就是本机时开工作区里的原文件，其他设备开下载好的副本。
+    /// 时间线里的一行选没选中：version 为 nil 是现在的内容。
+    private func versionBinding(_ version: String?) -> Binding<Bool> {
+        Binding {
+            browser.selection.diffId == nil && browser.selection.version == version
+        } set: { chosen in
+            guard chosen else { return }
+            Task { await browser.selectVersion(version) }
+        }
+    }
+
+    /// 时间线里的时间：今天的只写时刻。
+    private static func time(_ date: Date) -> String {
+        date.formatted(Calendar.current.isDateInToday(date) ? .dateTime.hour().minute() : .dateTime.month().day().hour().minute())
+    }
+
+    /// 快照的标签是那一回合的标题，太长的截掉。
+    private static func label(_ text: String) -> String {
+        text.count > 30 ? text.prefix(30) + "…" : text
+    }
+
+    /// 文件操作的菜单：打开网址、刷新，有本机副本时共享，认不出的格式用默认 App 打开或下载。
+    private var fileMenu: some View {
+        Menu {
+            MenuButton("打开网址", systemImage: "globe") { addressing = true }
+            MenuButton("刷新", systemImage: "arrow.clockwise", action: refresh)
+                .disabled(browser.loadingDirectory || browser.loadingText)
+            if fileVisible, let content = browser.content {
+                ShareLink(item: content.url) { Label("共享", systemImage: "square.and.arrow.up") }
+            }
+            #if os(macOS)
+            if let url = defaultAppURL {
+                MenuButton("用默认 App 打开", systemImage: "arrow.up.forward.app") { NSWorkspace.shared.open(url) }
+            }
+            #endif
+            if fileVisible, browser.format == .other, browser.content == nil, !browser.isLocal || browser.selection.version != nil {
+                MenuButton("下载", systemImage: "arrow.down.circle") { Task { await browser.fetch() } }
+                    .disabled(browser.loadingText)
+            }
+        } label: {
+            PaneHeaderButtonLabel("文件操作", systemImage: "ellipsis")
+        }
+        .foregroundStyle(Color.primary)
+        .help("文件操作")
+    }
+
+    /// 认不出的格式用默认 App 打开：工作机就是本机、看的是现在的内容时开工作区里的原文件，其他时候开下载好的副本。
     private var defaultAppURL: URL? {
         guard fileVisible, browser.format == .other, let path = browser.selection.path else { return nil }
-        if browser.isLocal { return URL(filePath: area.remote.workspace.cwd).appending(path: path) }
+        if browser.isLocal && browser.selection.version == nil { return URL(filePath: area.remote.workspace.cwd).appending(path: path) }
         return browser.content?.url
     }
 
@@ -472,37 +551,35 @@ struct FilePane: View {
     }
 
     private static let directoryWidth: CGFloat = 210
-    private static let directoryRadius: CGFloat = 12
 
-    /// 并排时目录是右边一块面板：顶边贴着标题栏的底边，左上角圆角，左边和上边描边，右边、下边贴着窗口；
-    /// 列表裁在面板里，不从标题栏后面滚过去。铺满时不描边、没有圆角，和窗口一样从标题栏后面滚过去。
-    @ViewBuilder
+    /// 并排时目录是右边一列，底色是很淡的灰，从窗口顶边铺到底边，标题栏、控制区浮在上面；铺满时是窗口的底色。
+    /// 两种都是列表从标题栏、控制区后面滚过去。
     private var directoryColumn: some View {
-        if sideBySide {
-            let panel = DirectoryPanel(top: directoryTop, radius: Self.directoryRadius)
-            directory
-                .frame(width: Self.directoryWidth)
-                .background { panel.fill(Theme.card) }
-                .clipShape(panel)
-                .overlay { DirectoryPanel(top: directoryTop, radius: Self.directoryRadius, edge: true).stroke(Theme.rule, lineWidth: 1) }
-                .onGeometryChange(for: CGFloat.self) { $0.safeAreaInsets.top } action: { directoryTop = $0 }
-        } else {
-            directory.background(Theme.card)
-        }
+        directory
+            .frame(width: sideBySide ? Self.directoryWidth : nil)
+            // 用直角矩形铺底：直接给颜色时，Mac 上侧栏铺到窗口底边的左下角是圆角
+            .background { Rectangle().fill(sideBySide ? Theme.panel : Theme.card).ignoresSafeArea() }
     }
 
     private static let treeIndent: CGFloat = 16
 
-    /// 从工作区根目录起的折叠列表：点目录展开、收起，点文件打开。侧栏搜索框里有字时换成搜到的结果，输的像网址时最上面多一行打开它。
+    /// 侧栏搜索框里的字搜到的网页：名字（localhost:端口）里含这些字的，不分大小写。
+    private var matchedPorts: [TerminalStatus.Port] {
+        guard !directoryTerm.isEmpty else { return [] }
+        return area.workspacePortStatus.filter { "localhost:\($0.port)".localizedCaseInsensitiveContains(directoryTerm) }
+    }
+
+    /// 从工作区根目录起的折叠列表：点目录展开、收起，点文件打开。侧栏搜索框里有字时换成搜到的网页和文件。
     private var directory: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 Group {
-                    let address = Self.looksLikeAddress(directoryTerm)
-                    if !directoryTerm.isEmpty, address || browser.searchResults != nil {
+                    if !directoryTerm.isEmpty, browser.searchResults != nil || !matchedPorts.isEmpty {
+                        let entries = browser.searchResults?.entries ?? []
                         LazyVStack(alignment: .leading, spacing: 8) {
-                            if address { addressRow(directoryTerm) }
-                            ForEach(browser.searchResults?.entries ?? []) { resultRow($0) }
+                            ForEach(matchedPorts, id: \.port) { pageRow($0) }
+                            if !matchedPorts.isEmpty && !entries.isEmpty { Divider().padding(.vertical, 4) }
+                            ForEach(entries) { resultRow($0) }
                         }
                     } else {
                         let rows = browser.treeRows
@@ -535,35 +612,6 @@ struct FilePane: View {
         }
         withAnimation { proxy.scrollTo(path, anchor: .center) }
         browser.revealed = nil
-    }
-
-    /// 侧栏搜索框里输的像网址：端口号、localhost:端口、写了协议的，或者域名。文件名也带点，域名要带路径、以 www. 开头或以常见后缀结尾才算，
-    /// 免得搜 FilePane.swift 时也冒出一行打开网址。
-    private static func looksLikeAddress(_ text: String) -> Bool {
-        if Int(text).flatMap({ LocalPort(path: "/", port: $0) }) != nil || LocalPort.bare(text) != nil { return true }
-        if text.contains("://") { return URL(string: text)?.host() != nil }
-        guard let match = text.wholeMatch(of: #/(?:[A-Za-z0-9-]+\.)+([A-Za-z]{2,})(?::\d+)?([/?#]\S*)?/#) else { return false }
-        return match.2 != nil || text.lowercased().hasPrefix("www.") || commonDomains.contains(match.1.lowercased())
-    }
-
-    private static let commonDomains: Set<String> = ["com", "net", "org", "io", "dev", "ai", "cn", "co", "me", "edu", "gov", "info", "xyz"]
-
-    /// 搜到的结果上面打开网址的一行，和地址栏里回车一样（go）。
-    private func addressRow(_ text: String) -> some View {
-        rowButton(selected: false) {
-            directoryQuery = ""
-            go(text)
-        } label: {
-            Label("打开 \(text)", systemImage: "globe").lineLimit(1)
-        }
-    }
-
-    /// 侧栏搜索框里回车：输的像网址就打开它。
-    private func submitDirectorySearch() {
-        guard Self.looksLikeAddress(directoryTerm) else { return }
-        let text = directoryTerm
-        directoryQuery = ""
-        go(text)
     }
 
     /// 一个搜到的文件或目录，后面是它所在的目录。点文件打开，点目录清空搜索、在目录树里展开到它。
@@ -767,31 +815,24 @@ struct FilePane: View {
     }
 }
 
-/// 浏览窗口控制区右下角的侧栏开关：收着时是一个按钮；打开时伸成搜索框，关闭按钮从组里分出来，停稳后是两块玻璃，同 ExpandingSearch。
+/// 浏览窗口标题栏右边的侧栏开关：收着时是一个按钮；打开时伸成搜索框，关闭按钮从组里分出来，停稳后是两块玻璃，同 ExpandingSearch。
 /// 打开时不把焦点交给搜索框，iPhone 上不弹键盘，点放大镜或输入框才开始打字。关闭收起侧栏。
 private struct DirectorySearch: View {
     let open: Bool
     @Binding var text: String
-    /// 在输入框里按回车。
-    let submit: () -> Void
     let show: (Bool) -> Void
     @FocusState private var focused: Bool
-    @Namespace private var glass
 
     var body: some View {
-        HStack(spacing: Metrics.paneButtonGap) {
-            PaneHeaderButtonGroup(expands: open) { controls }
-                .glassEffectID("directory-panel", in: glass)
-                .glassEffectTransition(.matchedGeometry)
-            if open {
-                PaneHeaderButtonGroup {
-                    ActionButton("隐藏文件与网页", icon: "xmark") {
-                        focused = false
-                        show(false)
-                    }
+        // 标题栏右组外面没有玻璃容器，自己包一个，按钮伸成搜索框时玻璃才变形
+        GlassEffectContainer(spacing: Metrics.paneButtonGap) {
+            GlassSplit(open: open) {
+                PaneHeaderButtonGroup(expands: open) { controls }
+            } close: {
+                ActionButton("隐藏文件与网页", icon: "xmark") {
+                    focused = false
+                    show(false)
                 }
-                .glassEffectID("directory-close", in: glass)
-                .glassEffectTransition(.matchedGeometry)
             }
         }
     }
@@ -799,7 +840,7 @@ private struct DirectorySearch: View {
     @ViewBuilder private var controls: some View {
         if open {
             ActionButton("搜索", icon: "magnifyingglass") { focused = true }
-            TextField("搜索文件或网址", text: $text)
+            TextField("搜索", text: $text)
                 .textFieldStyle(.plain)
                 .font(Theme.body)
                 .foregroundStyle(.primary)
@@ -810,7 +851,6 @@ private struct DirectorySearch: View {
                 .textInputAutocapitalization(.never)
                 #endif
                 .focused($focused)
-                .onSubmit(submit)
                 .keyboardDismissToolbar()
                 #if os(macOS)
                 .onExitCommand {
@@ -821,80 +861,5 @@ private struct DirectorySearch: View {
         } else {
             ActionButton("显示文件与网页", icon: "sidebar.right") { show(true) }
         }
-    }
-}
-
-/// 并排时目录面板的形状：顶边在 top，左上角圆角，右边、下边到头。edge 只画左边和上边两条，用来描边，往里收半个线宽。
-private nonisolated struct DirectoryPanel: Shape {
-    var top: CGFloat
-    var radius: CGFloat
-    var edge = false
-
-    func path(in rect: CGRect) -> Path {
-        let inset: CGFloat = edge ? 0.5 : 0
-        let left = rect.minX + inset, top = rect.minY + self.top + inset
-        var path = Path()
-        path.move(to: CGPoint(x: left, y: rect.maxY))
-        path.addLine(to: CGPoint(x: left, y: top + radius))
-        path.addArc(tangent1End: CGPoint(x: left, y: top), tangent2End: CGPoint(x: left + radius, y: top), radius: radius)
-        path.addLine(to: CGPoint(x: rect.maxX, y: top))
-        if !edge {
-            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            path.closeSubpath()
-        }
-        return path
-    }
-}
-
-/// 控制区的排布：前面的组靠左、Trailing 的组靠右排一行；放不下时前面的一行、后面的一行。搜索框展开时（Fills）占满所在一行剩下的宽度。
-/// 按钮始终是同一批视图，换状态时玻璃和按钮走过渡；ViewThatFits 会把两种排法各建一份，里面按钮的出现、消失没有过渡。
-private struct FileControlsLayout: Layout {
-    let spacing: CGFloat
-
-    struct Trailing: LayoutValueKey { static let defaultValue = false }
-    struct Fills: LayoutValueKey { static let defaultValue = false }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        let rows = rows(subviews, sizes: sizes, width: proposal.width)
-        let natural = rows.map { width(of: $0, sizes: sizes) }.max() ?? 0
-        let height = rows.map { row in row.map { sizes[$0].height }.max() ?? 0 }.reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
-        return CGSize(width: proposal.width ?? natural, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        var y = bounds.minY
-        for row in rows(subviews, sizes: sizes, width: bounds.width) {
-            let height = row.map { sizes[$0].height }.max() ?? 0
-            let free = max(bounds.width - width(of: row, sizes: sizes), 0)
-            // 空着的视图（比如这时没有按钮的一组）也摆上，免得里面正在消失的按钮跳到别处；只是不占间距
-            var x = bounds.minX
-            for index in row where !subviews[index][Trailing.self] {
-                let width = sizes[index].width + (subviews[index][Fills.self] ? free : 0)
-                subviews[index].place(at: CGPoint(x: x, y: y + (height - sizes[index].height) / 2),
-                                      proposal: ProposedViewSize(width: width, height: sizes[index].height))
-                if width > 0 { x += width + spacing }
-            }
-            var right = bounds.maxX
-            for index in row.reversed() where subviews[index][Trailing.self] {
-                right -= sizes[index].width
-                subviews[index].place(at: CGPoint(x: right, y: y + (height - sizes[index].height) / 2), proposal: ProposedViewSize(sizes[index]))
-                if sizes[index].width > 0 { right -= spacing }
-            }
-            y += height + spacing
-        }
-    }
-
-    /// 一行放得下（伸满的按自己的宽算）就一行，否则前后各一行。
-    private func rows(_ subviews: Subviews, sizes: [CGSize], width: CGFloat?) -> [[Int]] {
-        let all = Array(subviews.indices)
-        guard let width, self.width(of: all, sizes: sizes) > width else { return [all] }
-        return [all.filter { !subviews[$0][Trailing.self] }, all.filter { subviews[$0][Trailing.self] }].filter { !$0.isEmpty }
-    }
-
-    private func width(of row: [Int], sizes: [CGSize]) -> CGFloat {
-        let widths = row.map { sizes[$0].width }.filter { $0 > 0 }
-        return widths.reduce(0, +) + spacing * CGFloat(max(widths.count - 1, 0))
     }
 }

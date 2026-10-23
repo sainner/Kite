@@ -1,12 +1,14 @@
 /**
- * 快照引用、历史查找和工作树回退。
+ * 快照引用、历史查找、文件的历史版本和工作树回退。
  */
 import { expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KiteError } from '../../src/errors.ts';
+import { fileHistory, readVersion, type FileVersion } from '../../src/workspace/file-versions.ts';
+import { WorkspaceFiles } from '../../src/workspace/files.ts';
 import { capture, changesBetween, findSnapshot, list, restore, SNAPSHOT_FILE_LIMIT } from '../../src/workspace/snapshots.ts';
-import { git, gitWorktree, lexists, listTree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
+import { commitAll, git, gitWorktree, lexists, listTree, newRepo, read, repoState, useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
 
@@ -144,6 +146,93 @@ test('回退拒绝覆盖忽略文件或含忽略内容的目录，保留工作�
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message.toLowerCase()).toContain(fixture.path.toLowerCase());
   }
+});
+
+/*
+ * 文件的历史版本靠几条 git 命令合起来，看代码确认不了：带路径过滤的 `git log --first-parent --diff-merges=first-parent --raw`
+ * 遇到 agent 自己提交过的那枚快照（第一父节点是上一枚快照，第二父节点是当时的 HEAD，这个文件在里面已经是新内容）时，
+ * 路径过滤的历史简化不能顺着第二父节点岔进项目历史、漏掉这一版或提前停下，--raw 要按第一父节点给出这枚合并的状态行；
+ * 第一枚快照的第一父节点是项目当时的 HEAD，项目历史里改过、删过这个文件的提交要拦在工作区之外；删掉文件的那枚不列；
+ * 中文带空格的路径在 --raw 里默认会被加引号转义；current 用 hash-object 比工作区里现在的内容。
+ */
+test('文件的历史版本只列这个文件内容变过的快照，跨过 agent 提交挂上的第二父节点、不列删掉的那枚、不进项目历史，current 只在现在的内容等于最新一版时给出', async () => {
+  const root = temp();
+  const path = 'docs/说明 文档.md';
+  // 项目历史里建过又删掉这个文件：第一枚快照沿第一父节点接到这两个提交上
+  const main = newRepo(root, 'main', { [path]: '项目里的旧版\n', 'other.txt': 'o0\n' }, null);
+  rmSync(join(main, path));
+  commitAll(main, '项目删掉说明');
+  const id = 'fv';
+  const wt = gitWorktree(main, join(root, 'wt'), `kite/${id}`);
+  const files = new WorkspaceFiles(wt);
+
+  await capture(wt, id, '工作区开始');
+  writeFiles(wt, { [path]: '第一版\n' });
+  const createdRead = files.read({ path });
+  const created = await capture(wt, id, '新建说明', [], 'thread-a');
+  writeFiles(wt, { 'other.txt': 'o1 只改了别的文件\n' });
+  await capture(wt, id, '只改别的文件');
+  // agent 自己把第二版提交了：这枚快照的第二父节点是这个提交，这个文件和它相同、和第一父节点不同
+  writeFiles(wt, { [path]: '第二版\n第二行\n第三行\n' });
+  const committedRead = files.read({ path, offset: 2, limit: 1 });
+  commitAll(wt, 'agent 自己提交');
+  const committed = await capture(wt, id, 'agent 提交之后', [], 'thread-b');
+  expect(git(main, 'rev-list', '--parents', '-n1', committed.commit).split(' ')).toHaveLength(3);
+  writeFiles(wt, { [path]: '第三版改短\n' });
+  const edited = await capture(wt, id, '再改一次');
+
+  const snaps = await list(main, id);
+  const at = (commit: string) => snaps.find((s) => s.commit === commit)!.at;
+  const versions: FileVersion[] = [
+    { commit: edited.commit, at: at(edited.commit), label: '再改一次' },
+    { commit: committed.commit, at: at(committed.commit), label: 'agent 提交之后', threadId: 'thread-b' },
+    { commit: created.commit, at: at(created.commit), label: '新建说明', threadId: 'thread-a' },
+  ];
+  expect(await fileHistory(files, id, path)).toEqual({ versions, current: edited.commit, truncated: false });
+  expect(await readVersion(files, id, { path, version: created.commit })).toEqual(createdRead);
+  expect(await readVersion(files, id, { path, version: committed.commit, offset: 2, limit: 1 })).toEqual(committedRead);
+
+  // 改脏后现在的内容不等于任何一版
+  writeFiles(wt, { [path]: '第三版之后还没进快照的改动\n' });
+  expect(await fileHistory(files, id, path)).toEqual({ versions, current: null, truncated: false });
+
+  // 删掉文件的那枚快照不是一个版本，更早的版本照样列出
+  rmSync(join(wt, path));
+  const removed = await capture(wt, id, '删掉说明');
+  expect(removed.created).toBe(true);
+  expect(await fileHistory(files, id, path)).toEqual({ versions, current: null, truncated: false });
+});
+
+/*
+ * 工作区开始前就在项目里的文件，看代码确认不了 git log 在链的尽头给出什么：第一枚快照的第一父节点是项目的 HEAD，
+ * 文件在里面和 HEAD 相同时路径过滤不列这一枚，只能靠走到链外的那一条（项目里加这个文件的提交）补上第一枚快照作最早一版；
+ * 开始时已有没提交的改动的，第一枚快照本身就被路径过滤列出，接着同样走到链外那一条，不能再补一次。
+ */
+test('工作区开始前就在项目里的文件以第一枚快照作最早一版、读出开始时的内容，第一枚快照本身改过它时只列一次', async () => {
+  const root = temp();
+  const clean = '项目/原有 说明.md';
+  const dirty = '项目/开始前已改.md';
+  const main = newRepo(root, 'main', { [clean]: '项目里原来的内容\n', [dirty]: '已提交的内容\n' }, null);
+  writeFiles(main, { [dirty]: '开始前没提交的改动\n' });
+  const id = 'fv-start';
+  const files = new WorkspaceFiles(main);
+  const cleanRead = files.read({ path: clean });
+  const dirtyRead = files.read({ path: dirty });
+  const first = await capture(main, id, '工作区开始');
+  writeFiles(main, { [clean]: '工作区里改过\n', [dirty]: '工作区里又改了一次\n' });
+  const edited = await capture(main, id, '改两个文件', [], 'thread-a');
+
+  const snaps = await list(main, id);
+  const at = (commit: string) => snaps.find((s) => s.commit === commit)!.at;
+  const versions: FileVersion[] = [
+    { commit: edited.commit, at: at(edited.commit), label: '改两个文件', threadId: 'thread-a' },
+    { commit: first.commit, at: at(first.commit), label: '工作区开始' },
+  ];
+  for (const path of [clean, dirty]) {
+    expect([path, await fileHistory(files, id, path)]).toEqual([path, { versions, current: edited.commit, truncated: false }]);
+  }
+  expect(await readVersion(files, id, { path: clean, version: first.commit })).toEqual(cleanRead);
+  expect(await readVersion(files, id, { path: dirty, version: first.commit })).toEqual(dirtyRead);
 });
 
 /*

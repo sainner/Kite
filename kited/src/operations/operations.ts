@@ -17,6 +17,7 @@ import type { Previews } from '../preview/previews.ts';
 import { playwrightKey } from '../preview/screen.ts';
 import { previewDefinitionId } from '../preview/state.ts';
 import { WorkspaceFiles, fileSelection } from '../workspace/files.ts';
+import { fileHistory, readVersion } from '../workspace/file-versions.ts';
 import { assertFileAccess, hostPrivatePaths } from '../execution/sandbox.ts';
 import { instanceAgent } from '../agents/definition.ts';
 import { defaultRoleId, instanceRole } from '../roles.ts';
@@ -347,12 +348,17 @@ export class InstanceOperations {
       case 'files.select': return this.kite.selectFile(args as OperationInput<'files.select'>, check);
       case 'files.list':
       case 'files.search':
+      case 'files.history':
       case 'files.read': {
         try {
           const files = new WorkspaceFiles(this.kite.workspace(workspaceId).workspace.cwd);
           if (name === 'files.search') return await files.search(args.query as string, args.limit as number);
-          return name === 'files.list' ? files.list(args.path as string, args.offset as number, args.limit as number)
-            : files.read(args as OperationInput<'files.read'>);
+          if (name === 'files.history') return await fileHistory(files, workspaceId, args.path as string);
+          if (name === 'files.read') {
+            const input = args as OperationInput<'files.read'>;
+            return input.version ? await readVersion(files, workspaceId, { ...input, version: input.version }) : files.read(input);
+          }
+          return files.list(args.path as string, args.offset as number, args.limit as number);
         } catch (error) {
           if (error instanceof KiteError) throw error;
           throw new KiteError(`读取文件失败：${error instanceof Error ? error.message : String(error)}`);

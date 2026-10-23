@@ -64,6 +64,7 @@ import { Attention } from './line/attention.ts';
 import { setupLogPath, userHome, worktreePath } from './paths.ts';
 import type { Network } from './network.ts';
 import { WorkspaceFiles, fileSelection, type Page } from './workspace/files.ts';
+import { assertVersion } from './workspace/file-versions.ts';
 import { TranscriptFeed } from './transcript/feed.ts';
 import { TranscriptHistory } from './transcript/history.ts';
 import type { DisplayState, History, ThreadActivity } from './transcript/protocol.ts';
@@ -1394,16 +1395,20 @@ export class Kite {
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (fileSelection(current.state).revision !== input.expectedRevision) throw new KiteError('所选内容已变化，请刷新后重试', 409);
       const state = input.port !== undefined ? this.pageSelection(current.workspaceId, { port: input.port })
-        : input.url !== undefined ? this.pageSelection(current.workspaceId, { url: input.url }) : this.chooseFile(workspace, input);
+        : input.url !== undefined ? this.pageSelection(current.workspaceId, { url: input.url }) : await this.chooseFile(workspace, input);
       this.store.setInstanceState(current.id, state);
       this.changed(current.workspaceId);
       return state;
     });
   }
 
-  /** 浏览选一个文件：工作区内的普通文件，带 diffId 时须属于那份历史差异；path 为 null 是清除。 */
-  private chooseFile(workspace: Workspace, input: OperationInput<'files.select'>) {
+  /**
+   * 浏览选一个文件：工作区内的普通文件；带 diffId 时须属于那份历史差异，带 version 时须在本工作区的那枚快照里，
+   * 这两种都不要求当前文件仍存在。path 为 null 是清除。
+   */
+  private async chooseFile(workspace: Workspace, input: OperationInput<'files.select'>) {
     let path: string | null = null;
+    let version: string | undefined;
     if (input.path !== null) {
       try {
         const files = new WorkspaceFiles(workspace.cwd);
@@ -1412,6 +1417,9 @@ export class Kite {
         if (input.diffId) {
           const diff = new FileDiffStore(join(this.home, 'diffs', workspace.id)).read(input.diffId);
           if (!diff.files.some((file) => file.path === path)) throw new KiteError('这份差异中没有指定文件', 404);
+        } else if (input.version) {
+          await assertVersion(files, workspace.id, path, input.version);
+          version = input.version;
         } else files.regular(target);
       }
       catch (error) {
@@ -1419,7 +1427,7 @@ export class Kite {
         throw new KiteError(`无法选择文件：${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    return { path, revision: randomUUID(), ...(path && input.diffId ? { diffId: input.diffId } : {}) };
+    return { path, revision: randomUUID(), ...(path && input.diffId ? { diffId: input.diffId } : {}), ...(path && version ? { version } : {}) };
   }
 
   /** 浏览选一个网页时的状态：端口须是本工作区运行中终端或预览此刻监听的；服务停了选择保留，同一端口再被监听时接着显示。 */

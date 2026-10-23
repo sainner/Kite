@@ -472,12 +472,13 @@ struct WebControls<Content: View>: View {
 }
 
 /// 地址栏里的路径（浏览里是整个地址）：平时跟着页面显示当前路径，打字时不被页面的跳转改掉；回车打开，没打开就离开（Mac 上按 Esc 也是）回到当前路径。
-/// reset 变了（清除输入）也回到当前路径，接着打字。
+/// reset 变了（清除输入）也回到当前路径，接着打字。centered 时不打字的时候地址居中（浏览）。
 struct WebPathField: View {
     let path: String
     let typing: FocusState<Bool>.Binding
     var reset = 0
     var prompt = "/"
+    var centered = false
     let open: (String) -> Void
     @State private var text = ""
     /// 刚按回车打开：留着输入的路径等页面跳过去，不先退回旧路径。
@@ -488,6 +489,7 @@ struct WebPathField: View {
             .textFieldStyle(.plain)
             .font(Theme.body)
             .foregroundStyle(.primary)
+            .multilineTextAlignment(centered && !typing.wrappedValue ? .center : .leading)
             .frame(maxWidth: .infinity)
             .frame(height: Metrics.paneHeaderButton)
             .autocorrectionDisabled()
@@ -514,7 +516,7 @@ struct WebPathField: View {
     }
 }
 
-/// 设备自己的网页视图的控制区，预览的网页画面与浏览共用：左边后退、前进、首页，中间地址栏（由窗口给），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
+/// 预览的网页画面的控制区（设备自己的网页视图）：左边后退、前进、首页，中间地址栏（由窗口给），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
 /// 窄排（narrowPane）时左边只有后退，有下一页时才出现前进；首页和右边这组合成地址栏最右边的菜单（WebPageMenu，由地址栏放），和最前面的站点图标对称。
 /// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替右边这组（窄排时顶替菜单），点了地址回到打字前的样子、接着打字。
 struct WebPageControls<Address: View>: View {
@@ -566,7 +568,7 @@ struct WebPageControls<Address: View>: View {
     }
 }
 
-/// 窄排时地址栏最右边的菜单：首页、重新加载，Mac 上还有开发者工具、在浏览器中打开。宽排时这些是控制区里的按钮，见 WebPageControls。
+/// 地址栏最右边的菜单：首页、重新加载，Mac 上还有开发者工具、在浏览器中打开。浏览一直用它；预览的网页画面窄排时用，宽排时这些是控制区里的按钮，见 WebPageControls。
 /// 在地址栏里打字、键盘升起时换成清除输入。
 struct WebPageMenu: View {
     let browser: WebBrowser

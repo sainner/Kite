@@ -25,6 +25,7 @@ import { previewSpecSchema } from './preview/state.ts';
 import { approvalModes } from './execution/grants.ts';
 import { hostDirectory, pageSchema, WorkspaceFiles } from './workspace/files.ts';
 import { fileContent } from './workspace/file-content.ts';
+import { versionContent } from './workspace/file-versions.ts';
 import { HANDOVER_NEEDS } from './environment.ts';
 import type { Payload } from './update/updates.ts';
 
@@ -235,11 +236,15 @@ export function serve(kite: Kite, listen: Listen) {
     kite.previews.check(req.params.id);
     return { kind: 'preview', instanceId: req.params.id, ...previewParams(new URL(req.url).searchParams) };
   }, '预览需要 WebSocket 连接');
-  /** 查看器按字节读取工作区文件，边界与文件操作相同；见 workspace/file-content.ts。 */
+  /** 查看器按字节读取工作区文件，边界与文件操作相同；带 version 时读那一个历史版本。见 workspace/file-content.ts、file-versions.ts。 */
   const workspaceFile = (req: Request & { params: { id: string } }) => {
     const workspace = kite.store.workspace(req.params.id);
     if (!workspace) throw new KiteError(`没有这个工作区：${req.params.id}`, 404);
-    return fileContent(req, new WorkspaceFiles(workspace.cwd), str(new URL(req.url).searchParams.get('path'), 'path'));
+    const params = new URL(req.url).searchParams;
+    const files = new WorkspaceFiles(workspace.cwd);
+    const path = str(params.get('path'), 'path');
+    const version = params.get('version');
+    return version === null ? fileContent(req, files, path) : versionContent(req, files, workspace.id, path, version);
   };
   /** 附件的原件（组网上的 App 按段取），或 size 给出长边的图片缩略图；同一个附件 ID 的内容不会变。 */
   const attachmentContent = async (req: Request & { params: { id: string; attachment: string } }) => {
