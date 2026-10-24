@@ -83,6 +83,7 @@ extension View {
 
 #if os(iOS)
 /// iOS 上颜色偏好设在所在窗口的 overrideUserInterfaceStyle 上，UIKit 往下传给窗口里的原生视图、各个托管视图和弹出的页面。
+/// 窗口的根视图同时固定不随弹出层调暗，见 didMoveToWindow。
 private struct WindowInterfaceStyle: UIViewRepresentable {
     let style: UIUserInterfaceStyle
 
@@ -97,6 +98,10 @@ private struct WindowInterfaceStyle: UIViewRepresentable {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            // 弹出提醒、气泡时 UIKit 把根视图的 tint 调成 0.8 透明度的灰，SwiftUI 的主题色跟着变灰；台面、紧凑外壳抄给原生层和各岛的环境
+            // 停在那时的灰色，弹出层关了也不回来（2026-10-24 iPhone 的用户气泡、用户头像发灰）。显式设成 normal，UIKit 就不再调暗它
+            // （Catalyst 小程序验证过：不设时弹出提醒后根视图变成 dimmed，设了以后主题色一直不变）。
+            window?.rootViewController?.view.tintAdjustmentMode = .normal
             apply()
         }
 
