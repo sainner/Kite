@@ -32,6 +32,7 @@ nonisolated struct OperationGrant: Codable, Equatable, Sendable {
     var tools: [String]? = nil
 }
 
+/// 一份协作授权和它的版本：实例的与 Bun 插件定义级的同形。
 nonisolated struct InstanceGrants: Codable, Equatable, Sendable {
     let revision: String
     var grants: [OperationGrant]

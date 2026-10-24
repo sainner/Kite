@@ -1,7 +1,8 @@
 /**
- * 资源库（角色、上下文模板、点阵签名、插件包、skill）与项目约束是账号级数据（account-data/），写入先进账号级数据，再更新本机缓存；
- * 读取一律用缓存。账号级数据有变化（本机写入或从其他工作机同步来）就把缓存对一遍：角色与模板以账号级数据为准，
- * 那里没有的从缓存去掉，内置的退回默认；skill 的缓存就是数据目录里的文件夹；本机有、那里没有的点阵签名与插件包补写进去。
+ * 资源库（角色、上下文模板、点阵签名、插件包与 Bun 插件的定义级授权、skill）与项目约束是账号级数据（account-data/），
+ * 写入先进账号级数据，再更新本机缓存；读取一律用缓存，定义级授权例外，直接读账号级数据。账号级数据有变化（本机写入或从其他工作机同步来）
+ * 就把缓存对一遍：角色与模板以账号级数据为准，那里没有的从缓存去掉，内置的退回默认；skill 的缓存就是数据目录里的文件夹；
+ * 本机有、那里没有的点阵签名与插件包补写进去。
  * 对完后按客户端读取的目录（LibraryList）报出哪几类变了，由宿主推 library.changed。
  */
 import type { ContextTemplates } from './context-templates.ts';
@@ -14,10 +15,13 @@ import type { AccountData, EntryKind, Item } from './account-data/store.ts';
 import type { ProjectRegistry } from './account-data/registry.ts';
 import type { ProjectExecution } from './execution/grants.ts';
 
-export type LibraryKind = Extract<EntryKind, 'role' | 'template' | 'emblem' | 'plugin' | 'skill'>;
-/** 客户端按类读取的资源库目录，library.changed 事件的 kind：角色列表带着点阵签名，签名变了也算 role。 */
-export type LibraryList = Extract<LibraryKind, 'role' | 'template' | 'skill'>;
-const synced = new Set<EntryKind>(['role', 'template', 'emblem', 'plugin', 'skill', 'constraints']);
+export type LibraryKind = Extract<EntryKind, 'role' | 'template' | 'emblem' | 'plugin' | 'plugin-grants' | 'skill'>;
+/**
+ * 客户端按类读取的资源库目录，library.changed 事件的 kind：角色列表带着点阵签名，签名变了也算 role；
+ * plugin 目前只报 Bun 插件定义级授权的变化。
+ */
+export type LibraryList = Extract<LibraryKind, 'role' | 'template' | 'skill' | 'plugin'>;
+const synced = new Set<EntryKind>(['role', 'template', 'emblem', 'plugin', 'plugin-grants', 'skill', 'constraints']);
 
 /** lists 是缓存有变化的目录；constraints 列出约束变了的项目及变化前的规则。 */
 export interface LibraryChanges { lists: Set<LibraryList>; constraints: Array<{ projectId: string; before?: { tools?: ProjectToolRule; execution?: ProjectExecution } }> }
@@ -25,6 +29,8 @@ export interface LibraryChanges { lists: Set<LibraryList>; constraints: Array<{ 
 export class LibrarySync {
   private scheduled = false;
   private unsubscribe?: () => void;
+  /** 上次对缓存时账号里各插件包与定义级授权的版本；定义级授权不另存缓存，用时直接读账号级数据，这里只为报出变化。 */
+  private plugins?: string;
 
   constructor(private deps: {
     data: AccountData; registry: ProjectRegistry; store: Store; roles: Roles; templates: ContextTemplates; catalog: PluginCatalog; skills: Skills;
@@ -101,6 +107,10 @@ export class LibrarySync {
     const accountPlugins = items('plugin', ['bundle']);
     catalog.setRemote([...accountPlugins.values()].map((item) => ({ meta: item.body, revision: item.revision })));
     for (const id of catalog.installedIds()) if (!accountPlugins.has(id)) this.write('plugin', id, catalog.package(id), null);
+    const plugins = JSON.stringify([[...accountPlugins.values()].map((item) => [item.id, item.revision]),
+      data.list('plugin-grants').map((item) => [item.id, item.revision])]);
+    if (this.plugins !== undefined && plugins !== this.plugins) changes.lists.add('plugin');
+    this.plugins = plugins;
 
     for (const project of store.projects()) {
       let value;

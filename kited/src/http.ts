@@ -498,6 +498,15 @@ export function serve(kite: Kite, listen: Listen) {
         const b = await body(req);
         return kite.emblems.generate(req.params.id, b.force === true);
       }) },
+      // Bun 插件定义级的协作授权，以后新建的实例拷它。
+      '/plugins/:id/grants': {
+        GET: bound((req) => kite.pluginGrants(req.params.id)),
+        PUT: bound(async (req) => {
+          const parsed = z.object({ expectedRevision: z.string().min(1), grants: z.unknown() }).strict().safeParse(await body(req));
+          if (!parsed.success) throw new KiteError('授权修改请求无效');
+          return kite.configurePluginGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
+        }),
+      },
       '/workspaces/:id/plugin-instances': { POST: bound(async (req) => {
         const parsed = z.object({ id: z.uuid(), definitionId: z.string().min(1), title: z.string().trim().min(1).optional() }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('插件实例请求无效');

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 窗口按所属工作机取得连接提示：工作区窗口属于工作区的工作机，账号窗口属于正在查看的工作机，代理上下文窗口属于当前工作机。
+/// 窗口按所属工作机取得连接提示：工作区窗口属于工作区的工作机，账号窗口属于正在查看的工作机，代理上下文、Skill 与插件窗口属于当前工作机。
 /// 凭据经任一台连着的工作机读写，不属于哪一台，没有连接提示。
 struct PaneBody: View {
     let group: PaneGroup
@@ -22,6 +22,9 @@ struct PaneBody: View {
                     .environment(\.paneConnectionNotice, model.connectionNotice(model.activeConnection))
             case .skill(let name, _):
                 SkillPane(name: name)
+                    .environment(\.paneConnectionNotice, model.connectionNotice(model.activeConnection))
+            case .plugin(let item, _):
+                PluginLibraryPane(item: item)
                     .environment(\.paneConnectionNotice, model.connectionNotice(model.activeConnection))
             case .credentials:
                 CredentialPane(pane: pane)

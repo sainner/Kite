@@ -442,23 +442,19 @@ export class HarnessRunner implements ThreadRunner {
       if (tools.has(tool.name)) throw new Error(`工具名重复：${tool.name}`);
       tools.set(tool.name, tool);
     }
-    const definitions = this.history.toolDefinitions ?? prepared.toolDefinitions
-      ?? prepared.tools.filter((tool) => !tool.deferred).map(({ name, description, parameters }) => ({ name, description, parameters }));
-    const declarations = new Map<string, ToolDefinition>();
-    for (const definition of definitions) if (!declarations.has(definition.name)) declarations.set(definition.name, definition);
-    // 按需加载的要在当前上下文里加载过；定义变了的调用时拒绝，让模型重新加载。
+    // 声明跟着本次可执行的内置工具走：新打开的补在后面，定义变了的换成新的；关掉的留在原位，调用时拒绝，关工具不改动声明。
+    const current = new Map(prepared.tools.filter((tool) => !tool.deferred)
+      .map(({ name, description, parameters }) => [name, { name, description, parameters }] as const));
+    const previous = this.history.toolDefinitions ?? [];
+    const definitions = [...previous.map((definition) => current.get(definition.name) ?? definition),
+      ...[...current.values()].filter((definition) => !previous.some((old) => old.name === definition.name))];
+    // 按需加载的定义在历史里，换不掉：要在当前上下文里加载过；定义变了的调用时拒绝，让模型重新加载。
     const loaded = prepared.tools.some((tool) => tool.deferred) ? loadedDefinitions(this.history.itemsView()) : new Map<string, ToolDefinition>();
     for (const tool of tools.values()) {
-      if (tool.deferred) {
-        const definition = loaded.get(tool.name);
-        if (!definition) tools.delete(tool.name);
-        else if (!sameDefinition(definition, tool)) tools.set(tool.name, staleTool(tool));
-        continue;
-      }
-      const declared = declarations.get(tool.name);
-      if (!declared || !sameDefinition(declared, tool)) {
-        throw new Error(`工具 ${tool.name} 未声明或定义已变化，请新建会话使用新的工具定义`);
-      }
+      if (!tool.deferred) continue;
+      const definition = loaded.get(tool.name);
+      if (!definition) tools.delete(tool.name);
+      else if (!sameDefinition(definition, tool)) tools.set(tool.name, staleTool(tool));
     }
     return { context, tools, configuration: requestSnapshot({ ...prepared.settings, allowedTools: [...tools.keys()] }, definitions) };
   }
@@ -528,7 +524,7 @@ export class HarnessRunner implements ThreadRunner {
       configurationId: configuration.id, notifications });
     this.history.baseInstructions ??= context.instructions;
     this.history.currentInstructions = context.instructions;
-    this.history.toolDefinitions ??= structuredClone(configuration.tools);
+    this.history.toolDefinitions = structuredClone(configuration.tools);
     const saved = this.history.requests.get(requestId)!;
     let needsFollowUp = false;
     let failure: { error: unknown } | undefined;

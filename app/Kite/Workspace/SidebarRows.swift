@@ -214,7 +214,7 @@ struct SidebarListLabel: View {
     }
 }
 
-/// 一级行下再分一层的小标题：圆点加名称，所在组有选中项时突出；加号像其他行尾操作一样跟随选中与悬停，触屏上不显示。
+/// 一级行下再分一层的小标题：圆点加名称，所在组有选中项时突出；加号像其他行尾操作一样跟随选中与悬停，触屏上常驻。
 /// 项目一栏里项目下的检出与资源库里代理上下文的分类共用。
 struct SidebarSubheader: View {
     let title: String
@@ -231,7 +231,7 @@ struct SidebarSubheader: View {
     var body: some View {
         HStack(spacing: 8) {
             label
-            if let add, !InputMode.current.isTouch {
+            if let add {
                 Button(action: add.action) {
                     TablerIcon(.tablerPlus)
                 }

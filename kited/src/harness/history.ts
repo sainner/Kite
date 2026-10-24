@@ -109,7 +109,7 @@ export class HarnessHistory {
     if (first && last) {
       const base = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === first.contextId);
       const current = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === last.contextId);
-      const configuration = records.find((row) => row.type === 'request.configured' && row.snapshot.id === first.configurationId);
+      const configuration = records.find((row) => row.type === 'request.configured' && row.snapshot.id === last.configurationId);
       if (base?.type === 'context.prepared') this.baseInstructions = restoreContext(base.snapshot).instructions;
       if (current?.type === 'context.prepared') this.currentInstructions = restoreContext(current.snapshot).instructions;
       if (configuration?.type === 'request.configured') this.toolDefinitions = structuredClone(configuration.snapshot.tools);

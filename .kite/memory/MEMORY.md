@@ -5,7 +5,7 @@
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [代码编辑选型](code-editor-direction.md) — TextKit 2 加 tree-sitter、生成段落时上色、折行；没选 CodeMirror 等的理由，验证记录入口
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
-- [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，SwiftUI 菜单与 UIKit（Catalyst）小程序验证，simctl 不再用，现场采集别挂调试器，真机点按记录与崩溃报告
+- [界面事件诊断](ui-hit-testing-debugging.md) — 合成输入与命中证据的限制，光标探针，SwiftUI 菜单（交互玻璃让子菜单收起）与 Catalyst 小程序验证，simctl 不再用，现场采集与崩溃报告
 - [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打高度或片段坐标、沿视图链打裁剪；log 写全路径；外层蒙版会裁；逐帧错位在提交后核对；iPhone 动画真机逐帧截图；探针按块删
 - [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断、UIKit 透明度坑，Mac 结论不外推到 iPhone
 - [性能测量用的会话数据](perf-fixture-main-agents.md) — 两个主代理的完整历史存在 fixtures、不进 Git，各压缩两次；工作机清数据后回放用
@@ -15,17 +15,17 @@
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的 ORICO 外置盘，10-22 已接上；按工作机上的普通目录处理
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
-- [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用外置硬盘 ORICO
+- [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用 ORICO；数据目录搬家后旧工作区 Git 指针要改真实路径
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
 
 ## 协作反馈
 
-- [界面工作与验收](feedback-ui-workflow.md) — 方案、目标定位、连续推进、失灵诊断不靠猜、真机验收和工具链选择；改完直接开 Debug 预览、微调不跑检查，自己开的 Kite 用完就关
-- [交互连续性](feedback-interaction-quality.md) — 公共控件（报一处按类修全）、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏长按起拖、标题栏无右键菜单
+- [界面工作与验收](feedback-ui-workflow.md) — 方案、连续推进、失灵诊断不靠猜、真机验收；改完开 Debug 预览（先对 kited 版本）、自动操作前说清，自己开的 Kite 用完就关
+- [交互连续性](feedback-interaction-quality.md) — 公共控件（报一处按类修全）、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；上一步与固定；触屏上悬停按钮常驻、长按起拖、标题栏无右键菜单
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区，副行只放 description；为空画点阵图案配文字；弹窗副行说清做什么、状态写正文
 - [测试要克制](test-restraint.md) — 测试准入主来源；改设计只删旧断言、不改写、不给新功能补测试；事件断言与 PDF
 - [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问；认可了具体方案就算已决定
-- [讲方案说大白话](feedback-plain-explanations.md) — 先讲现状、解释工程术语、一次问一件事，流程选择给自动默认值
+- [讲方案说大白话](feedback-plain-explanations.md) — 先讲现状和运行时谁做了什么、配小例子，解释术语、一次问一件事，流程选择给默认值
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
 - [旧数据出错就删](feedback-stale-data.md) — 旧数据读不了就删、不兼容；方案取舍不把已有会话角色对不上当代价；删前确认

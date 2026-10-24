@@ -237,6 +237,55 @@ test('A 建、改的角色同步到 B 后是同一版本，B 用同步前的版�
   expect(instance.config.packageRevision).toBe(installed.body.revision);
 }, 1000);
 
+// Bun 插件的定义级授权是账号级数据（kind 'plugin-grants'）：A 改了以后 B 经长轮询拉到、对完缓存推 kind 为 plugin 的 library.changed，
+// B 读到同一份、同一版本；B 新建这个插件的实例时拷的是同步来的这份。之后 A 再改，B 对缓存时不能连已有实例的授权一起改。
+// 要同步链路、LibrarySync 的刷新与事件、实例创建时读定义级合起来才看得出。
+test('A 改的插件定义级授权同步到 B 后两边都推 plugin 目录变化、B 读到同一版本，B 新建的实例拷到这份；A 再改并同步到 B 后 B 上已有实例的授权不变', async () => {
+  const a = startKited();
+  const b = startKited();
+  kiteds.push(a, b);
+  await connect(a, b);
+  const pack = { id: 'custom.grants', title: '授权插件', lifetime: 'persistent', bundle: 'export const marker = 1;', views: [] };
+  expect((await a.call('POST', '/plugin-definitions', pack)).status).toBe(200);
+  await synced(b, () => b.daemon.kite.accountData.get('plugin', pack.id), 'B 同步到 A 导入的插件');
+  const path = `/plugins/${pack.id}/grants`;
+  const initial = await a.call('GET', path);
+  expect(initial.body.grants).toEqual([]);
+
+  const grants = [
+    { operation: 'agent.start', roleIds: ['kite.work'] },
+    { operation: 'agent.list', targets: { kind: 'workspace' } },
+    { operation: 'monitor.start' },
+  ];
+  const [sinceA, sinceB] = [mark(a), mark(b)];
+  const saved = await a.call('PUT', path, { expectedRevision: initial.body.revision, grants });
+  expect(saved.status).toBe(200);
+  expect(saved.body.grants).toEqual(grants);
+  /** k 在 since 之后推了 plugin 目录变化，且推的时候账号级数据里的定义级授权已满足 check。 */
+  const pluginChanged = (k: Kited, since: number, check: () => boolean) => k.waitEvent((event) =>
+    event.type === 'library.changed' && event.kind === 'plugin' && after(k, since)(event) && check());
+  const kept = (k: Kited) => k.daemon.kite.accountData.get('plugin-grants', pack.id);
+  await Promise.all([pluginChanged(a, sinceA, () => true), pluginChanged(b, sinceB, () => kept(b) !== undefined)]);
+  expect((await b.call('GET', path)).body).toEqual(saved.body);
+
+  const workspace = await folderWorkspace(b, newDir(b.root, 'project', { 'a.txt': 'A\n' }));
+  const instanceId = crypto.randomUUID();
+  expect((await b.call('POST', `/workspaces/${workspace.workspace.id}/plugin-instances`, {
+    id: instanceId, definitionId: pack.id,
+  })).status).toBe(200);
+  const instanceGrants = async () => (await b.call('GET', `/instances/${instanceId}/operation-grants`)).body.grants;
+  expect(await instanceGrants()).toEqual(grants);
+
+  const narrowed = [{ operation: 'monitor.start' }];
+  const again = mark(b);
+  const before = kept(b)!.revision;
+  const changed = await a.call('PUT', path, { expectedRevision: saved.body.revision, grants: narrowed });
+  expect(changed.status).toBe(200);
+  await pluginChanged(b, again, () => kept(b)?.revision !== before);
+  expect((await b.call('GET', path)).body).toEqual(changed.body);
+  expect(await instanceGrants()).toEqual(grants);
+}, 1000);
+
 // 恢复默认在账号级数据里是删除：删除带的 expectedRevision 是按本机缓存算的版本，须与账号级数据里的对上才删得掉；
 // 模板把内容原样改回默认也是删除，不留一份等于默认的副本。删除同步到 B 后，B 对缓存时发现没有这一条，
 // 要从缓存去掉、退回内置默认；B 再用删掉前的版本保存要被拒，不能当新建写进去。

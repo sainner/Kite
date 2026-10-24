@@ -388,6 +388,34 @@ export function callerDenied(name: OperationName, kind: OperationCaller['kind'])
   return grantShapes.has(name) ? undefined : '此操作未向插件开放';
 }
 
+/**
+ * Bun 插件定义级授权不收这一项时给出说明：定义级是以后新建的实例的起点，要对准具体实例的只能在实例上授予；
+ * 插件调不了的（Line 的管理动作不是操作）也不收。
+ */
+export function definitionGrantDenied(grant: OperationGrant): string | undefined {
+  if (!Object.hasOwn(operationContracts, grant.operation)) return '插件调不了这项操作';
+  const denied = callerDenied(grant.operation as OperationName, 'plugin');
+  if (denied) return denied;
+  if (grant.operation === 'plugin.call') return '插件工具要对准具体实例，只能在实例上授予';
+  if ('targets' in grant && grant.targets.kind === 'instances') return '目标列的是具体实例，只能在实例上授予';
+  return undefined;
+}
+
+/**
+ * 账号级数据里存的定义级授权：grants 是这一版认得、定义级收的项；unused 是其余的原样，多是新版本才有的操作，
+ * 保存时带回去，在旧版上改授权不丢新版写的项。读不出列表时为空。
+ */
+export function storedDefinitionGrants(body: Record<string, unknown> | undefined): { grants: OperationGrant[]; unused: unknown[] } {
+  const grants: OperationGrant[] = [];
+  const unused: unknown[] = [];
+  for (const raw of Array.isArray(body?.grants) ? body.grants as unknown[] : []) {
+    const parsed = operationGrantsSchema.element.safeParse(raw);
+    if (parsed.success && !definitionGrantDenied(parsed.data)) grants.push(parsed.data);
+    else unused.push(raw);
+  }
+  return { grants, unused };
+}
+
 export function operationCatalog() {
   return Object.entries(operationContracts).map(([name, contract]) => ({
     name, title: contract.title, description: contract.description, effect: contract.effect, retry: contract.retry,

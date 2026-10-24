@@ -131,9 +131,8 @@ export interface RequestSnapshot {
 
 export interface HarnessRequest {
   model: Model;
+  /** 本次可执行的工具。内置的同时就是声明，关掉的仍留在声明里；按需加载的在当前上下文里加载过且定义未变才执行。 */
   tools: Tool[];
-  /** 声明目录在首次请求固定；tools 是本次实际可执行的子集，其中按需加载的在当前上下文里加载过且定义未变才执行。 */
-  toolDefinitions?: ToolDefinition[];
   /** 每次调用启动前再查一次；返回原因时不执行，结果为 not_executed。请求发出后才收紧的限制靠它拦下。 */
   blocked?(name: string): string | undefined;
   instructions: string | ContextSource;

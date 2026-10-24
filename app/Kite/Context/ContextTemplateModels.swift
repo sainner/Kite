@@ -202,9 +202,10 @@ struct LibraryReset: Encodable {
     let expectedRevision: String
 }
 
-/// 客户端按类读取的资源库目录，与工作机 library.changed 事件的 kind 一一对应：角色列表带着点阵签名，签名变了也是 role。
+/// 客户端按类读取的资源库目录，与工作机 library.changed 事件的 kind 一一对应：角色列表带着点阵签名，签名变了也是 role；
+/// plugin 是插件定义，连同 Bun 插件的定义级授权：定义列表重读，打开着的插件窗口重读授权。
 enum LibraryList: String, CaseIterable {
-    case role, template, skill
+    case role, template, skill, plugin
 }
 
 /// 新代理连同草稿里的角色与改过的参数一次创建。
@@ -306,6 +307,10 @@ extension AppModel {
         case .skill:
             if connection.skills != nil { Task { try? await refreshSkills(of: connection, fresh: true) } }
             for area in workspaces where area.remote.machine.id == connection.id { area.invalidateAvailableSkills() }
+        case .plugin:
+            // 定义列表连上工作机就读，不用看读没读过
+            Task { try? await refreshDefinitions(connection.client) }
+            connection.pluginGrantsRevision += 1
         }
     }
 

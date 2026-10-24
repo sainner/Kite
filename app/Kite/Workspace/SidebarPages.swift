@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 一级栏的侧栏：各页一行，选中的一页在内容区打开；没接通的置灰。
 struct SidebarPageList<Page: SidebarPage>: View {
@@ -36,7 +37,7 @@ private struct SidebarPageRow<Page: SidebarPage>: View {
     }
 }
 
-/// 资源库的侧栏：代理上下文像项目一栏里的项目一样，分类作小标题、各项作树状子项列在下面；其余各页一行。
+/// 资源库的侧栏：插件、代理上下文与 Skill 像项目一栏里的项目一样，分类作小标题、各项作树状子项列在下面；凭据一行。
 private struct ExtensionSidebar: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model
@@ -47,13 +48,71 @@ private struct ExtensionSidebar: View {
             ForEach(ExtensionLibrary.allCases) { page in
                 if page == .contexts { AgentContextSection(onSelect: onSelect) }
                 else if page == .skills { SkillSection(onSelect: onSelect) }
+                else if page == .plugins { PluginSection(onSelect: onSelect) }
                 else { SidebarPageRow(selection: $model.extensionPage, page: page, onSelect: onSelect) }
             }
         }
-        // 代理上下文页没打开时也要列出角色与模板。
+        // 各页没打开时也要列出角色、模板、skill 与插件。
         .task(id: model.connectionRevision) { try? await model.ensureRoles() }
         .task(id: model.connectionRevision) { try? await model.ensureContextTemplates() }
         .task(id: model.connectionRevision) { try? await model.ensureSkills() }
+        .task(id: model.connectionRevision) { try? await model.ensureDefinitions() }
+    }
+}
+
+/// 插件页的分区：自定义的（Bun 插件包）和内置的各一组。自定义一组的小标题上导入插件：
+/// 选好文件先成「待安装」的一项排在这组末尾，在它的窗口里保存到资源库，同 Skill 的新建。
+private struct PluginSection: View {
+    var onSelect: () -> Void
+    @Environment(AppModel.self) private var model
+    @State private var importing = false
+    /// 点导入时连着的工作机，待安装的插件包经它保存。
+    @State private var importClient: KitedClient?
+    @State private var failure: String?
+
+    var body: some View {
+        let groups = [
+            LibraryGroup(title: "自定义", help: "打开自定义插件", items: customItems,
+                         add: SidebarSubheaderAdd(help: "导入插件", label: "导入插件", action: startImport)),
+            LibraryGroup(title: "内置", help: "打开内置插件",
+                         items: model.builtinPlugins.map { LibraryItem(id: PluginItem.definition($0.id), title: $0.title, note: nil) }),
+        ].filter { !$0.items.isEmpty || $0.add != nil }
+        LibrarySection(page: .plugins, groups: groups, current: model.pluginItem, open: open)
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
+                guard let client = importClient else { return }
+                importClient = nil
+                Task {
+                    do {
+                        try await model.importPlugin(result.get(), via: client)
+                        onSelect()
+                    } catch { failure = error.localizedDescription }
+                }
+            }
+            .alert("没能导入插件", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+                Button("好", role: .cancel) { failure = nil }
+            } message: { Text(failure ?? "") }
+    }
+
+    private var customItems: [LibraryItem<PluginItem>] {
+        let saved = model.customPlugins.map {
+            LibraryItem(id: PluginItem.definition($0.id), title: $0.title, note: nil)
+        }
+        guard let pending = model.pendingPlugin else { return saved }
+        return saved + [LibraryItem(id: .pending, title: pending.package.preview.title, note: "待安装")]
+    }
+
+    /// 打开插件页；给了哪项就选中它，没给时显示上次选中的。
+    private func open(_ item: PluginItem?) {
+        model.extensionPage = .plugins
+        if let item { model.selectedPlugin = item }
+        onSelect()
+    }
+
+    private func startImport() {
+        do {
+            importClient = try model.activeClient()
+            importing = true
+        } catch { failure = error.localizedDescription }
     }
 }
 
@@ -148,7 +207,7 @@ private struct LibraryGroup<ID: Hashable>: Identifiable {
     var id: String { title }
 }
 
-/// 资源库侧栏里分组的一页（代理上下文、Skill），像项目一栏里的项目一样：页名一行可收起，各组作小标题、各项作树状子项列在下面。
+/// 资源库侧栏里分组的一页（插件、代理上下文、Skill），像项目一栏里的项目一样：页名一行可收起，各组作小标题、各项作树状子项列在下面。
 /// current 是这一页选中的项，页没打开时不标；open 给 nil 是只打开这一页。
 private struct LibrarySection<ID: Hashable>: View {
     let page: ExtensionLibrary

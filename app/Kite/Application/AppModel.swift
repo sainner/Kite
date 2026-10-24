@@ -75,6 +75,10 @@ final class AppModel {
     var selectedSkill: String?
     /// 资源库里改过还没保存的 skill，含还没存过的新建。
     var skillDrafts: [SkillDraft] = []
+    /// 资源库插件页选中的插件，见 pluginItem。
+    var selectedPlugin: PluginItem?
+    /// 导入了还没保存到资源库的插件包，见 importPlugin。
+    var pendingPlugin: PendingPlugin?
     /// 资源库代理上下文页点可用变量弹出的变量弹窗看的变量，见 ContextVariableSheet。
     var contextVariable: ContextScene.Variable?
     /// 变量弹窗各层选过的取值对象，按层，见 contextVariableSource。
@@ -94,6 +98,8 @@ final class AppModel {
     let templateWindows = WindowLayout(fixed: .pane(Pane("context")))
     /// 资源库 Skill 页的固定窗口：一个 skill 一个窗口。
     let skillWindows = WindowLayout(fixed: .pane(Pane("skill")))
+    /// 资源库插件页的固定窗口：一个插件一个窗口。
+    let pluginWindows = WindowLayout(fixed: .pane(Pane("plugin")))
     /// 资源库凭据的固定窗口：密钥占左边整列，右边从上到下是 Git 账号、模型 API、语音识别。
     let credentialWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.5,
         .pane(Pane("secrets")),

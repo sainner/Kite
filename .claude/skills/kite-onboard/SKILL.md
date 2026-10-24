@@ -51,7 +51,8 @@ description: 按 Kite 项目规范体检和补齐一个项目文件夹：目录�
 6. **不放 CLAUDE.md**：Claude Code 在项目没有 CLAUDE.md 时直接读 AGENTS.md。已有 CLAUDE.md 且只有一行 `@AGENTS.md` 的，建议删掉；内容不同的，提示用户把内容并进 AGENTS.md 后再删，不自己合并。
 7. **记忆目录**：在 Kite 之外直接用 Claude Code 的机器上，在 `.claude/settings.local.json`（不进 git）里把 `autoMemoryDirectory` 设成本项目 `.kite/memory` 的绝对路径，否则记忆写进用户目录（`~/.claude/projects/…/memory/`）。上游只认绝对路径或 `~/` 开头的路径，所以不写进提交的 `.claude/settings.json`。用户目录里已有的、关于这个项目的记忆，挪进来。
 8. **检查**：能判断「改坏了没有」的项目提供 `.kite/check`，契约见上面的目录图，写法见下一节。代码项目再按 templates/test-writer.md 写 `.claude/agents/test-writer.md`，分层表里填本项目的小、中、大各指什么。
-9. **报告**：补了哪些文件；哪些需要用户决定。
+9. **预览目标**：项目有能跑起来给人看的产品（网页、Mac App、iOS App），`.kite/preview/` 下却缺它的运行方式时，从项目里读出有哪几种（开发服务器的启动脚本、Xcode 工程支持的平台、已有的启动脚本），列出建议的目标名和各自怎么跑，用户同意后按下文「预览目标怎么写」写。已有的目标不重写，只对照那一节指出问题。
+10. **报告**：补了哪些文件；哪些需要用户决定。
 
 ## .kite/check 怎么写
 

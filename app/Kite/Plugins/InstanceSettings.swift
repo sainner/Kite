@@ -96,9 +96,10 @@ struct InstanceSettings: View {
                 if editable, draft != nil {
                     CardSection("协作授权", note: (definition?.agent != nil
                         ? "协作范围决定这个代理能对准哪些代理、monitor 和终端：仅后代是它建的以及再往下建的，同工作区是工作区里的全部；超出后代范围时，停下别人的、经权限比它大的代理做事都要先经你批准。插件工具在下面逐项授予，新授权的何时生效见代理配置。"
-                        : "这个插件能经宿主调用工作区里的哪些实例和操作；默认都没有。")
+                        : "这个插件能经宿主调用工作区里的哪些实例和操作；起点是新建时拷来的资源库里这个插件的授权。")
                         + "修改后保存，撤回对后续调用立即生效。")
-                    workspaceGrants
+                    WorkspaceGrants(caller: caller, draft: $draft, operations: operations, roles: model.roles(in: area)?.roles ?? [])
+                        .disabled(!available)
                     ForEach(targets) { target in
                         if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
                         // 代理对其他实例的操作按协作范围，不逐个授权。
@@ -134,38 +135,6 @@ struct InstanceSettings: View {
         }
     }
 
-    @ViewBuilder private var workspaceGrants: some View {
-        CardSection("工作区") {
-            if caller == "model", let scope = draft?.scope {
-                LabeledContent("协作范围") {
-                    Picker("协作范围", selection: Binding(get: { scope }, set: { value in draft?.scope = value })) {
-                        Text("仅后代").tag("descendants")
-                        Text("同工作区").tag("workspace")
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
-                }
-            }
-            if caller == "plugin", operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) && $0.accepts("workspace") }) {
-                let grant = OperationGrant(operation: "agent.list", targets: .init(kind: "workspace"))
-                Toggle("查询代理", isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
-            }
-            DisclosureGroup("按角色创建代理") {
-                ForEach(model.roles(in: area)?.roles ?? []) { role in
-                    Toggle(role.role.title, isOn: selection({ $0.includesRole(role.id) }, { $0.setRole(role.id, enabled: $1) }))
-                }
-            }
-            if caller == "plugin" {
-                DisclosureGroup("自己创建的代理") {
-                    // 继续只给界面，代理之间发消息就是继续，不授予插件
-                    ForEach(operations.filter { ["agent.send", "agent.stop"].contains($0.name) && $0.callers.contains(caller) && $0.accepts("created") }) { operation in
-                        let grant = OperationGrant(operation: operation.name, targets: .init(kind: "created"))
-                        Toggle(operation.title, isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
-                    }
-                }
-            }
-        }.disabled(!available)
-    }
-
     /// 按目标逐个授予：只列授权能写显式实例（instances）的。不分目标的（预览的操作）授予的是工作区里的全部，不放在某个实例下面。
     @ViewBuilder private func instanceGrants(_ target: RemotePluginInstance) -> some View {
         let allowed = operations.filter {
@@ -175,7 +144,7 @@ struct InstanceSettings: View {
         if !allowed.isEmpty {
             CardSection(target.title) {
                 ForEach(allowed) { operation in
-                    Toggle(operation.title, isOn: selection({ $0.includesTarget(operation: operation.name, instanceID: target.id) },
+                    Toggle(operation.title, isOn: $draft.grant({ $0.includesTarget(operation: operation.name, instanceID: target.id) },
                         { $0.setTarget(operation: operation.name, instanceID: target.id, enabled: $1) }))
                         .help(operation.description)
                 }
@@ -190,7 +159,7 @@ struct InstanceSettings: View {
         return CardSection(target.title) {
             ForEach(names, id: \.self) { name in
                 let tool = discovered.first { $0.name == name }
-                Toggle(isOn: selection({ $0.includesTool(instanceID: target.id, name: name) }, { $0.setTool(instanceID: target.id, name: name, enabled: $1) })) {
+                Toggle(isOn: $draft.grant({ $0.includesTool(instanceID: target.id, name: name) }, { $0.setTool(instanceID: target.id, name: name, enabled: $1) })) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(tool?.title ?? name)
                         if let description = tool?.description { Text(description).font(Theme.caption).foregroundStyle(.secondary) }
@@ -202,14 +171,6 @@ struct InstanceSettings: View {
             if let message = toolErrors[target.id] { Text(message).font(Theme.caption).foregroundStyle(Theme.danger) }
             if tools[target.id] != nil && names.isEmpty { Text("没有可授予的工具").foregroundStyle(.secondary) }
         }
-    }
-
-    private func selection(_ read: @escaping (PluginGrantDraft) -> Bool, _ write: @escaping (inout PluginGrantDraft, Bool) -> Void) -> Binding<Bool> {
-        Binding(get: { draft.map(read) ?? false }, set: { value in
-            guard var next = draft else { return }
-            write(&next, value)
-            draft = next
-        })
     }
 
     private func boundClient() throws -> KitedClient {
@@ -269,6 +230,59 @@ struct InstanceSettings: View {
 
     private func perform(_ action: @escaping () async throws -> Void) {
         $progress.run(action)
+    }
+}
+
+/// 协作授权里不指向具体实例的「工作区」一组，实例设置与 Bun 插件定义的授权页共用。caller 是被授权的调用方：
+/// 代理（model）多一项协作范围，插件（plugin）按操作目录列它能授予的。
+struct WorkspaceGrants: View {
+    let caller: String
+    @Binding var draft: PluginGrantDraft?
+    let operations: [RemoteOperation]
+    /// 「按角色创建代理」列出的是工作机上的角色。
+    let roles: [AgentRole]
+
+    var body: some View {
+        CardSection("工作区") {
+            if caller == "model", let scope = draft?.scope {
+                LabeledContent("协作范围") {
+                    Picker("协作范围", selection: Binding(get: { scope }, set: { value in draft?.scope = value })) {
+                        Text("仅后代").tag("descendants")
+                        Text("同工作区").tag("workspace")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
+                }
+            }
+            if caller == "plugin", operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) && $0.accepts("workspace") }) {
+                let grant = OperationGrant(operation: "agent.list", targets: .init(kind: "workspace"))
+                Toggle("查询代理", isOn: $draft.grant({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
+            }
+            DisclosureGroup("按角色创建代理") {
+                ForEach(roles) { role in
+                    Toggle(role.role.title, isOn: $draft.grant({ $0.includesRole(role.id) }, { $0.setRole(role.id, enabled: $1) }))
+                }
+            }
+            if caller == "plugin" {
+                DisclosureGroup("自己创建的代理") {
+                    // 继续只给界面，代理之间发消息就是继续，不授予插件
+                    ForEach(operations.filter { ["agent.send", "agent.stop"].contains($0.name) && $0.callers.contains(caller) && $0.accepts("created") }) { operation in
+                        let grant = OperationGrant(operation: operation.name, targets: .init(kind: "created"))
+                        Toggle(operation.title, isOn: $draft.grant({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
+                    }
+                }
+            }
+        }
+    }
+}
+
+extension Binding where Value == PluginGrantDraft? {
+    /// 草稿里一项授权的开关：改的是草稿的拷贝，改完整份写回；还没读到草稿时为关、改不了。
+    func grant(_ read: @escaping (PluginGrantDraft) -> Bool, _ write: @escaping (inout PluginGrantDraft, Bool) -> Void) -> Binding<Bool> {
+        Binding<Bool>(get: { wrappedValue.map(read) ?? false }, set: { value in
+            guard var next = wrappedValue else { return }
+            write(&next, value)
+            wrappedValue = next
+        })
     }
 }
 

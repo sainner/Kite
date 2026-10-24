@@ -1,12 +1,13 @@
 /**
  * 账号级数据在工作机之间的合并（src/account-data/store.ts）：手动把一台的增量 changes 交给另一台 apply，
  * 看并发修改、只拉到最新的顺序修改、删除与修改相遇、经第三台中转时，各台最后是否一致、被覆盖的那份是否恰好留下一条冲突。
- * 并发时版本大的为准，用 setSystemTime 定下各台写入的先后。最后一条看本机密钥取不到时一页变化的部分写入与下次重试补齐。
+ * 并发时版本大的为准，用 setSystemTime 定下各台写入的先后。后两条看本机密钥取不到时一页变化的部分写入与下次重试补齐，
+ * 以及收到不认识的种类时照样存下、转出、留冲突。
  */
 import { afterEach, expect, setSystemTime, test } from 'bun:test';
 import { join } from 'node:path';
 import { fileKey } from '../../src/account-data/key.ts';
-import { AccountData } from '../../src/account-data/store.ts';
+import { AccountData, type EntryKind } from '../../src/account-data/store.ts';
 import { useTemp } from '../util.ts';
 
 const temp = useTemp();
@@ -221,4 +222,44 @@ test('本机密钥取不到时应用对端的一页：发布记录、目录摘�
   expect(((await b.unseal('conflict', kept[0]!.body)).body as { secret: unknown }).secret).toEqual({ token: 'A 的令牌' });
   expect(b.cursor('machine-a')).toEqual({ epoch: page.epoch, seq: page.seq });
   expect(b.list('release').map((item) => item.body)).toEqual([release]);
+});
+
+/*
+ * 跨版本兼容的保证（EntryKind 上的约束）：存储与同步不认种类。新版 kited 加了种类，旧版收到时照样存下、推进进度、
+ * 原样转给别的工作机，并发修改照常另存冲突；不然旧版会卡在这一页上拉不动、或把新种类丢掉。以后有人给 apply 加种类校验时在这里拦下。
+ * 这里 A、C 是认识 future-kind 的新版，B 不认识它；三台用同一个类，新种类的写入经 put 造出。
+ */
+test('一页里混着不认识的种类和角色时两条都存下、进度推进、原样转给别的工作机；两台并发改不认识种类的同一条，以后写的为准、另存一条冲突、不抛错', async () => {
+  const root = temp('account-data-');
+  const a = open(root, 'machine-a');
+  const b = open(root, 'machine-b');
+  const c = open(root, 'machine-c');
+  const future = 'future-kind' as EntryKind;
+  const start = Date.now();
+  setSystemTime(start);
+  a.put(future, 'x', { text: '原始', extra: [1, 2] });
+  a.put('role', 'r', { text: '角色' });
+  const page = await a.changes(undefined, 0);
+  expect(page.more).toBe(false);
+  expect(page.entries.map((entry) => entry.kind)).toEqual([future, 'role']);
+
+  await b.apply('machine-a', page);
+  expect(b.get(future, 'x')?.body).toEqual({ text: '原始', extra: [1, 2] });
+  expect(b.get('role', 'r')?.body).toEqual({ text: '角色' });
+  expect(b.cursor('machine-a')).toEqual({ epoch: page.epoch, seq: page.seq });
+  const relayed = await b.changes(undefined, 0);
+  expect(relayed.entries.find((entry) => entry.kind === future)).toEqual(page.entries.find((entry) => entry.kind === future));
+
+  // A、C 都拿到原始那份后并发修改：B 先后从 A、C 拉到这两份。
+  await pull(c, b);
+  setSystemTime(start + 1_000);
+  a.put(future, 'x', { text: 'A 改的' });
+  setSystemTime(start + 2_000);
+  c.put(future, 'x', { text: 'C 后改的' });
+  setSystemTime();
+  await pull(b, a);
+  await pull(b, c);
+  expect(b.get(future, 'x')).toMatchObject({ body: { text: 'C 后改的' }, by: 'machine-c' });
+  expect(conflicts(b)).toEqual([expect.objectContaining({ kind: future, id: 'x', by: 'machine-a', body: { text: 'A 改的' } })]);
+  expect(b.cursor('machine-c')?.seq).toBe(c.seq);
 });

@@ -1,11 +1,11 @@
 ---
 name: ui-hit-testing-debugging
-description: 界面事件诊断的证据边界、光标被谁改掉的探针做法、SwiftUI 菜单行为的小程序验证、UIKit 机制用 Catalyst 小程序验证、simctl 两次内核崩溃（之后不再调用 simctl）、真机现场采集不挂调试器、真机崩溃报告怎么取
+description: 界面事件诊断的证据边界、光标被谁改掉的探针做法、SwiftUI 菜单行为的小程序验证与交互玻璃让子菜单收起、UIKit 机制用 Catalyst 小程序验证、simctl 两次内核崩溃（之后不再调用 simctl）、真机现场采集不挂调试器、真机崩溃报告怎么取
 metadata:
   node_type: memory
   type: context
   originSessionId: 2b6008b7-bf52-4a23-b577-de6bc7b05c97
-  modified: 2026-10-24T04:54:07.832Z
+  modified: 2026-10-24T16:26:38.946Z
 ---
 
 合成事件后的画面变化可能混入真实用户输入，需要确认目标收到事件；AppKit/UIKit 的 hitTest 落点也不能单独证明 SwiftUI 内部命中或手势正确。
@@ -20,7 +20,9 @@ metadata:
 
 真机上点了没反应这类，在 Debug 版里沿手势、命中、openURL、打开各步往 `Library/Caches` 的文件里记一行，请用户真实点一轮，用 `devicectl device copy from` 取回；手势的 delegate 与视图的 `gestureRecognizerShouldBegin`、动作方法都记，能分出「没开始」「开始了被别的手势挤掉」「认出了没命中」。探针版按工作机 kited 的那份提交（`/machine` 的 `version.commit`）在 worktree 里编：按主线编的协议号可能比工作机新，App 显示「工作机待更新」，升级 kited 要重启它、打断代理。2026-10-21 iOS 正文链接一直点不开，这样两轮查出是 `buttonMaskRequired = .secondary` 的右键点按也认手指（只筛指针），和点链接互斥又先认出，见 `PhoneTextInteraction`。
 
-SwiftUI 菜单的行为可以不打扰 Kite、用 swiftc 小程序验证：进程内找到菜单按钮的辅助功能节点调 `accessibilityPerformPress` 打开菜单（合成 NSEvent 点不开），自己在前台时往 HID 发方向键移到子菜单项、展开（`postToPid` 菜单收不到；发之前先确认 `NSApp.isActive`，不然键落到用户的 App），按可见的 `NSPopupMenuWindow` 个数判断子菜单开没开。程序会抢前台，用户一操作结果就作废，跑之前说一声。2026-10-21 Mac 审批模式子菜单老是自己收起，这样查出菜单开着时所在视图重算一次（内容不变也算）子菜单就被收起，修法见 `MoreMenu` 的注释；别的带子菜单的 SwiftUI 菜单（工作区列表、凭据、代理设置）遇到同样现象按这个查。
+SwiftUI 菜单的行为可以不打扰 Kite、用 swiftc 小程序验证：按钮位置用 `onGeometryChange` 记（`.global` 按整个窗口、含标题栏算），往 HID 发真实的鼠标移动和点击打开菜单，再发方向键移到子菜单项、展开（`postToPid` 菜单收不到；发之前先确认 `NSApp.isActive`，不然键落到用户的 App），按可见的 `NSPopupMenuWindow` 个数判断子菜单开没开。进程内没有辅助功能客户端时 SwiftUI 不建辅助功能树，找不到菜单按钮。程序会抢前台、动指针，用户一操作结果就作废，跑之前说一声。
+
+Mac 更多菜单的审批模式子菜单自己收起，前后查了两次。2026-10-21 查出菜单开着时所在视图重算一次子菜单就收起（新闭包让菜单项重新同步）。2026-10-25 发现不重算也会收：交互玻璃（`.glassEffect(.interactive())`）里的 SwiftUI `Menu` 按下就弹出，松手被菜单吞掉，玻璃停在按下变亮的样子，1.9～2.4 秒后自己复位，同时 SwiftUI 把开着的菜单重新同步一遍（`PlatformItemList.update`），子菜单就收起，用户看到的是玻璃高光消失。同一次启动里每开一次菜单轮换变体，请用户点几轮，结果是玻璃不交互时不同步、不收，去掉 `.help` 照样收。小程序复刻不出这个 2 秒的同步，说明还要 Kite 里的某个条件，没查到是哪个。修法是改成按钮、松手弹出自己建的 AppKit 菜单，见 `MoreMenu` 的注释；用户确认菜单本来就该松手弹出。别的放在交互玻璃里、带子菜单的 SwiftUI 菜单遇到同样现象按这个查：SwiftUI 有没有动菜单项，看 `NSMenu.didChangeItemNotification`，栈里是 UpdateGroup 刷新调到 `PlatformItemList.update`。
 
 UIKit 和 iOS 上 SwiftUI 的机制问题，不用模拟器也能在本机用 Mac Catalyst 小程序验证：`swiftc -parse-as-library -target arm64-apple-ios27.0-macabi`，`-Fsystem` 指向 macOS SDK 的 `System/iOSSupport/System/Library/Frameworks`、`-L` 指向 `System/iOSSupport/usr/lib/swift`，放进带 `UIApplicationSceneManifest` 的最小 `.app`、`codesign -s -` 后直接跑可执行文件，结果写 stderr，几秒后自己 `exit`。会弹窗口，跑之前说一声。2026-10-24 用户气泡、头像发灰就这样查出弹出提醒时 UIKit 把根视图调暗、SwiftUI 主题色跟着变灰（修法见 `WindowInterfaceStyle` 的注释）。Catalyst 是 Mac 外形，排版、手势和呈现样式不能代替真机，只拿来确认框架机制。
 

@@ -6,8 +6,8 @@ import { FileDiffStore } from '../workspace/file-diffs.ts';
 import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
 import { holds, type PluginInstance } from '../model.ts';
-import { callerDenied, grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller, type OperationGrant,
-  type OperationInput, type OperationName } from './contract.ts';
+import { callerDenied, definitionGrantDenied, grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller,
+  type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
 import { mainlineTarget } from '../preview/targets.ts';
@@ -119,6 +119,23 @@ export class InstanceOperations {
       }
     }
     return grants;
+  }
+  /** Bun 插件定义级要保存的授权：逐项校验，不收的说明是第几项、为什么（见 definitionGrantDenied）；角色要存在。 */
+  validateDefinitionGrants(value: unknown): OperationGrant[] {
+    if (!Array.isArray(value)) throw new KiteError('grants 须是授权列表');
+    return value.map((raw: unknown, index) => {
+      const operation = (raw as { operation?: unknown } | null)?.operation;
+      const label = `第 ${index + 1} 项${typeof operation === 'string' ? `（${operation}）` : ''}`;
+      const parsed = operationGrantsSchema.element.safeParse(raw);
+      if (!parsed.success) throw new KiteError(`${label}无效：${parsed.error.issues.map((issue) => issue.message).join('；')}`);
+      const grant = parsed.data;
+      const denied = definitionGrantDenied(grant);
+      if (denied) throw new KiteError(`${label}：${denied}`);
+      if ('roleIds' in grant) for (const id of grant.roleIds) {
+        try { this.kite.roles.get(id); } catch { throw new KiteError(`${label}：没有角色 ${id}`); }
+      }
+      return grant;
+    });
   }
 
   /** 调用方由 HTTP 宿主或工具闭包提供，模型参数不能指定它。 */

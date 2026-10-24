@@ -29,6 +29,8 @@ import SwiftUI
     /// 工作机推 mcp.changed 时加一，MCP 页与代理的服务开关据此重新读 /mcp；清单本身变了时 mcpCatalogRevision 也加一。
     var mcpRevision = 0
     var mcpCatalogRevision = 0
+    /// 工作机推 library.changed（plugin）时加一：Bun 插件的定义级授权可能变了，资源库里打开着的插件窗口据此重读。
+    var pluginGrantsRevision = 0
     /// 进行中的目录读取，按请求路径，见 AppModel.refreshCatalog。
     @ObservationIgnored var catalogRequests: [String: (connection: UUID, task: Task<Void, Error>)] = [:]
     @ObservationIgnored var task: Task<Void, Never>?

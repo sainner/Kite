@@ -9,7 +9,7 @@ import { ChildrenPending, GitLoginRequired, KiteError } from './errors.ts';
 import { type AdoptResult, Bus, type PushOutcome, type SyncResult } from './events.ts';
 import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainline, mainRefs, mergeMainline, type Mainline } from './workspace/mainline.ts';
 import { CheckoutManagement, type EnvFile, type ProjectSource } from './workspace/checkout-management.ts';
-import { AccountData } from './account-data/store.ts';
+import { AccountData, revisionOf } from './account-data/store.ts';
 import { Credentials } from './account-data/credentials.ts';
 import { ProjectRegistry } from './account-data/registry.ts';
 import { Directory, type Candidate } from './account-data/directory.ts';
@@ -56,7 +56,7 @@ import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
 import { InstanceOperations } from './operations/operations.ts';
 import { OperationReceipts } from './operations/receipts.ts';
-import { lineGrant, type OperationGrant, type OperationInput } from './operations/contract.ts';
+import { lineGrant, storedDefinitionGrants, type OperationGrant, type OperationInput } from './operations/contract.ts';
 import { Peers } from './line/peers.ts';
 import { LineMonitor, lineMonitorContextDefinition } from './line/monitor.ts';
 import { lineTools } from './line/tools.ts';
@@ -520,6 +520,24 @@ export class Kite {
     const value = this.catalog.validate(raw);
     this.library.write('plugin', value.id, value, null);
     return this.catalog.install(value);
+  }
+  /**
+   * Bun 插件定义级的协作授权，revision 同实例授权按 grants 算。账号级数据里一个定义一条，没设过为空；
+   * 新建这个插件的实例时拷进实例，之后修改不改变已有实例。变化由资源库同步推 kind 为 plugin 的 library.changed。
+   */
+  pluginGrants(definitionId: string): { grants: OperationGrant[]; revision: string } {
+    if (this.catalog.get(definitionId).runtime !== 'bun') throw new KiteError('没有这个 Bun 插件定义', 404);
+    const { grants } = storedDefinitionGrants(this.accountData.get('plugin-grants', definitionId)?.body);
+    return { grants, revision: revisionOf(grants) };
+  }
+  configurePluginGrants(definitionId: string, expectedRevision: string, value: unknown) {
+    if (this.pluginGrants(definitionId).revision !== expectedRevision) throw new KiteError('授权已变化，请重新读取后修改', 409);
+    const grants = this.operations.validateDefinitionGrants(value);
+    const current = this.accountData.get('plugin-grants', definitionId);
+    // 这一版用不了的项与字段原样留着，见 storedDefinitionGrants；什么都没有时删掉这一条。
+    const body = { ...current?.body, grants: [...grants, ...storedDefinitionGrants(current?.body).unused] };
+    this.library.save('plugin-grants', definitionId, body, current?.revision ?? null, !body.grants.length && Object.keys(body).length === 1);
+    return { grants, revision: revisionOf(grants) };
   }
   private libraryChanged(changes: LibraryChanges) {
     for (const kind of changes.lists) this.bus.emit({ type: 'library.changed', kind });

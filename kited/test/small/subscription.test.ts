@@ -80,7 +80,6 @@ test('订阅流保留原生条目与通知权限，工具收齐后执行并续�
   const started = deferred<Json>();
   let executions = 0;
   const record = tool('record', async (args) => { executions++; started.resolve(args); return success('工具结果：中文'); });
-  const hidden = tool('hidden', async () => success('不应执行'));
   const observationSource: ContextSource = {
     definition: {
       version: 2, id: 'test.file_changes', title: '工作区状态', scene: 'thread.file_changes',
@@ -100,7 +99,6 @@ test('订阅流保留原生条目与通知权限，工具收齐后执行并续�
   const { runner, journal, events } = h.runner(root, {
     prepareRequest: ({ afterNotification }) => ({
       model, tools: [record],
-      toolDefinitions: [record, hidden].map(({ name, description, parameters }) => ({ name, description, parameters })),
       instructions: '测试主循环',
       settings: { allowedTools: ['record'] },
       notifications: notifications.filter((notice) => notice.sequence! > afterNotification),
@@ -111,7 +109,6 @@ test('订阅流保留原生条目与通知权限，工具收齐后执行并续�
     posts.wait(() => true),
     runner.settled().then(() => { throw new Error(`请求未发送：${JSON.stringify({ state: runner.state, records: journal.records })}`); }),
   ]);
-  expect((post.body.tools as JsonObject[]).map((value) => value.name)).toEqual(['record', 'hidden']);
   const mappedNotices = post.body.input as JsonObject[];
   expect(mappedNotices.find((value) => JSON.stringify(value).includes('只按批准的工具工作'))?.role).toBe('developer');
   const observed = mappedNotices.find((value) => JSON.stringify(value).includes('工作区出现新文件'));
@@ -203,7 +200,6 @@ test('订阅接口的工具搜索往返：声明为客户端执行的 tool_searc
   const { runner, journal } = h.runner(root, {
     prepareRequest: () => ({
       model, tools: [search],
-      toolDefinitions: [{ name: search.name, description: search.description, parameters: search.parameters }],
       instructions: '测试主循环', settings: {},
     }),
   });

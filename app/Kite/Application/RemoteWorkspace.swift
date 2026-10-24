@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 22
+    static let version = 23
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。

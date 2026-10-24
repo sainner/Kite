@@ -211,7 +211,6 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
           if ((agentTools as readonly string[]).includes(name) && !permittedTools(agentTools, constraint ? [constraint] : []).includes(name)) return `项目约束已禁用 ${name}`;
           return name.startsWith(MCP_TOOL_PREFIX) && !mcpTools(host.current()).some((tool) => tool.name === name) ? `MCP 服务已关掉或被禁用：${name}` : undefined;
         },
-        toolDefinitions: [...declared, search].map(({ name, description, parameters }) => ({ name, description, parameters })),
         instructions: projectContext(agent.context, values), variables: values,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),

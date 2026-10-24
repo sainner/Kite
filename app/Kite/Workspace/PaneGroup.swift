@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 窗口内容的来源与窗口容器分开；工作区、设备账号与资源库的代理上下文、凭据共用排布、底栏与切换手势。
+/// 窗口内容的来源与窗口容器分开；工作区、设备账号与资源库的代理上下文、Skill、插件、凭据共用排布、底栏与切换手势。
 enum PaneGroup: Identifiable {
     case workspace(WorkArea)
     case accounts(WindowLayout)
@@ -8,6 +8,8 @@ enum PaneGroup: Identifiable {
     case agentContext(AgentContextItem, WindowLayout)
     /// 资源库 Skill 页里选中的一个 skill（名字），一套固定窗口。
     case skill(String, WindowLayout)
+    /// 资源库插件页里选中的一项（一个插件，或待安装的插件包），一个窗口。
+    case plugin(PluginItem, WindowLayout)
     case credentials(WindowLayout)
 
     var id: String {
@@ -17,6 +19,9 @@ enum PaneGroup: Identifiable {
         // 同一套窗口里换一项只换窗口内容，窗口不重建。
         case .agentContext(let item, _): "agent-context:\(item.category == .role ? "role" : "template")"
         case .skill: "skill"
+        // 插件换一项整套重建：台面只认得代理上下文里换了哪项（见 StageView 的 GroupKey），同一个 id 不会换正文
+        case .plugin(.definition(let id), _): "plugin:\(id)"
+        case .plugin(.pending, _): "plugin-pending"
         case .credentials: "credentials"
         }
     }
@@ -27,6 +32,7 @@ enum PaneGroup: Identifiable {
         case .accounts(let layout): layout
         case .agentContext(_, let layout): layout
         case .skill(_, let layout): layout
+        case .plugin(_, let layout): layout
         case .credentials(let layout): layout
         }
     }
@@ -57,6 +63,8 @@ enum PaneGroup: Identifiable {
             }
         case .skill:
             return .init(name: "Skill", icon: "sparkles")
+        case .plugin:
+            return .init(name: "插件", icon: "puzzlepiece.extension")
         case .credentials:
             switch pane.id {
             case "git": return .init(name: "Git 账号", icon: "arrow.triangle.branch")
@@ -73,6 +81,7 @@ extension AppModel {
         if sidebarSection == .drive, drivePage == .accounts { return .accounts(accountWindows) }
         if sidebarSection == .extensions, extensionPage == .contexts { return agentContextGroup }
         if sidebarSection == .extensions, extensionPage == .skills { return skillGroup }
+        if sidebarSection == .extensions, extensionPage == .plugins { return pluginGroup }
         if sidebarSection == .extensions, extensionPage == .credentials { return .credentials(credentialWindows) }
         guard sidebarSection == .workspaces, selectedProject == nil, let current else { return nil }
         return .workspace(current)
