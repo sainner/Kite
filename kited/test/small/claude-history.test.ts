@@ -12,9 +12,9 @@ import { appendClaudeEntries, readClaudeEntries, type ClaudeEntry } from '../../
 import { importClaude, syncToClaude } from '../../src/handoff/handoff.ts';
 import type { ContextItem, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
-import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
+import type { History } from '../../src/transcript/protocol.ts';
 import { api, call, claudeModel, type Kited, machine, openAgent, folderWorkspace, startKited } from '../harness.ts';
-import { ManualModel, Seen } from '../harness-loop.ts';
+import { ManualModel } from '../harness-loop.ts';
 import { newDir, useTemp } from '../util.ts';
 import { writeClaudeHistory } from '../claude-history.ts';
 
@@ -35,81 +35,12 @@ async function emptyThread() {
   return { k: kited, id, thread, directory: join(kited.home, 'sessions', id) };
 }
 
-
-const receipt = (id: string, at: number, delivered = false): ClaudeControl['inputs'][number] => ({
-  input: { id, text: `正文 ${id}`, source: 'human' }, sdkId: randomUUID(), at,
-  status: 'submitted', delivered, midTurn: true,
-});
-
-// 真实回归：重启后 submitted 曾被当成完成而丢失；并发读取原生历史后，恢复和撤回仍须更新同一视图。
-test('Claude 恢复按原生记录确认已纳入输入，未知输入可撤回且停止重试跨重开退回原草稿；Line 停止带来的未知通知和来信一律退回，迟到的同 ID 发送只去重', async () => {
-  const { k, id, thread, directory } = await emptyThread();
-  const at = Date.now();
-  const accepted = receipt('native-accepted', at);
-  const delivered = receipt('receipt-confirmed', at + 1, true);
-  const cancelled = receipt('unknown-to-cancel', at + 2);
-  const returned = receipt('unknown-to-return', at + 3);
-  writeClaudeHistory(thread, [{ uuid: accepted.sdkId, at, role: 'user', text: accepted.input.text }]);
-  saveClaudeControl(directory, {
-    inputs: [accepted, delivered, cancelled, returned], stops: [], processes: [], through: 0, paused: false,
-    recovery: { message: '宿主退出时输入是否纳入尚未确认' },
-  });
+// 真实回归：停止方（这里是带 X-Kite-Source 的 Line）带来的输入里有工作机还没收到、又不是它自己发的（Kite 的通知、别的代理的来信），
+// 曾按来源留在被停线程的队列里，继续时交给了模型。工作机没收到的一律登记并退回（同自研后端），迟到的同 ID 发送只去重。
+test('Claude 被 Line 停止时带来的未知通知和来信一律退回，迟到的同 ID 发送只去重', async () => {
+  const { k, id } = await emptyThread();
   reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
   const requestCount = api.log.length;
-  const [initial, concurrentHistory, concurrentState] = await Promise.all([
-    reopened.kite.history(id), reopened.kite.history(id), reopened.kite.threadState(id),
-  ]);
-  expect(concurrentHistory).toEqual(initial);
-  expect(concurrentState).toEqual(initial.state);
-  expect(reopened.kite.historyNow(id)).toEqual(initial);
-  expect(api.log).toHaveLength(requestCount);
-  const updates = new Seen<DisplayEnvelope>();
-  const unsubscribe = reopened.kite.events.subscribe((event) => 'threadId' in event && event.threadId === id,
-    (event) => updates.add(event));
-  expect((await call(reopened.url, 'POST', `/threads/${id}/recover`)).status).toBe(200);
-  const ready = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
-  expect(ready.state).toMatchObject({ busy: false, waitingForResume: true });
-  // 结果未知的输入留在待发送里，不再挡住发送：用户的新消息会先按原顺序重投它们（见 test/medium/crash.test.ts）。
-  expect(ready.state.capabilities).toMatchObject({ send: true, resume: true, cancel: true });
-  expect(ready.state.recovery).toBeUndefined();
-  expect(ready.pending.map((input) => input.id)).toEqual([cancelled.input.id, returned.input.id]);
-  expect(ready.records.filter((record) => record.block.type === 'human' && record.block.id === accepted.input.id)).toHaveLength(1);
-  expect(ready.records.filter((record) => record.block.type === 'human' && record.block.id === delivered.input.id)).toHaveLength(1);
-  expect((await call(reopened.url, 'POST', `/threads/${id}/messages/${cancelled.input.id}/cancel`)).status).toBe(200);
-  const afterCancel = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
-  expect(afterCancel.pending.map((input) => input.id)).toEqual([returned.input.id]);
-  const cancelledQueue = (event: DisplayEnvelope) => event.type === 'thread.pending'
-    && event.pending.length === 1 && event.pending[0]?.id === returned.input.id;
-  const update = await updates.wait(cancelledQueue);
-  expect(update).toMatchObject({ type: 'thread.pending', pending: afterCancel.pending });
-  expect(updates.values.filter(cancelledQueue)).toHaveLength(1);
-  expect(reopened.kite.historyNow(id)).toEqual(afterCancel);
-  expect(await reopened.kite.threadState(id)).toEqual(afterCancel.state);
-  unsubscribe();
-  await reopened.stop(); reopened = undefined;
-
-  // 固定复现停止响应发出前宿主退出：收据只保存了客户端未确认输入，尚未完成队列核定。
-  const clientInput = { id: 'client-unconfirmed', text: '客户端尚未确认', source: 'human' as const };
-  const stop = { id: 'retry-incomplete-stop', inputs: [clientInput] };
-  saveClaudeControl(directory, {
-    inputs: [{ ...accepted, status: 'done' }, { ...delivered, status: 'done' }, { ...cancelled, status: 'cancelled' }, returned],
-    stops: [{ id: stop.id, request: JSON.stringify(stop.inputs), returned: [clientInput], completed: false }],
-    processes: [], through: 0, paused: true, recovery: { message: '停止尚未完成' },
-  });
-  // App 不再单独确认恢复：重试原停止请求时带 confirmRecovery，宿主先确认再交回这次停止的收据。
-  // 重开后已没有恢复阻塞，再带 confirmRecovery 重试什么都不确认，仍得到同一份收据。
-  reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
-  const retry = { ...stop, confirmRecovery: true };
-  const stopped = await call(reopened.url, 'POST', `/threads/${id}/interrupt`, retry);
-  expect(stopped).toEqual({ status: 200, body: { returned: [returned.input, clientInput] } });
-  const afterStop = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
-  expect(afterStop.pending).toEqual([]);
-  expect(afterStop.state.recovery).toBeUndefined();
-  await reopened.stop(); reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
-  expect(await call(reopened.url, 'POST', `/threads/${id}/interrupt`, retry)).toEqual(stopped);
-
-  // 真实回归：停止方（这里是带 X-Kite-Source 的 Line）带来的输入里有工作机还没收到、又不是它自己发的（Kite 的通知、别的代理的来信），
-  // 曾按来源留在被停线程的队列里，继续时交给了模型。工作机没收到的一律登记并退回（同自研后端），迟到的同 ID 发送只去重。
   const notice = { id: 'unknown-notice', text: '整理文档 做完了', source: 'kite' as const };
   const letter = { id: 'unknown-letter', text: '别的代理的来信', source: 'agent' as const,
     from: { kind: 'agent' as const, instance: 'peer', title: '统筹' } };

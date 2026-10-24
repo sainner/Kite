@@ -30,12 +30,11 @@ export class ClaudeProjection {
   constructor(private target: ClaudeProjectionTarget) {}
 
   get hasInputs(): boolean { return this.inputs.size > 0; }
-  get hasUnconfirmedInput(): boolean { return [...this.inputs.values()].some((entry) => entry.status === 'unconfirmed'); }
 
   syncInputs(state: ClaudeState, pending: Map<string, PendingInput>): void {
     for (const entry of state.inputs) {
       this.inputs.set(entry.sdkId, entry);
-      if (['queued', 'submitted', 'unconfirmed'].includes(entry.status) || (entry.status === 'active' && !entry.delivered)) pending.set(entry.input.id, { ...entry.input, midTurn: entry.midTurn });
+      if (['queued', 'submitted'].includes(entry.status) || (entry.status === 'active' && !entry.delivered)) pending.set(entry.input.id, { ...entry.input, midTurn: entry.midTurn });
       if (!this.target.replaying() && entry.delivered && !this.target.records.has(`input:${entry.input.id}`)) {
         this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: inputBlock(entry.input, entry.midTurn) });
       }

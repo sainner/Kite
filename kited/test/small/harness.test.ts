@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { assembleContext, literalContext } from '../../src/harness/context/assembler.ts';
 import { FileJournal } from '../../src/harness/journal.ts';
 import { requestSnapshot } from '../../src/harness/request-config.ts';
-import type { Input, Journal, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
+import { EXIT_LIMIT, exitOutcome } from '../../src/harness/runner.ts';
+import type { Input, Journal, JournalEvent, JournalRecord, Tool } from '../../src/harness/types.ts';
 import {
   aborted, deferred, diskRecords, input, item, ManualModel, Seen, success, tool,
   useHarness, waitRecord, withAbort,
@@ -217,15 +218,6 @@ test('用户停止等收尾后退还输入，关闭重开保留未封定输入',
   const earlyRecords = diskRecords(early.path);
   expect(earlyRecords.some((record) => record.type === 'input.received' && record.input.id === 'before-first-request')).toBe(true);
   expect(earlyRecords.some((record) => record.type === 'input.cancelled' || record.type === 'request.started')).toBe(false);
-  const restartedModel = new ManualModel();
-  const restarted = h.runner(earlyRoot, { model: restartedModel });
-  const pending = await restartedModel.call(1);
-  expect(pending.request.history.filter((entry) => entry.type === 'input')).toEqual([
-    { type: 'input', input: input('before-first-request') },
-  ]);
-  pending.response.complete();
-  await restarted.runner.settled();
-  expect(restartedModel.calls.values).toHaveLength(1);
 }, 1000);
 
 // send 的接收、请求封定、停止记录和重开交错；同一停止 ID 必须重放原结果，迟到输入不能入模型。
@@ -353,17 +345,12 @@ test('异常流暂停请求，写盘失败阻塞恢复与副作用', async () =>
     await runner.settled();
     expect(executed).toBe(failAt === 'tool.finished' ? 1 : 0);
     expect(runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true,
-      lastOutcome: { kind: 'failed' }, recovery: { message: expect.any(String) } });
+      lastOutcome: { kind: 'failed' } });
     expect(model.calls.values).toHaveLength(1);
-    await expect(runner.confirmRecovery()).rejects.toThrow();
     if (failAt === 'tool.finished') {
       await runner.shutdown();
       const reopenedModel = new ManualModel();
       const reopened = h.runner(root, { model: reopenedModel, tools: [write] });
-      await reopened.runner.settled();
-      expect(reopened.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true,
-        lastOutcome: { kind: 'failed' }, recovery: { message: expect.any(String) } });
-      expect(reopenedModel.calls.values).toHaveLength(0);
       expect(executed).toBe(1);
       expect(reopened.journal.records.filter((record) => record.type === 'tool.finished').map((record) => [record.callId, record.result.status])).toEqual([
         ['first-write', 'unknown'], ['blocked-write', 'not_executed'],
@@ -373,7 +360,7 @@ test('异常流暂停请求，写盘失败阻塞恢复与副作用', async () =>
 }, 1000);
 
 // 通过公开 append 写入真实崩溃事实，验证重新读盘、补结果与上下文重建，绝不启动旧副作用。
-test('崩溃恢复补齐工具结果，确认后仍须继续且不重跑副作用', async () => {
+test('崩溃后补齐工具结果，不重跑副作用', async () => {
   const root = h.root();
   const path = join(root, 'journal.jsonl');
   const journal = h.open(path);
@@ -401,31 +388,138 @@ test('崩溃恢复补齐工具结果，确认后仍须继续且不重跑副作�
   const recovered = h.runner(root, {
     model, tools: [tool('write', async () => { executed++; return success('不应重跑'); })],
   });
-  await recovered.runner.settled();
-  expect(recovered.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true,
-    lastOutcome: { kind: 'failed' }, recovery: { message: expect.any(String) } });
   expect(executed).toBe(0);
-  expect(model.calls.values).toHaveLength(0);
   const results = recovered.journal.records.filter((record) => record.type === 'tool.finished');
   expect(results.find((record) => record.callId === 'saved')?.result).toEqual(success('磁盘中的结果'));
   expect(results.find((record) => record.callId === 'waiting')?.result.status).toBe('not_executed');
   expect(results.find((record) => record.callId === 'uncertain')?.result.status).toBe('unknown');
-  await recovered.runner.confirmRecovery();
-  await recovered.runner.settled();
-  expect(recovered.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true });
-  expect(recovered.runner.state.recovery).toBeUndefined();
-  expect(model.calls.values).toHaveLength(0);
-  await recovered.runner.send(input('after-crash'));
-  const resumed = await model.call(1);
-  expect(resumed.request.history.filter((entry) => entry.type === 'output')).toEqual([saved, waiting, uncertain].map((entry) => ({ type: 'output', item: entry })));
-  expect(resumed.request.history.filter((entry) => entry.type === 'tool_result').map((entry) => [entry.callId, entry.result.status])).toEqual([
-    ['saved', 'success'], ['waiting', 'not_executed'], ['uncertain', 'unknown'],
-  ]);
-  expect(resumed.request.history).toContainEqual({ type: 'tool_result', callId: 'saved', result: success('磁盘中的结果') });
-  expect(resumed.request.history.at(-1)).toEqual({ type: 'input', input: input('after-crash') });
-  expect(executed).toBe(0);
-  resumed.response.complete();
-  await recovered.runner.settled();
+}, 1000);
+
+/**
+ * 在 root 的记录上打开会话，像 kited 启动时那样。crash() 模拟 kited 崩溃：这个实例之后写的记录都不落盘（进程已经没了），
+ * 挂着的模型请求和工具也不再有下文；下一次 openSession 从硬盘上的记录重新打开。
+ */
+function openSession(root: string, tools: Tool[]) {
+  const disk = h.open(join(root, 'journal.jsonl'));
+  let dead = false;
+  const journal: Journal = {
+    get records() { return disk.records; },
+    append(event: JournalEvent) {
+      return dead ? { ...event, version: 1, seq: -1, at: Date.now() } as JournalRecord : disk.append(event);
+    },
+    close() { disk.close(); },
+  };
+  const model = new ManualModel();
+  const { runner, events } = h.runner(root, { journal, model, tools });
+  return { runner, model, events, journal, crash() { dead = true; } };
+}
+type Session = ReturnType<typeof openSession>;
+
+const CHECKED = '检查过了，状态正常';
+const checkTool = () => tool('check', async () => success(CHECKED));
+
+/** 这一回合里模型先调一次检查工具；工具成功、下一次模型请求挂着时 kited 崩溃。 */
+async function checkThenCrash(session: Session): Promise<void> {
+  const id = `check-${crypto.randomUUID()}`;
+  const first = await session.model.call(1);
+  await first.response.emit({ type: 'item', item: item(id, 'check') });
+  first.response.complete();
+  const second = await session.model.call(2);
+  expect(second.request.history).toContainEqual({ type: 'tool_result', callId: id, result: success(CHECKED) });
+  session.crash();
+}
+
+/** 等这次推进停下；要是起了回合、请求了模型，也立刻返回，交给调用方断言，不白等到超时。 */
+async function idleOrRequested(session: Session): Promise<void> {
+  await Promise.race([session.runner.settled(), session.model.call(1)]);
+}
+
+const lastTurn = (session: Session) => session.journal.records
+  .filter((record): record is Extract<JournalRecord, { type: 'turn.finished' }> => record.type === 'turn.finished').at(-1);
+
+/*
+ * 跨重启的状态流转：连续崩溃的次数每次打开都从硬盘上的记录重算，要经过几轮「崩溃→重放记录→打开→接着做」才看得出对不对。
+ * 实际 bug：接着做时模型总是先跑一个检查实际状态的工具，检查总会成功；旧代码在工具成功时把计数清零，崩溃循环永远停不下来。
+ */
+test('每次接着做都先成功跑完检查工具再崩溃，连续第 3 次后停在等待继续；之后 monitor 事件和代理来信只排队，人发的消息才起回合并重新计数', async () => {
+  const root = h.root();
+  const tools = [checkTool()];
+  let session = openSession(root, tools);
+  await session.runner.send(input('task'));
+  await checkThenCrash(session);
+  for (let crashes = 1; crashes < EXIT_LIMIT; crashes++) {
+    session = openSession(root, tools);
+    expect(session.runner.running).toBe(true);
+    await session.runner.continueInterrupted();
+    await checkThenCrash(session);
+  }
+
+  session = openSession(root, tools);
+  expect(session.runner.running).toBe(false);
+  expect(session.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true,
+    lastOutcome: exitOutcome(EXIT_LIMIT) });
+  await session.runner.continueInterrupted();
+  await idleOrRequested(session);
+  expect(session.model.calls.values).toHaveLength(0);
+  const monitor: Input = { id: 'monitor', text: '构建失败了', source: 'kite',
+    notice: { kind: 'monitor.events', title: '构建 有新事件', subject: '构建' } };
+  const letter: Input = { id: 'letter', text: '另一个代理的来信', source: 'agent',
+    from: { kind: 'agent', instance: 'peer', title: '统筹' } };
+  for (const queued of [monitor, letter]) {
+    expect(await session.runner.send(queued)).toBe(true);
+    await idleOrRequested(session);
+    expect(session.model.calls.values).toHaveLength(0);
+    expect(session.runner.state).toMatchObject({ phase: 'idle', busy: false, waitingForResume: true });
+  }
+
+  await session.runner.send(input('human'));
+  await idleOrRequested(session);
+  expect(session.model.calls.values).toHaveLength(1);
+  const delivered = (await session.model.call(1)).request.history
+    .flatMap((entry) => entry.type === 'input' ? [entry.input.id] : []);
+  expect(delivered).toEqual(expect.arrayContaining(['monitor', 'letter', 'human']));
+  // 人发的消息清了零：这一回合再崩溃只算第 1 次，重开后照常接着做。
+  await checkThenCrash(session);
+  expect(openSession(root, tools).runner.running).toBe(true);
+}, 1000);
+
+/*
+ * 跨重启的状态流转：停止收据已经落盘、在跑的工具还没停下时 kited 崩溃。重开补齐结果时要认出这是被停下的回合，
+ * 按停止收尾，不当成又一次被崩溃打断：不接着做，也不算进连续崩溃。
+ */
+test('停止收据已落盘、回合还没收尾时崩溃：重开后回合按停止收尾，不标被退出打断、不接着做，也不计入连续崩溃', async () => {
+  const root = h.root();
+  const stopping = h.gate(success('停下之前做完了'));
+  const tools = [checkTool(), tool('slow', async () => stopping.promise)];
+  let session = openSession(root, tools);
+  await session.runner.send(input('task'));
+  await checkThenCrash(session);
+
+  // 接着做的回合停在一个不理会取消的工具上，用户停下：收据先落盘，回合等工具停下才收尾，这时 kited 崩溃。
+  session = openSession(root, tools);
+  await session.runner.continueInterrupted();
+  const first = await session.model.call(1);
+  await first.response.emit({ type: 'item', item: item('slow', 'slow') });
+  await waitRecord(session.events, (record) => record.type === 'tool.started' && record.callId === 'slow');
+  void session.runner.interrupt({ id: 'stop' }).catch(() => {});
+  await waitRecord(session.events, (record) => record.type === 'thread.stopped');
+  session.crash();
+
+  session = openSession(root, tools);
+  const stopped = lastTurn(session);
+  expect(stopped?.outcome).toEqual({ kind: 'interrupted' });
+  expect(stopped?.exited).toBeUndefined();
+  expect(session.runner.running).toBe(false);
+  expect(session.runner.state).toMatchObject({ phase: 'idle', busy: false, lastOutcome: { kind: 'interrupted' } });
+  await session.runner.continueInterrupted();
+  await idleOrRequested(session);
+  expect(session.model.calls.values).toHaveLength(0);
+
+  // 不计入：之后代理来信开的回合再崩溃，连上第一次一共 2 次，重开后照常接着做；算进去就到了 3 次、停下等人。
+  await session.runner.send({ id: 'letter', text: '另一个代理的来信', source: 'agent',
+    from: { kind: 'agent', instance: 'peer', title: '统筹' } });
+  await checkThenCrash(session);
+  expect(openSession(root, tools).runner.running).toBe(true);
 }, 1000);
 
 // Bun/Node 文件 IO 的真实截断、复制与重新追加语义，验证故障文件不会悄悄丢中间记录。

@@ -800,7 +800,8 @@ struct FilePane: View {
             QuickLookPreview(url: content.url)
         } else if browser.rendered, browser.format == .html, let content = browser.content, let client = browser.connection,
                   let path = browser.selection.path {
-            WebPreview(source: .workspaceFile(client: client, workspace: browser.workspaceID, path: path, version: content.version),
+            WebPreview(source: .workspaceFile(client: client, workspace: browser.workspaceID, path: path, version: content.version,
+                                              snapshot: browser.selection.version),
                        report: { browser.pageError = $0 })
         } else if browser.rendered, let markdown = browser.markdown, browser.format == .markdown, let path = browser.selection.path {
             ScrollViewReader { proxy in

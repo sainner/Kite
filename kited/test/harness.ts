@@ -5,7 +5,6 @@
  * 需要有远程的项目时用 fake-git.ts 的 Git 平台替身。
  * 所有工作都在工作区里做：按文件夹添加项目并建好一个打开的工作区用 folderWorkspace，检出是 Kite 数据目录里的裸仓库，
  * 测试的文件夹只是导入来源，Kite 不改它。
- * 另有 spawnKited：按路径起 kited 子进程，供进程被杀和启动时环境隔离的测试使用。
  */
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -326,53 +325,4 @@ export function waitRunner(k: Kited, id: string, state: string, since = 0, timeo
 export function waitIdle(k: Kited, id: string, since = 0, timeoutMs?: number) {
   const isAfter = after(k, since);
   return k.waitEvent((e) => e.type === 'idle' && e.threadId === id && isAfter(e), timeoutMs);
-}
-
-// ---- kited 子进程 ----
-
-export interface KitedProcess {
-  url: string;
-  pid: number;
-  kill(signal: NodeJS.Signals): Promise<void>;
-}
-
-/** 按路径起 kited 子进程（bun src/main.ts），等它在标准输出报出地址。 */
-export async function spawnKited(home: string): Promise<KitedProcess> {
-  const main = join(import.meta.dir, '..', 'src', 'main.ts');
-  const proc = Bun.spawn([process.execPath, main], {
-    env: { ...(process.env as Record<string, string>), KITE_HOME: home, KITE_PORT: '0' },
-    stdout: 'pipe',
-    stderr: 'inherit',
-  });
-  const reader = proc.stdout.getReader();
-  try {
-    const decoder = new TextDecoder();
-    let out = '';
-    while (!out.includes('\n')) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error(`kited 没有启动：${out}`);
-      out += decoder.decode(value, { stream: true });
-    }
-    const m = /http:\/\/127\.0\.0\.1:\d+/.exec(out.split('\n')[0]!);
-    if (!m) throw new Error(`kited 第一行输出里没有地址：${out}`);
-    // 之后的输出照样读走，免得管道写满卡住 kited；停进程时等待读完。
-    const reading = (async () => {
-      try { while (!(await reader.read()).done); }
-      finally { reader.releaseLock(); }
-    })();
-    return {
-      url: m[0],
-      pid: proc.pid,
-      async kill(signal) {
-        if (proc.exitCode === null) proc.kill(signal);
-        await Promise.all([proc.exited, reading]);
-      },
-    };
-  } catch (error) {
-    if (proc.exitCode === null) proc.kill('SIGKILL');
-    await proc.exited;
-    await reader.cancel();
-    reader.releaseLock();
-    throw error;
-  }
 }

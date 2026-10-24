@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
-import { processGroupAlive, runCommand } from '../execution/command.ts';
+import { processGroupsSchema, runCommand, stopProcessGroups } from '../execution/command.ts';
 import type { ExecutionPolicy } from '../execution/sandbox.ts';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
@@ -275,10 +275,10 @@ export class Monitors {
       const target = this.host.store.instance(config.target);
       const workspace = this.host.store.workspace(instance.workspaceId);
       if (!target || !workspace) throw new KiteError('monitor 的对象代理或工作区不在了');
-      this.killLeftovers(directory);
+      await this.killLeftovers(directory);
       const result = await runCommand(source.command, MAX_TIMER, controller.signal, {
         cwd: workspace.cwd, logDir: join(directory, 'commands'), env: this.host.env, policy: await this.host.policy(target), outputLimit: 2_000,
-        onStdout, onProcess: (pid, active) => this.registerProcess(directory, pid, active),
+        onStdout, onProcess: (pid, active, started) => this.registerProcess(directory, pid, active, started),
       });
       if (buffer.trim()) lines.push(buffer);
       flush();
@@ -410,19 +410,17 @@ export class Monitors {
     return result;
   }
 
-  /** 上次运行留下的进程组（进程异常退出时没来得及停）先停掉，再起新的。 */
-  private killLeftovers(directory: string): void {
+  /** 上次运行留下的进程组（进程异常退出时没来得及停）先停掉，再起新的；读不懂的登记直接丢掉。 */
+  private async killLeftovers(directory: string): Promise<void> {
     const file = join(directory, 'processes.json');
     if (!existsSync(file)) return;
-    const pids: unknown = JSON.parse(readFileSync(file, 'utf8'));
-    if (Array.isArray(pids)) for (const pid of pids) {
-      if (Number.isSafeInteger(pid) && pid > 1 && processGroupAlive(pid)) { try { process.kill(-pid, 'SIGKILL'); } catch { /* 已经退出。 */ } }
-    }
+    const groups = processGroupsSchema.safeParse(JSON.parse(readFileSync(file, 'utf8')));
+    if (groups.success) await stopProcessGroups(groups.data);
     writeFileSync(file, '[]');
   }
 
-  private registerProcess(directory: string, pid: number, active: boolean): void {
+  private registerProcess(directory: string, pid: number, active: boolean, started: number): void {
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, 'processes.json'), JSON.stringify(active ? [pid] : []));
+    writeFileSync(join(directory, 'processes.json'), JSON.stringify(active ? [{ pid, started }] : []));
   }
 }

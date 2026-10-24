@@ -285,7 +285,7 @@ final class PhoneCallHeader: UIControl, UIPointerInteractionDelegate {
         setNeedsLayout()
     }
 
-    /// 创建 agent、告知 agent 两步的图标是头像，按屏幕的倍率画成位图；还没放进窗口时倍率可能是 0，放进去再画一次（同 PhoneNoticeHeader）。
+    /// 创建 agent、告知 agent 两步的图标是头像，按屏幕的倍率画成位图；还没放进窗口时倍率可能是 0，放进去再画一次（同 PhoneLetterHeader）。
     private func drawAvatar() {
         guard let call, let environment else { return }
         let scale = traitCollection.displayScale > 0 ? traitCollection.displayScale : 3

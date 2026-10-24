@@ -13,7 +13,8 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 export async function startPluginProcess({ bundle, configure, onProcess }: {
   bundle: string;
   configure(client: Client): void;
-  onProcess(pid: number, active: boolean): void;
+  /** started 是起进程的时刻，登记时一并存下，见 ProcessGroup。 */
+  onProcess(pid: number, active: boolean, started: number): void;
 }) {
   const directory = realpathSync(mkdtempSync(join(process.platform === 'darwin' ? '/private/tmp' : tmpdir(), 'kite-plugin-')));
   let sandbox: ReturnType<typeof prepareSandbox> | undefined;
@@ -31,6 +32,7 @@ export async function startPluginProcess({ bundle, configure, onProcess }: {
     sandbox = prepareSandbox(`exec ${quote(process.execPath)} run --no-env-file --no-install --config=${quote(bunfig)} ${quote(entry)}`,
       { cwd: directory, env, policy: { read: [directory, realpathSync(process.execPath), ...system.filter(existsSync)], write: [], network: [] } });
     const child = spawn(sandbox.executable, sandbox.args, { cwd: directory, env: sandbox.env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const started = Date.now();
     managed = true;
     // 上游传输接受任意双向流，不负责创建进程；反向连接到子进程的 stdout / stdin 即可供 Client 使用。
     const transport = new StdioServerTransport(child.stdout, child.stdin, { maxBufferSize: 2 * 1024 * 1024 });
@@ -41,7 +43,7 @@ export async function startPluginProcess({ bundle, configure, onProcess }: {
     const pid = child.pid;
     const cleanup = () => {
       if (pid && processGroupAlive(pid)) return;
-      if (pid) onProcess(pid, false);
+      if (pid) onProcess(pid, false, started);
       sandbox!.dispose();
       rmSync(directory, { recursive: true, force: true });
     };
@@ -65,7 +67,7 @@ export async function startPluginProcess({ bundle, configure, onProcess }: {
     child.on('error', () => { void close().catch(() => {}); });
     child.once('exit', () => { void close().catch(() => {}); });
     try {
-      if (pid) onProcess(pid, true);
+      if (pid) onProcess(pid, true, started);
       configure(client);
       await client.connect(transport, { timeout: 5000 });
       if (closed) throw new Error('插件在握手后退出');

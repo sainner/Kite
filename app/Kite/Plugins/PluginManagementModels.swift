@@ -102,11 +102,21 @@ struct PluginGrantDraft {
 }
 
 nonisolated struct RemoteOperation: Decodable, Identifiable, Sendable {
+    /// 这项操作的授权要写什么（见 GET /operations）：params 是 operation 以外的字段，targets 是目标能取的种类，不带目标的没有。
+    nonisolated struct Grant: Decodable, Sendable {
+        let params: [String]
+        let targets: [String]?
+    }
     let name: String
     let title: String
     let description: String
     let callers: [String]
+    /// 授不了的（只给界面）是 nil。
+    let grant: Grant?
     var id: String { name }
+
+    /// 授权的目标能不能写这一种（created、instances、descendants、workspace）。
+    func accepts(_ kind: String) -> Bool { grant?.targets?.contains(kind) == true }
 }
 
 struct RemotePluginTool: Decodable, Identifiable {

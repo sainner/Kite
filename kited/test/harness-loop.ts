@@ -113,7 +113,7 @@ export const tool = (name: string, execute: Tool['execute'], parallel = false): 
 });
 
 type RunnerOptions = Partial<Pick<HarnessOptions,
-  'journal' | 'startPaused' | 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'compactionFiles'
+  'journal' | 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'compactionFiles'
 >> & {
   model?: Model;
   tools?: Tool[];
@@ -155,7 +155,6 @@ export function useHarness() {
             ? options.instructions() : options.instructions ?? '测试主循环',
           settings: {},
         })),
-        startPaused: options.startPaused,
         afterTools: options.afterTools,
         afterTurn: options.afterTurn,
         beforeStop: options.beforeStop,

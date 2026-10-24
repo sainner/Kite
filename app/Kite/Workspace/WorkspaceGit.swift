@@ -55,8 +55,6 @@ struct RemoteMergeResult: Decodable {
     }
 }
 
-private struct ConfirmRecovery: Encodable { let confirmRecovery = true }
-
 extension AppModel {
     /// 项目登记表里的集成方式：提交 PR 为 true，直接合入为 false；登记表还没读到时为 nil。
     func proposes(_ area: WorkArea) -> Bool? {
@@ -89,9 +87,9 @@ extension AppModel {
         }
     }
 
-    /// 用户手动集成（adopt）、同步（sync）、合回（merge）、流转，连带确认工作区里待恢复的线程，见 kited 的 confirmWorkspaceRecovery。
+    /// 用户手动集成（adopt）、同步（sync）、合回（merge）。
     private func mergeMainline<Result: Decodable>(_ area: WorkArea, _ action: String, via client: KitedClient) async throws -> Result {
-        let result = try await client.request("/workspaces/\(area.remote.workspace.id)/\(action)", method: "POST", body: ConfirmRecovery(),
+        let result = try await client.request("/workspaces/\(area.remote.workspace.id)/\(action)", method: "POST",
                                               timeout: 600, as: Result.self)
         try await refresh(client)
         return result
@@ -106,7 +104,7 @@ extension AppModel {
 
     /// 交给工作区所在的工作机办：它交出工作区、让目标还原，没成就撤回，见 kited 的 /workspaces/:id/transfer。
     func transfer(_ area: WorkArea, to target: WorkerConnection) async throws {
-        struct Transfer: Encodable { let to: String; let operationId: String; let confirmRecovery = true }
+        struct Transfer: Encodable { let to: String; let operationId: String }
         let client = try activeClient(in: area)
         let _: JSON = try await client.request("/workspaces/\(area.remote.workspace.id)/transfer", method: "POST",
                                                body: Transfer(to: target.machine.id, operationId: UUID().uuidString.lowercased()),

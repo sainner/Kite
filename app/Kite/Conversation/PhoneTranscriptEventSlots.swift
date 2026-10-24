@@ -2,10 +2,12 @@
 import SwiftUI
 import UIKit
 
-/// Kite 通知气泡上面那一行：图标（头像大小，见 Notice.mark：Kite 的是 agentBubble 底色的圆、中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
-/// 用户、Line 的是头像）、间距 6、种类（Notice.heading，放不下截掉）、间距 8、小号箭头，竖着居中，字和箭头是次要色。
-/// 宽是内容的宽，整块可点。同 Mac 的 NoticeHeaderView。
-final class PhoneNoticeHeader: PhonePlainControl {
+/// 来信（代理来信、Kite 的通知）气泡上面那一行：图标（头像大小，见 Notice.mark：Kite 的是 agentBubble 底色的圆、中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
+/// 用户、代理和 Line 的是头像）、间距 6、那一句（通知的种类、来信的发信方，放不下截掉）、间距 8、小号箭头，竖着居中，字和箭头是次要色。
+/// 宽是内容的宽，整块可点。同 Mac 的 LetterHeaderView。
+final class PhoneLetterHeader: PhonePlainControl {
+    /// 和下面的气泡之间。
+    static let gap: CGFloat = 8
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
         didSet { if turn != oldValue { chevron.transform = CGAffineTransform(rotationAngle: .pi / 2 * turn) } }
@@ -31,16 +33,16 @@ final class PhoneNoticeHeader: PhonePlainControl {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// environment：画图标用的环境。
-    func show(_ notice: Notice, font: UIFont, expanded: Bool, environment: EnvironmentValues) {
-        title.set(notice.heading, font: font, color: .secondaryLabel)
+    func show(_ heading: LetterHeading, font: UIFont, expanded: Bool, environment: EnvironmentValues) {
+        title.set(heading.title, font: font, color: .secondaryLabel)
         diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-        shown = (notice.mark, environment)
+        shown = (heading.mark, environment)
         drawMark()
         chevron.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
         chevron.tintColor = .secondaryLabel
-        accessibilityLabel = TranscriptSpeech.notice(notice)
+        accessibilityLabel = heading.speech
         accessibilityValue = TranscriptSpeech.expanded(expanded)
-        accessibilityHint = TranscriptSpeech.noticeHint(expanded: expanded)
+        accessibilityHint = TranscriptSpeech.letterHint(expanded: expanded)
         setNeedsLayout()
     }
 

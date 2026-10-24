@@ -3,7 +3,6 @@ import Foundation
 
 nonisolated struct RemoteState: Decodable, Equatable, Sendable {
     nonisolated struct Outcome: Decodable, Equatable, Sendable { let kind: String; var message: String? }
-    nonisolated struct Recovery: Decodable, Equatable, Sendable { let message: String }
     nonisolated struct Capabilities: Decodable, Equatable, Sendable {
         let send: Bool
         let interrupt: Bool
@@ -17,7 +16,6 @@ nonisolated struct RemoteState: Decodable, Equatable, Sendable {
     var compacting: Bool?
     var waitingForResume = false
     var lastOutcome: Outcome?
-    var recovery: Recovery?
     /// 回合卡在审批上等人批准；phase 仍是 running。
     var waiting: RemoteWaiting?
     /// 没回应的提问与密钥请求，按发出的先后；不阻塞回合。
@@ -163,8 +161,6 @@ struct RemoteInput: Codable {
 struct StopRequest: Encodable {
     let id: String
     let inputs: [RemoteInput]
-    /// 每次发出时按当时有没有恢复阻塞填，见 WorkThread.confirmsRecovery。
-    var confirmRecovery: Bool?
 }
 
 struct StopResponse: Decodable { let returned: [RemoteInput] }

@@ -53,9 +53,11 @@ final class FileBrowser {
     /// 时间线读不到的原因。
     private(set) var historyError: String?
     private var historyRequest = UUID()
+    /// 读这份时间线之前问到的文件版本（files/content 的 ETag），见 workspaceChanged；不知道是 nil。
+    private var historyTag: String?
     /// 原文编辑器里的这份文件；不看原文、读不成 UTF-8 文本时是 nil，退回按页看。
     private(set) var document: SourceDocument?
-    /// 没保存就换去看别的文件时留下的改动，按路径；回到那个文件接着改。只在这台设备上，App 退出就没了。
+    /// 没保存就换去看别的文件时留下的改动，按路径；回到那个文件时交还给编辑器接着改。只在这台设备上，App 退出就没了。
     private var drafts: [String: (text: String, version: String)] = [:]
     private(set) var saving = false
     /// 保存时工作机说文件在打开以后被改过，等窗口问是覆盖还是放弃自己的修改。
@@ -134,6 +136,7 @@ final class FileBrowser {
             historyRequest = UUID()
             history = nil
             historyError = nil
+            historyTag = nil
         }
         selection = value
         diff = nil
@@ -369,18 +372,21 @@ final class FileBrowser {
         await read(offset: 1)
         guard page != nil, let path = selection.path, let client else { return }
         let request = textRequest
+        let editable = selection.version == nil
+        // 已经开着这份原文（点了同一文件的行号引用）时编辑器留着，不让给下载进度：拆掉重建会丢撤销记录和滚动位置
+        let open = document.map { $0.path == path && $0.editable == editable } ?? false
         loadingText = true
         defer { if textRequest == request { loadingText = false; download = nil } }
         do {
             let file = try await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path,
                                                               version: selection.version) { [weak self] progress in
+                guard !open else { return }
                 Task { @MainActor in if self?.textRequest == request { self?.download = progress } }
             }
             guard let source = await Self.sourceText(file), textRequest == request, !Task.isCancelled else { return }
-            let editable = selection.version == nil
             if let document, document.path == path, document.editable == editable {
                 document.follow(source.text, version: source.version)
-            } else if editable, let draft = drafts[path] {
+            } else if editable, let draft = drafts.removeValue(forKey: path) {
                 document = SourceDocument(path: path, editable: true, text: draft.text, version: draft.version, dirty: true)
             } else {
                 document = SourceDocument(path: path, editable: editable, text: source.text, version: source.version)
@@ -412,6 +418,7 @@ final class FileBrowser {
     func save(force: Bool = false) async {
         guard let document, document.editable, document.dirty, !saving else { return }
         let text = document.current
+        let base = document.version
         saving = true
         saveError = nil
         defer { saving = false }
@@ -421,7 +428,11 @@ final class FileBrowser {
             let written = try await operation("write", body: Write(instanceId: instanceID, path: document.path, text: text,
                                                                    baseVersion: document.version, force: force ? true : nil), as: Written.self)
             document.saved(text, version: written.version)
-            drafts[document.path] = nil
+            // 保存期间接着改、又换去看别的文件时，后来的改动已经留进草稿（closeDocument）：和这次存的一样就清掉；
+            // 不一样的留着，改按存好的版本接着改，再保存时不当成别人改过
+            if let draft = drafts[document.path] {
+                drafts[document.path] = draft.text == text ? nil : (draft.text, draft.version == base ? written.version : draft.version)
+            }
         } catch let error as KitedError where error.status == 409 {
             if self.document === document { saveConflict = true }
         } catch {
@@ -438,17 +449,23 @@ final class FileBrowser {
     }
 
     /// 工作区打了新快照（agent 改了文件、别的设备保存了）：重读时间线，原文没改过时跟上新内容。
+    /// 每枚快照都通知到每个浏览窗口，大多没改到所选的文件。文件从上次读时间线以来没变、现在的内容又是时间线上最新的一版时，
+    /// 这枚快照里它和上一版一样，时间线和内容都不用重读：只问一次文件的版本（HEAD，工作机只 stat），不跑 files.history 的几个 git。
     func workspaceChanged() async {
-        guard selection.path != nil, selection.diffId == nil else { return }
-        await loadHistory()
-        guard let document, !document.dirty, selection.version == nil, let path = selection.path, let client,
+        guard let path = selection.path, selection.diffId == nil, let client else { return }
+        let tag = try? await FileContentCache.shared.tag(client: client, workspace: workspaceID, path: path)
+        guard selection.path == path, !Task.isCancelled else { return }
+        if let tag, tag == historyTag, history?.current != nil { return }
+        // 版本先于时间线问到：中间又改了的，下一枚快照时版本对不上，照样重读
+        await loadHistory(tag: tag)
+        guard let document, !document.dirty, selection.version == nil, selection.path == path,
               let file = try? await FileContentCache.shared.file(client: client, workspace: workspaceID, path: path),
               let source = await Self.sourceText(file), self.document === document else { return }
         document.follow(source.text, version: source.version)
     }
 
-    /// 读所选文件的时间线：内容变过的工作区快照，新的在前。读不到时记下原因，时间线里说明。
-    func loadHistory() async {
+    /// 读所选文件的时间线：内容变过的工作区快照，新的在前。读不到时记下原因，时间线里说明。tag 见 historyTag。
+    func loadHistory(tag: String? = nil) async {
         guard let path = selection.path else { return }
         let request = UUID()
         historyRequest = request
@@ -458,9 +475,11 @@ final class FileBrowser {
             guard historyRequest == request, !Task.isCancelled else { return }
             history = value
             historyError = nil
+            historyTag = tag
         } catch {
             guard historyRequest == request, !Task.isCancelled else { return }
             historyError = error.localizedDescription
+            historyTag = nil
         }
     }
 
@@ -651,7 +670,8 @@ final class FileBrowser {
 }
 
 /// 原文编辑器里的一份文件：打开时的文字与版本（全文 sha256，保存时交给工作机核对，见 files.write），改没改过。
-/// 改动中的文字在编辑器的文字存储里（storage），保存时取；工作机上的新内容、保存后的结果经 follow、saved 换进来。
+/// 改动中的文字在编辑器的文字存储里（storage），保存时取；编辑器拆掉时（换了窗口排布）留在 unmounted，再挂上的编辑器从它接着改。
+/// 工作机上的新内容、保存后的结果经 follow、saved 换进来。
 @Observable
 final class SourceDocument {
     let path: String
@@ -664,6 +684,8 @@ final class SourceDocument {
     private(set) var dirty: Bool
     /// 编辑器的文字存储，见 CodeEditor。
     @ObservationIgnored weak var storage: NSTextStorage?
+    /// 编辑器拆掉时没保存的文字，见 detach。
+    @ObservationIgnored private var unmounted: String?
 
     init(path: String, editable: Bool, text: String, version: String, dirty: Bool = false) {
         self.path = path
@@ -673,11 +695,17 @@ final class SourceDocument {
         self.dirty = dirty
     }
 
-    /// 编辑器里现在的文字。
-    var current: String { storage?.string ?? text }
+    /// 编辑器里现在的文字；编辑器拆掉了时是拆掉前的。新挂上的编辑器从它开始。
+    var current: String { storage?.string ?? unmounted ?? text }
 
     /// 用户在编辑器里改了字。
     func edited() { if !dirty { dirty = true } }
+
+    /// 编辑器要拆掉了：改过的文字留下来。新的编辑器已经接手（storage 换成了它的）时不管。
+    func detach(_ storage: NSTextStorage) {
+        guard storage === self.storage else { return }
+        unmounted = dirty ? storage.string : nil
+    }
 
     /// 跟上工作机上的新内容：改过的不动，内容一样的不换。
     func follow(_ text: String, version: String) {
@@ -692,6 +720,7 @@ final class SourceDocument {
         self.version = version
         self.text = text
         dirty = current != text
+        if !dirty { unmounted = nil }
     }
 }
 

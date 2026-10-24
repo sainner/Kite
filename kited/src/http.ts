@@ -201,13 +201,6 @@ export function serve(kite: Kite, listen: Listen) {
     if (listen.remote && !(await kite.directory.verify(req.headers.get('X-Kite-Peer') ?? ''))) throw new KiteError('只有工作机能同步账号数据', 403);
     return fn(req);
   });
-  /** 集成、同步这类工作区上的 Git 操作：请求体可以带 confirmRecovery，先确认恢复再做。 */
-  const recoverable = (invalid: string, run: (id: string) => Promise<unknown>) => long(bound(async (req: Request & { params: { id: string } }) => {
-    const parsed = z.object({ confirmRecovery: z.literal(true).optional() }).strict().safeParse(await optionalBody(req));
-    if (!parsed.success) throw new KiteError(invalid);
-    if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
-    return run(req.params.id);
-  }));
   /** 升级成 WebSocket，检查同 bound；prepare 核对请求、给出连接带的数据，failure 是请求不是 WebSocket 时的说明。 */
   const socketRoute = <R extends Request>(prepare: (req: R) => SocketData, failure: string) => (req: R, server: Server<SocketData>) => {
     try {
@@ -421,10 +414,8 @@ export function serve(kite: Kite, listen: Listen) {
       }) },
       '/workspaces/:id/setup': { POST: bound((req) => kite.retrySetup(req.params.id)) },
       '/workspaces/:id/transfer': { POST: long(bound(async (req) => {
-        const parsed = z.object({ to: z.string().min(1), operationId: z.string().min(1), confirmRecovery: z.literal(true).optional() })
-          .strict().safeParse(await body(req));
+        const parsed = z.object({ to: z.string().min(1), operationId: z.string().min(1) }).strict().safeParse(await body(req));
         if (!parsed.success) throw new KiteError('流转要写 to（目标工作机）与 operationId');
-        if (parsed.data.confirmRecovery) await kite.confirmWorkspaceRecovery(req.params.id);
         // 不另记回执：执行中的回执会被交接当成结果未知的操作挡住自己。重试照样安全，交接可以重入，目标的还原按 operationId 去重。
         return kite.transferWorkspace(req.params.id, parsed.data.to, { operationId: parsed.data.operationId });
       })) },
@@ -667,9 +658,6 @@ export function serve(kite: Kite, listen: Listen) {
           const via = sourceOf(req);
           // relay：Line 照原文转达用户的话，输入来源仍是人。
           if (b.relay !== undefined && (b.relay !== true || !via)) throw new KiteError('relay 只用于 Line 转达用户原文');
-          // 用户在 App 里发送即确认恢复；Line 和其他 agent 的发送仍被恢复阻塞挡住。
-          if (b.confirmRecovery !== undefined && (b.confirmRecovery !== true || via)) throw new KiteError('confirmRecovery 只用于用户在 App 里发送');
-          if (b.confirmRecovery) await kite.confirmRecovery(req.params.id);
           // skipWaiting：用户没回应线程在等的审批、直接发了这条，消息排进输入以后再按拒绝交回（见 Waits.skip）；提问与密钥请求不阻塞，不用跳过。
           if (b.skipWaiting !== undefined && via) throw new KiteError('skipWaiting 只用于用户在 App 里发送');
           const skip = b.skipWaiting === undefined ? undefined : str(b.skipWaiting, 'skipWaiting');
@@ -683,10 +671,8 @@ export function serve(kite: Kite, listen: Listen) {
       },
       '/threads/:id/interrupt': { POST: bound(async (req) => {
         const data = await optionalBody(req, { id: crypto.randomUUID() });
-        const parsed = z.object({ id: z.string().min(1), inputs: z.array(inputSchema).optional(), confirmRecovery: z.literal(true).optional() }).safeParse(data);
+        const parsed = z.object({ id: z.string().min(1), inputs: z.array(inputSchema).optional() }).safeParse(data);
         if (!parsed.success) throw new KiteError('停止请求无效');
-        // 停止没确认就出了异常时，Claude 要先确认恢复才能交回这次停止的收据。
-        if (parsed.data.confirmRecovery) await kite.confirmRecovery(req.params.id);
         const via = sourceOf(req);
         return kite.operations.invoke({ kind: 'ui', ...(via ? { via } : {}) }, kite.thread(req.params.id).workspaceId, 'agent.stop', {
           instanceId: req.params.id, operationId: parsed.data.id, inputs: parsed.data.inputs,
@@ -694,14 +680,12 @@ export function serve(kite: Kite, listen: Listen) {
       }) },
       '/threads/:id/resume': { POST: bound(async (req) => {
         const data = await optionalBody(req);
-        const parsed = z.object({ operationId: z.string().min(1).optional(), confirmRecovery: z.literal(true).optional() }).strict().safeParse(data);
+        const parsed = z.object({ operationId: z.string().min(1).optional() }).strict().safeParse(data);
         if (!parsed.success) throw new KiteError('继续请求无效');
-        if (parsed.data.confirmRecovery) await kite.confirmRecovery(req.params.id);
         return kite.operations.invoke({ kind: 'ui' }, kite.thread(req.params.id).workspaceId, 'agent.resume', {
           instanceId: req.params.id, operationId: parsed.data.operationId ?? crypto.randomUUID(),
         }, req.signal);
       }) },
-      '/threads/:id/recover': { POST: bound((req) => kite.recover(req.params.id)) },
       '/threads/:id/waiting/:waiting': { POST: bound(async (req) => {
         kite.thread(req.params.id);
         await kite.respondWaiting(req.params.id, req.params.waiting, await body(req), sourceOf(req));
@@ -722,9 +706,9 @@ export function serve(kite: Kite, listen: Listen) {
       '/workspaces/:id/restore': {
         POST: bound(async (req) => kite.restore(req.params.id, str((await body(req)).commit, 'commit'))),
       },
-      '/workspaces/:id/adopt': { POST: recoverable('集成请求无效', (id) => kite.adopt(id)) },
-      '/workspaces/:id/sync': { POST: recoverable('同步请求无效', (id) => kite.syncWorkspace(id)) },
-      '/workspaces/:id/merge': { POST: recoverable('合回请求无效', (id) => kite.mergeWorkspace(id)) },
+      '/workspaces/:id/adopt': { POST: long(bound((req) => kite.adopt(req.params.id))) },
+      '/workspaces/:id/sync': { POST: long(bound((req) => kite.syncWorkspace(req.params.id))) },
+      '/workspaces/:id/merge': { POST: long(bound((req) => kite.mergeWorkspace(req.params.id))) },
       '/instances/:id/archive': { POST: bound((req) => kite.archiveInstance(req.params.id)) },
       '/workspaces/:id/name': { PUT: bound(async (req) => {
         const parsed = z.discriminatedUnion('mode', [

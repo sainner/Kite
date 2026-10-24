@@ -28,7 +28,7 @@ const temp = useTemp();
 
 const token = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 /** Kite 自己的工具，Claude 里用裸名（不带 MCP 前缀），全部常驻。 */
-const expectedTools = ['read', 'skill', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send', 'agent_resume',
+const expectedTools = ['read', 'skill', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send',
   'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop',
   'preview_open', 'preview_action', 'preview_inspect', 'preview_read', 'preview_list', 'preview_stop'].sort();
 const tools = (request: Logged): string[] => (request.body.tools ?? []).map((tool: { name: string }) => tool.name);
@@ -382,7 +382,7 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
   expect(await call(restarted.url, 'POST', diffPath, partialArgs)).toEqual({ status: 200, body: partialDiff });
 });
 
-/* Claude 的 MCP 取消信号必须跨 SDK 到达受管 shell；真实订阅曾在正常停止后误留 recovery，阻止后续继续。 */
+/* Claude 的 MCP 取消信号必须跨 SDK 到达受管 shell。 */
 test('Claude shell 保持工作区沙箱并流式输出，停止会等待命令和后代退出', async () => {
   k = startKited();
   const kk = k;
@@ -433,7 +433,6 @@ test('Claude shell 保持工作区沙箱并流式输出，停止会等待命令�
     await until(() => pids.every((pid) => !alive(pid)), 'shell 与后代进程都停止', 1_000);
     const stopped = await history(kk, thread.id);
     expect(stopped.state).toMatchObject({ phase: 'idle', busy: false, lastOutcome: { kind: 'interrupted' } });
-    expect(stopped.state.recovery).toBeUndefined();
     const calls = stopped.records.filter((record) => record.block.type === 'tool_use' && record.block.id === callId);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.id).toBe(streaming.id);

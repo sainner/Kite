@@ -19,7 +19,7 @@ import { modelText, withSkillText } from '../harness/input.ts';
 import { TOOL_SEARCH } from '../harness/tool-search.ts';
 import { restoreContext } from '../harness/context/assembler.ts';
 import { readJournal } from '../harness/journal.ts';
-import { inputItem, outcomeFeedback, recoveryFeedback, replayUnits, skillItem } from '../harness/history.ts';
+import { inputItem, outcomeFeedback, replayUnits, skillItem } from '../harness/history.ts';
 import { messageTexts } from '../harness/responses.ts';
 import { appendThreadJournal } from '../harness/thread-host.ts';
 import type { ContextItem, Input, Json, JsonObject, JournalRecord, ModelItem, ToolImage, ToolResult } from '../harness/types.ts';
@@ -378,7 +378,7 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
 export function harnessToClaude(records: readonly JournalRecord[], after: number, options: ClaudeTarget) {
   const tail = records.filter((row) => row.seq > after && row.type !== 'context.imported');
   const reshaped = tail.some((row) => row.type === 'context.compacted' || row.type === 'context.compaction.reverted');
-  if (!reshaped && !tail.some((row) => ['request.started', 'turn.feedback', 'turn.finished', 'recovery.confirmed'].includes(row.type))) return undefined;
+  if (!reshaped && !tail.some((row) => ['request.started', 'turn.feedback', 'turn.finished'].includes(row.type))) return undefined;
   const through = String(records.at(-1)!.seq);
   const importId = randomUUID();
   const inputs = new Map<string, Input>();
@@ -476,7 +476,6 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
         if (feedback) text(feedback);
         break;
       }
-      case 'recovery.confirmed': flush(); text(recoveryFeedback); break;
       default: break;
     }
   }

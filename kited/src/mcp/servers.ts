@@ -9,7 +9,6 @@ import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport, UnauthorizedError, type CallToolResult, type Tool as McpTool } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { z } from 'zod';
-import { permittedTools } from '../agents/tool-policy.ts';
 import { KiteError } from '../errors.ts';
 import { commandEnvironment } from '../execution/sandbox.ts';
 import type { Tool } from '../harness/types.ts';
@@ -115,9 +114,9 @@ export class McpServers {
 
   names(): string[] { return this.sorted; }
   description(server: string): string | undefined { return this.configs[server]?.description; }
-  /** 生效的服务：实例打开的里面，这台工作机装了、项目约束没禁的；顺序按服务名。 */
+  /** 生效的服务：实例打开的里面，这台工作机装了、项目约束没禁的；顺序按服务名。服务之间没有依赖，不走内置工具的筛选。 */
   effective(enabled: readonly string[], deny: readonly string[] = []): string[] {
-    return permittedTools(this.sorted, [{ mode: 'allow', tools: [...enabled] }, { mode: 'deny', tools: [...deny] }]);
+    return this.sorted.filter((server) => enabled.includes(server) && !deny.includes(server));
   }
 
   list(): ServerEntry[] {

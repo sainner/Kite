@@ -25,7 +25,7 @@ const USAGE = `用法：
   --auth <文件>         ChatGPT 登录凭据，默认 $KITE_HOME/auth/chatgpt/auth.json（KITE_HOME 默认 ~/.kite）；
                          DeepSeek 型号改读 DEEPSEEK_API_KEY
 
-对话命令：/status /stop /resume /recover /exit
+对话命令：/status /stop /resume /exit
 工作过程中直接输入可以插话；Ctrl+C 停止执行并退回队列，空闲时退出。
 会话存在 $KITE_HOME/sessions（默认 ~/.kite/sessions）；命令直接操作指定目录。`;
 
@@ -97,9 +97,10 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
     policy: await harnessPolicy({ cwd, env: process.env, home, authFile: resolve(values.auth ?? defaultAuthFile()) }),
     prepareRequest: (tools) => ({ model, tools, instructions: projectContext(defaultContextDefinition, variables), variables, settings }),
   });
+  // 终端里恢复的会话：上次被退出打断的接着做，同 kited 启动时。
+  await host.continueInterrupted();
   const status = () => line(JSON.stringify(host.runner.state, null, 2));
   line(`Kite · ${modelName} · ${reasoning}\n工作目录：${cwd}\n会话：${basename(directory)}\n记录：${directory}`);
-  if (host.runner.state.recovery) line('上次执行结果未知。确认旧命令均已停止后输入 /recover，再输入 /resume。');
   const restoreInputs = (inputs: import('./harness/types.ts').Input[]) => {
     const text = inputs.map((input) => input.text).join('\n\n');
     // readline.write 会将换行当作重新提交，退回内容只打印，留给用户重新编辑。
@@ -109,7 +110,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   let signalWork: Promise<void> = Promise.resolve();
   const stop = () => {
     signalWork = (async () => {
-      if (host.runner.state.busy && !host.runner.state.recovery) {
+      if (host.runner.state.busy) {
         restoreInputs(await host.runner.interrupt());
       } else {
         exiting = true; rl?.close(); await host.close();
@@ -135,7 +136,6 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
           case '/status': status(); break;
           case '/stop': restoreInputs(await host.runner.interrupt()); break;
           case '/resume': await host.runner.resume(); break;
-          case '/recover': await host.confirmRecovery(); status(); break;
           case '/exit': exiting = true; rl?.close(); await host.close(); break;
           default: await host.runner.send({ id: randomUUID(), text, source: 'human' });
         }
@@ -154,7 +154,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
     }
     await signalWork;
     const outcome = host.runner.state.lastOutcome;
-    return outcome?.kind === 'failed' || host.runner.state.recovery ? 1 : 0;
+    return outcome?.kind === 'failed' ? 1 : 0;
   } finally {
     process.off('SIGINT', stop);
     process.off('SIGTERM', terminate);

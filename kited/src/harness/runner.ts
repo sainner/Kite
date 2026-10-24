@@ -1,5 +1,6 @@
 /** 单个线程的执行实例：控制入口保持可用，单个 pump 推进模型、工具和收尾。 */
 import { randomUUID } from 'node:crypto';
+import { setTimeout as wait } from 'node:timers/promises';
 import { ToolBatch } from './tools.ts';
 import { HarnessHistory, type ContextUnit } from './history.ts';
 import { inputSchema, returnedOnStop, sameInput } from './input.ts';
@@ -9,6 +10,7 @@ import { contextUpdateContext } from './context/notifications.ts';
 import { notificationSchema, requestSnapshot } from './request-config.ts';
 import { AUTO_COMPACT_RATIO, compactInstructions, compactionItems, compactTemplate, summaryText } from './compaction.ts';
 import type { ContextAssembly } from './context/types.ts';
+import { ModelRequestError } from './types.ts';
 import type {
   CompactionRequest, ContextItem, HarnessRequest, Input, InputMaterial, JournalEvent, JournalRecord, JsonObject, ModelItem, Outcome, Phase,
   RequestSnapshot, StopRequest, HarnessEvent, HarnessOptions, ThreadRunner, ThreadState, Tool, ToolDefinition,
@@ -27,6 +29,20 @@ interface Turn {
 }
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const retryable = (error: unknown) => error instanceof ModelRequestError && error.retryable;
+
+/** 连续被 kited 崩溃打断到这个次数，多半是在崩溃循环，不再自动继续；两个后端共用。 */
+export const EXIT_LIMIT = 3;
+/** 被 kited 退出打断的回合结果；crashes 是连上这一次的连续崩溃次数，关闭时停下的传 undefined。 */
+export const exitOutcome = (crashes?: number): Outcome => ({ kind: 'failed', message: crashes === undefined ? '被 kited 关闭打断'
+  : crashes >= EXIT_LIMIT ? `连续 ${EXIT_LIMIT} 次被 kited 崩溃打断，可能是崩溃循环，不再自动继续` : '被 kited 意外退出打断' });
+/** 接着被 kited 退出打断的回合时放进队列的说明，note 是上层附加的情况；两个后端共用。 */
+export const interruptionNotice = (note?: string): Input => ({ id: randomUUID(), source: 'kite',
+  text: `上次执行被 kited 退出打断，当时在执行的工具被意外打断，结果未知${note ? `；${note}` : ''}。先检查实际状态再接着做。`,
+  notice: { kind: 'resumed', title: '接着被打断的任务' } });
+/** 模型请求可重试的失败最多重试几次；间隔从 2 秒起每次翻倍，前后约一分钟。 */
+const MODEL_RETRIES = 5;
+const MODEL_RETRY_MS = 2000;
 
 /** 加载之后插件升级、定义变了：不按旧参数执行，让模型重新加载。 */
 const staleTool = (tool: Tool): Tool => ({ ...tool, validate() {},
@@ -40,31 +56,40 @@ export class HarnessRunner implements ThreadRunner {
   private pumping?: Promise<void>;
   private phase: Phase = 'idle';
   private stopping?: string;
-  private storageFailed = false;
+  /** 会话记录写入失败的说明；有它之后不再追加记录，见 broken。 */
+  private storageFailure?: string;
   private closing = false;
   private closed = false;
   private forceRun = false;
+  /** 打开时发现上次被 kited 退出打断，还没由上层决定接着做（见 continueInterrupted）；新输入、继续和停止也算处理了。 */
+  private interrupted: boolean;
 
   constructor(private options: HarnessOptions) {
     this.history = new HarnessHistory(options.journal.records);
     this.recover();
-    if (options.startPaused && this.history.pending.size) this.history.waitingForResume = true;
-    this.phase = 'idle';
-    this.kick();
+    // 打开本身不开始执行：被切断的回合（记为失败，已在等待继续）、退出前收下还没开始的输入，都停在等待继续。
+    this.interrupted = this.history.exited || (this.history.pending.size > 0 && !this.history.waitingForResume);
+    if (this.interrupted) this.history.waitingForResume = true;
   }
+
+  /** 连续被 kited 崩溃打断到了上限：停下等人，只有人发的消息或显式继续能解除；自动来的输入照常排队，不起回合。 */
+  private get crashLooping(): boolean { return this.history.exits >= EXIT_LIMIT; }
+
+  /** 回合在跑，或被 kited 退出打断后还没续跑（到了连续崩溃上限的不再续跑）：会话目录的运行标记照它放下、收起，见 markRunning。 */
+  get running(): boolean { return !!this.history.openTurn || (this.history.exited && !this.crashLooping); }
 
   get state(): ThreadState {
     return {
       phase: this.phase, busy: !!this.active || !!this.pumping,
       ...(this.compaction ? { compacting: true } : {}),
-      waitingForResume: this.history.waitingForResume,
-      ...(this.history.recovery ? { recovery: structuredClone(this.history.recovery) } : {}),
+      waitingForResume: this.history.waitingForResume || this.crashLooping,
       ...(this.active ? { turnId: this.active.id } : {}),
       ...(this.history.lastOutcome ? { lastOutcome: structuredClone(this.history.lastOutcome) } : {}),
     };
   }
 
   get lifecycle(): 'open' | 'closing' | 'closed' { return this.closed ? 'closed' : this.closing ? 'closing' : 'open'; }
+  get broken(): boolean { return this.storageFailure !== undefined; }
 
   /** material 由宿主在收下时给出，随这条输入记下，见 InputMaterial。 */
   async send(input: Input, material: InputMaterial = {}): Promise<boolean> {
@@ -77,10 +102,12 @@ export class HarnessRunner implements ThreadRunner {
       return false;
     }
     if (this.stopping) throw new Error('会话正在停止，请稍后发送');
-    if (this.history.recovery) throw new Error('会话需要先确认恢复');
     const { images, skill } = material;
+    this.interrupted = false;
     this.record({ type: 'input.received', input, ...(images?.length ? { images } : {}), ...(skill ? { skill } : {}) });
     this.kick();
+    // 没起回合的只有连续崩溃到上限时自动来的输入；观察者按收下的记录会以为暂停解除了，补报实际状态。
+    if (!this.pumping) this.emit({ type: 'state', state: this.state });
     return true;
   }
 
@@ -113,6 +140,7 @@ export class HarnessRunner implements ThreadRunner {
     // 冻结后再落盘；同步事件观察者也不能趁这段窗口提交下一回合。
     this.stopping = request.id;
     this.forceRun = false;
+    this.interrupted = false;
     try {
       this.record({ type: 'thread.stopped', id: request.id, returned: [...returned.values()] });
       this.stopActive();
@@ -139,22 +167,22 @@ export class HarnessRunner implements ThreadRunner {
 
   async resume(): Promise<void> {
     this.assertOpen();
-    if (this.history.recovery) throw new Error('会话需要先确认恢复');
     if (this.stopping) throw new Error('会话正在停止，请稍后继续');
     if (this.active) return;
     if (!this.history.pending.size && !this.history.segments.length) throw new Error('没有可以继续的会话内容');
-    this.history.waitingForResume = false;
+    this.interrupted = false;
+    this.record({ type: 'thread.resumed' });
     this.forceRun = true;
     this.kick();
   }
 
-  async confirmRecovery(): Promise<void> {
+  async continueInterrupted(note?: string): Promise<void> {
     this.assertOpen();
-    if (this.active || this.pumping) throw new Error('执行尚未停止，不能确认恢复');
-    if (this.storageFailed) throw new Error('记录写入失败，须重新打开并检查会话');
-    if (!this.history.recovery) return;
-    this.record({ type: 'recovery.confirmed' });
-    this.setPhase('idle');
+    if (!this.interrupted || this.crashLooping) return;
+    this.interrupted = false;
+    if (this.history.exited) { await this.send(interruptionNotice(note)); return; }
+    this.history.waitingForResume = false;
+    this.kick();
   }
 
   async compact(request: CompactionRequest): Promise<void> {
@@ -162,7 +190,6 @@ export class HarnessRunner implements ThreadRunner {
     if (!request.id) throw new Error('压缩请求必须有 id');
     if (this.history.compactions.has(request.id)) return;
     if (this.active || this.pumping || this.stopping) throw new Error('会话正在执行，空闲后才能压缩');
-    if (this.history.recovery) throw new Error('会话需要先确认恢复');
     let from: number;
     let until: number | undefined;
     let range: string;
@@ -205,7 +232,6 @@ export class HarnessRunner implements ThreadRunner {
   async revertCompaction(id: string): Promise<void> {
     this.assertOpen();
     if (this.active || this.pumping || this.stopping) throw new Error('会话正在执行，空闲后才能撤销压缩');
-    if (this.history.recovery) throw new Error('会话需要先确认恢复');
     const compaction = this.history.compactions.get(id);
     if (!compaction) throw new Error('没有这次压缩');
     if (compaction.reverted) return;
@@ -232,7 +258,7 @@ export class HarnessRunner implements ThreadRunner {
 
   private assertOpen(): void {
     if (this.closing || this.closed) throw new Error('会话正在关闭或已关闭');
-    if (this.storageFailed) throw new Error('会话记录写入失败，须重新打开');
+    if (this.storageFailure) throw new Error(`${this.storageFailure}，须重新打开`);
   }
 
   private emit(event: HarnessEvent): void {
@@ -249,13 +275,12 @@ export class HarnessRunner implements ThreadRunner {
   }
 
   private record(event: JournalEvent): void {
-    if (this.storageFailed) throw new Error('会话记录已经发生写入故障，不能继续追加');
+    if (this.storageFailure) throw new Error('会话记录已经发生写入故障，不能继续追加');
     let row: JournalRecord;
     try { row = this.options.journal.append(event); }
     catch (error) {
-      this.storageFailed = true;
-      this.history.recovery = { message: `会话记录写入失败：${message(error)}` };
-      this.history.lastOutcome = { kind: 'failed', message: this.history.recovery.message };
+      this.storageFailure = `会话记录写入失败：${message(error)}`;
+      this.history.lastOutcome = { kind: 'failed', message: this.storageFailure };
       if (this.active) {
         this.active.failure ??= { error };
         this.active.controller.abort();
@@ -267,31 +292,36 @@ export class HarnessRunner implements ThreadRunner {
     this.emit({ type: 'record', record: row });
   }
 
+  /**
+   * kited 崩溃时留下的回合：没结束的请求记为中断，开始了没结果的工具记为结果未知，回合记为被退出打断。
+   * 已收到手动停止的按停止补完收尾：结果是被停止，不算被 kited 打断，不计入连续崩溃，也不接着做。
+   */
   private recover(): void {
     const turnId = this.history.openTurn;
     if (!turnId) return;
+    const stopped = this.history.stoppedTurn === turnId;
     for (const request of this.history.requests.values()) {
       if (request.turnId !== turnId) continue;
-      if (!request.ended) this.record({ type: 'request.failed', turnId, requestId: request.id, message: '宿主退出，旧请求已中断' });
+      if (!request.ended) this.record({ type: 'request.failed', turnId, requestId: request.id, message: 'kited 退出，请求已中断' });
       for (const item of request.items) {
         const call = item.call;
         if (!call || request.results.has(call.id)) continue;
         const started = request.started.has(call.id);
         this.record({ type: 'tool.finished', turnId, requestId: request.id, callId: call.id, result: {
           status: started ? 'unknown' : 'not_executed',
-          output: started ? '宿主退出前工具已开始，但没有结果。必须先确认残留执行停止，再检查实际效果。' : '宿主退出前工具尚未开始，未执行。',
+          output: started ? '工具执行被意外打断，结果未知' : 'kited 退出前工具尚未开始，未执行。',
         } });
       }
     }
-    this.record({ type: 'turn.finished', turnId, outcome: { kind: 'failed',
-      message: this.history.recovery?.message ?? '宿主退出中断了上一回合，等待显式继续' },
-      ...(this.history.recovery ? { recovery: this.history.recovery } : {}) });
+    this.record(stopped ? { type: 'turn.finished', turnId, outcome: { kind: 'interrupted' } }
+      : { type: 'turn.finished', turnId, outcome: exitOutcome(this.history.exits + 1), exited: 'crashed' });
   }
 
   contextUnits(): ContextUnit[] { return this.history.contextUnits(); }
 
   private canRun(): boolean {
-    return !this.closing && !this.stopping && !this.history.recovery && !this.history.waitingForResume && (this.history.pending.size > 0 || this.forceRun);
+    return !this.closing && !this.stopping && !this.storageFailure && !this.history.waitingForResume && !this.crashLooping
+      && (this.history.pending.size > 0 || this.forceRun);
   }
 
   private kick(): void {
@@ -332,10 +362,20 @@ export class HarnessRunner implements ThreadRunner {
 
   private async runTurn(turn: Turn): Promise<void> {
     let outcome: Outcome = { kind: 'completed' };
+    let retries = 0;
     try {
       while (true) {
         this.checkTurn(turn);
-        const followUp = await this.sample(turn);
+        let followUp: boolean;
+        try {
+          followUp = await this.sample(turn);
+          retries = 0;
+        } catch (error) {
+          if (!retryable(error) || turn.failure || turn.stopRequested) throw error;
+          if (retries === MODEL_RETRIES) throw new Error(`${message(error)}（已重试 ${MODEL_RETRIES} 次）`);
+          await wait(MODEL_RETRY_MS * 2 ** retries++, undefined, { signal: turn.controller.signal });
+          continue;
+        }
         this.checkTurn(turn);
         if (followUp || this.history.pending.size) continue;
         const feedback = await this.options.beforeStop?.(turn.id);
@@ -352,11 +392,13 @@ export class HarnessRunner implements ThreadRunner {
     catch (error) {
       outcome = { kind: 'failed', message: `回合收尾失败：${message(error)}` };
     }
-    if (this.storageFailed) outcome = { kind: 'failed', message: this.history.recovery!.message };
+    // kited 关闭时停下的回合（不是用户停的）记为被退出打断，kited 下次启动时接着做。
+    const exited = this.closing && !this.stopping && outcome.kind !== 'completed';
+    if (exited) outcome = exitOutcome();
+    if (this.storageFailure) outcome = { kind: 'failed', message: this.storageFailure };
     this.history.lastOutcome = outcome;
     this.history.waitingForResume ||= outcome.kind === 'failed';
-    if (!this.storageFailed) this.record({ type: 'turn.finished', turnId: turn.id, outcome,
-      ...(this.history.recovery ? { recovery: this.history.recovery } : {}) });
+    if (!this.storageFailure) this.record({ type: 'turn.finished', turnId: turn.id, outcome, ...(exited ? { exited: 'closed' as const } : {}) });
   }
 
   /** 估算达到上限时先压缩全部已有历史；自动压缩后尚未实测就不再触发，避免粗估偏高时反复压缩。 */
@@ -385,7 +427,7 @@ export class HarnessRunner implements ThreadRunner {
   }
 
   private classify(turn: Turn, error: unknown): Outcome {
-    if (this.history.recovery) return { kind: 'failed', message: this.history.recovery.message };
+    if (this.storageFailure) return { kind: 'failed', message: this.storageFailure };
     if (turn.failure) return { kind: 'failed', message: message(turn.failure.error) };
     if (turn.stopRequested) return { kind: 'interrupted' };
     return { kind: 'failed', message: message(error) };
@@ -488,15 +530,17 @@ export class HarnessRunner implements ThreadRunner {
     this.history.currentInstructions = context.instructions;
     this.history.toolDefinitions ??= structuredClone(configuration.tools);
     const saved = this.history.requests.get(requestId)!;
+    let needsFollowUp = false;
+    let failure: { error: unknown } | undefined;
     const batch = new ToolBatch({
-      cwd: this.options.cwd, signal: turn.controller.signal, turnId: turn.id, tools, blocked: prepared.blocked,
+      cwd: this.options.cwd, signal: turn.controller.signal, turnId: turn.id, tools,
+      // 模型流失败之后不再启动收到的调用；可重试的失败不取消回合，没有这一道，排在后面的调用会在重试前照样执行。
+      blocked: (name) => failure ? '模型响应中途中断，工具未启动。' : prepared.blocked?.(name),
       started: (call) => this.record({ type: 'tool.started', ...ids, callId: call.id }),
       finished: (call, result) => this.record({ type: 'tool.finished', ...ids, callId: call.id, result }),
       output: (call, text, limit) => this.emit({ type: 'tool.output', ...ids, callId: call.id, text, limit }),
       fatal: (error) => { turn.failure ??= { error }; turn.controller.abort(); },
     });
-    let needsFollowUp = false;
-    let failure: { error: unknown } | undefined;
     try {
       this.checkTurn(turn);
       const stream = prepared.model.stream({
@@ -528,9 +572,13 @@ export class HarnessRunner implements ThreadRunner {
       if (!saved.ended) throw new Error('模型响应流未给出完成事件');
     } catch (error) {
       failure = { error };
-      if (!turn.stopRequested) turn.failure ??= failure;
-      turn.controller.abort();
-      if (!saved.ended && !this.storageFailed) this.record({ type: 'request.failed', ...ids, message: message(error) });
+      // 可重试的失败（连不上、中途断开）不停下这一回合：已开始的工具照常做完，没开始的记为未执行（见 blocked），
+      // runTurn 退避后带着这些结果重发请求。
+      if (turn.stopRequested || !retryable(error)) {
+        if (!turn.stopRequested) turn.failure ??= failure;
+        turn.controller.abort();
+      }
+      if (!saved.ended && !this.storageFailure) this.record({ type: 'request.failed', ...ids, message: message(error) });
     } finally {
       // 先停止/收齐已启动的任务。即使记录失败，仍必须等执行本身结束。
       try { await batch.drain(); }

@@ -6,8 +6,8 @@ import { FileDiffStore } from '../workspace/file-diffs.ts';
 import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
 import { holds, type PluginInstance } from '../model.ts';
-import { grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller, type OperationGrant, type OperationInput,
-  type OperationName } from './contract.ts';
+import { callerDenied, grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller, type OperationGrant,
+  type OperationInput, type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
 import { mainlineTarget } from '../preview/targets.ts';
@@ -43,6 +43,10 @@ const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
 };
 const callerKey = (caller: OperationCaller) => caller.kind === 'ui' ? 'ui' : `${caller.kind}:${caller.instanceId}`;
 const inputId = (caller: OperationCaller, id: string) => caller.kind === 'ui' ? id : `${callerKey(caller)}:${id}`;
+/** 界面调不了的操作（见 callerDenied）里收窄调用方；authorize 已经拒掉界面，走不到这里的 throw。 */
+function assertInstanceCaller(caller: OperationCaller): asserts caller is Exclude<OperationCaller, { kind: 'ui' }> {
+  if (caller.kind === 'ui') throw new OperationError('界面不能调用这项操作', 'denied', 403);
+}
 const pluginArguments = z.record(z.string(), z.unknown());
 /** 结果里给模型看的图片：从 JSON 里拿出来，只交给这一次调用的模型（见 dispatch）。 */
 const takeImages = (result: unknown): { value: unknown; images?: ToolImage[] } => {
@@ -128,7 +132,8 @@ export class InstanceOperations {
 
   private authorize(caller: OperationCaller, workspaceId: string, name: OperationName, args: Record<string, unknown>): void {
     if (this.closing) throw new OperationError('kited 正在关闭', 'denied', 503);
-    if (caller.kind === 'model' && !operationContracts[name].tool && name !== 'plugin.call') throw new OperationError('此操作未向模型开放', 'denied', 403);
+    const denied = callerDenied(name, caller.kind);
+    if (denied) throw new OperationError(denied, 'denied', 403);
     const workspace = this.kite.store.workspace(workspaceId);
     if (!workspace) throw new KiteError(`没有这个工作区：${workspaceId}`, 404);
     let target: PluginInstance | undefined;
@@ -244,8 +249,8 @@ export class InstanceOperations {
   }
 
   /**
-   * 超出后代范围的协作先在调用方线程上等用户批准：停下一律要；发消息、让它接着做，在对方的执行授权有调用方没有的项时要。
-   * 界面上的操作是用户自己做的，不再问。
+   * 超出后代范围的协作先在调用方线程上等用户批准：停下一律要；发消息在对方的执行授权有调用方没有的项时要。
+   * 合回的目标只能经后代够到，不会超出。界面上的操作是用户自己做的，不再问。
    */
   private async confirm(caller: OperationCaller, name: OperationName, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
     if (caller.kind !== 'model' || !confirmed(name) || typeof args.instanceId !== 'string') return;
@@ -320,8 +325,8 @@ export class InstanceOperations {
           return { ...listing.item(instance), definitionId: instance.definitionId,
             role: role ? { id: role.id, title: instanceAgent(instance).context.title } : null,
             presentation: instance.presentation, status: instance.status, phase: state.phase, busy: state.busy,
-            waitingForResume: state.waitingForResume, recovery: state.recovery?.message ?? null,
-            state: state.recovery ? `等确认恢复：${state.recovery.message}` : state.waiting ? '等用户批准'
+            waitingForResume: state.waitingForResume,
+            state: state.waiting ? '等用户批准'
               : state.phase === 'stopping' ? '正在停止' : state.busy ? '运行中'
               : state.lastOutcome?.kind === 'failed' ? `空闲，上一回合失败：${state.lastOutcome.message}` : '空闲' };
         }));
@@ -371,7 +376,7 @@ export class InstanceOperations {
         }
       }
       case 'monitor.start': {
-        if (caller.kind === 'ui') throw new OperationError('monitor 由代理开启，唤醒的是开启它的代理', 'denied', 403);
+        assertInstanceCaller(caller);
         const input = args as OperationInput<'monitor.start'>;
         const timed = input.at !== undefined || input.minutes !== undefined;
         if ((input.command === undefined) === !timed || (input.at !== undefined && input.minutes !== undefined)) {
@@ -395,7 +400,7 @@ export class InstanceOperations {
         return this.kite.terminals.read(input.instanceId, input.offset, input.limit);
       }
       case 'preview.open': {
-        if (caller.kind === 'ui') throw new OperationError('界面用新建窗口起预览', 'denied', 403);
+        assertInstanceCaller(caller);
         const input = args as OperationInput<'preview.open'>;
         const { checkout } = this.kite.workspace(workspaceId);
         const resolved = await this.kite.previews.resolve(workspaceId, { target: input.target, ...(input.device ? { device: input.device } : {}) });

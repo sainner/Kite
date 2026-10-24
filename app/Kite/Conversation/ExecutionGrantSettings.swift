@@ -33,7 +33,7 @@ struct ExecutionGrantSettings: View {
         CardSheet(title: "执行授权", subtitle: "设定代理能访问的路径、网络与沙箱外命令", error: phase.error, typing: focus != nil, back: true, size: InstanceSettings.size,
                   close: { if changed { discardAction = .back } else { back() } }) {
             Group {
-                CardSection("当前执行", note: state?.recovery?.message) {
+                CardSection("当前执行") {
                     LabeledContent("状态") { Text(statusLabel).foregroundStyle(.secondary) }
                     if thread.hasUnconfirmedStop || state?.capabilities.interrupt == true {
                         Button(thread.hasUnconfirmedStop ? "重试停止" : "停止执行") {
@@ -111,7 +111,6 @@ struct ExecutionGrantSettings: View {
         if thread.stopping { return "正在停止" }
         if thread.hasUnconfirmedStop { return "停止尚未确认" }
         guard let state else { return "未读取" }
-        if state.recovery != nil { return "执行结果待确认" }
         switch state.phase {
         case "stopping": return "正在停止"
         case "finishing": return "正在收尾"

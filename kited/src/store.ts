@@ -684,11 +684,6 @@ export class Store implements UsageStore {
     this.db.query(`insert ${table === 'operation_receipts' ? 'or ignore ' : ''}into ${table} (${columns.join(', ')}) values (${columns.map(() => '?').join(', ')})`)
       .run(...columns.map((column) => row[column] as string | number | null));
   }
-  /** 工作区内结果尚未确认的操作（进行中或崩溃后缺结果）。 */
-  unfinishedOperations(workspaceId: string): number {
-    return (this.db.query(`select count(*) as count from operation_receipts where result is null and json_extract(request, '$.workspaceId') = ?`)
-      .get(workspaceId) as { count: number }).count;
-  }
   /** 删掉一个工作区的全部行，用于流转失败时清理半成品，或用流转回来的材料替换本机冻结的旧记录。 */
   deleteWorkspaceRows(id: string): void {
     const instances = `select id from plugin_instances where workspace_id = ?`;

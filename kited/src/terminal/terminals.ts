@@ -24,7 +24,7 @@ import { Terminal as Mirror } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
-import { processGroupAlive, type BackgroundCommand } from '../execution/command.ts';
+import { ownedProcessGroups, processGroupAlive, processGroupSchema, type BackgroundCommand, type ProcessGroup } from '../execution/command.ts';
 import { commandEnvironment } from '../execution/sandbox.ts';
 import { assembleContext, bindContext, sceneValues } from '../harness/context/assembler.ts';
 import type { ContextDefinition, ContextValues } from '../harness/context/types.ts';
@@ -314,6 +314,8 @@ const terminalText = (text: string) => new TextEncoder().encode(text.replace(/\r
 
 export class Terminals {
   private sessions = new Map<string, Session>();
+  /** 没有会话时接入的设备（kited 重启后留下的实例）：只收到存下的最后画面，预览重新起进程时接到新会话上。 */
+  private waiting = new Map<string, Set<Socket>>();
   private stopping = new Map<string, Promise<void>>();
   private closed = false;
   private scanTimer?: ReturnType<typeof setInterval>;
@@ -337,9 +339,10 @@ export class Terminals {
   private directory(id: string) { return join(this.host.home, 'sessions', id); }
   private marker(id: string) { return join(this.directory(id), 'terminal-process.json'); }
   private screenFile(id: string) { return join(this.directory(id), 'terminal-screen.txt'); }
-  private track(id: string, pid: number) {
+  /** 记下进程组与起它的时刻，kited 重启后据此核对（见 ProcessGroup）。 */
+  private track(id: string, group: ProcessGroup) {
     mkdirSync(this.directory(id), { recursive: true });
-    writeFileSync(this.marker(id), JSON.stringify({ pid }), { mode: 0o600 });
+    writeFileSync(this.marker(id), JSON.stringify(group), { mode: 0o600 });
   }
 
   /**
@@ -368,6 +371,7 @@ export class Terminals {
       return;
     }
     const { pid, terminal } = child;
+    const started = Date.now();
     session.child = {
       pid, write: (data) => terminal?.write(data), resize: ({ cols, rows }) => terminal?.resize(cols, rows),
       done: child.exited.then(async () => {
@@ -381,7 +385,9 @@ export class Terminals {
     const previous = this.sessions.get(instance.id);
     this.sessions.set(instance.id, session);
     previous?.handOver(session);
-    this.track(instance.id, pid);
+    for (const socket of this.waiting.get(instance.id) ?? []) session.attach(socket);
+    this.waiting.delete(instance.id);
+    this.track(instance.id, { pid, started });
     this.save(instance.id, { phase: 'running' });
     void this.exited(instance.id, session);
     this.watchPorts();
@@ -460,10 +466,10 @@ export class Terminals {
     command.listen(feed);
     session.child = { pid: command.pid,
       done: command.done.then(({ code, stopped, unknown }) => ({ exitCode: code,
-        ...(unknown ? { reason: '无法确认进程组已停止，需要人工检查' } : stopped ? { reason: stopped } : {}) })) };
+        ...(unknown ? { reason: '命令结束后进程组没能停下，可能还在运行' } : stopped ? { reason: stopped } : {}) })) };
     this.host.store.addPluginInstance(instance);
     this.sessions.set(instance.id, session);
-    this.track(instance.id, command.pid);
+    this.track(instance.id, { pid: command.pid, started: command.started });
     this.host.changed(owner.workspaceId);
     void this.exited(instance.id, session);
     this.watchPorts();
@@ -529,6 +535,7 @@ export class Terminals {
   forget(id: string): void {
     if (this.running(id)) throw new KiteError('终端还在运行', 409);
     this.sessions.delete(id);
+    this.waiting.delete(id);
   }
 
   /**
@@ -691,9 +698,9 @@ export class Terminals {
   private killLeftover(id: string): void {
     const file = this.marker(id);
     if (!existsSync(file)) return;
+    // 只停核对过仍是 Kite 起的；pid 已给了别的进程、确认不了的不停。
     try {
-      const { pid } = z.object({ pid: z.number().int().min(2) }).parse(JSON.parse(readFileSync(file, 'utf8')));
-      if (processGroupAlive(pid)) process.kill(-pid, 'SIGKILL');
+      for (const { pid } of ownedProcessGroups([processGroupSchema.parse(JSON.parse(readFileSync(file, 'utf8')))]) ?? []) process.kill(-pid, 'SIGKILL');
     } catch {}
     rmSync(file, { force: true });
   }
@@ -752,25 +759,31 @@ export class Terminals {
     const id = socket.data.instanceId;
     const session = this.sessions.get(id);
     if (session) { session.attach(socket); return; }
-    // 工作机重启前结束的终端只剩存下的最后画面。
+    // 工作机重启前结束的终端只剩存下的最后画面；登记下来，预览重新起进程时接到新会话上。
     const instance = this.host.store.instance(id);
     let data = '';
     try { data = readFileSync(this.screenFile(id), 'utf8'); } catch {}
     socket.send(JSON.stringify({ type: 'snapshot', data, cols: 80, rows: 24,
       ...(instance && terminalState(instance)) ?? { phase: 'exited', exitCode: null } }));
+    this.waiting.set(id, (this.waiting.get(id) ?? new Set()).add(socket));
   }
 
   receive(socket: Socket, message: string | Buffer): void {
     const session = this.sessions.get(socket.data.instanceId);
-    if (!session) return;
-    if (typeof message !== 'string') { session.input(socket, message); return; }
+    if (typeof message !== 'string') { session?.input(socket, message); return; }
     const parsed = controlSchema.safeParse((() => { try { return JSON.parse(message); } catch { return undefined; } })());
     if (!parsed.success) { socket.close(1003, '终端控制消息无效'); return; }
-    session.requestSize(socket, { cols: parsed.data.cols, rows: parsed.data.rows });
+    const size = { cols: parsed.data.cols, rows: parsed.data.rows };
+    // 还没有会话时先记下尺寸，接到新会话上时按它出画面。
+    if (session) session.requestSize(socket, size);
+    else socket.data.size = size;
   }
 
   detach(socket: Socket): void {
-    this.sessions.get(socket.data.instanceId)?.detach(socket);
+    const id = socket.data.instanceId;
+    this.sessions.get(id)?.detach(socket);
+    const waiting = this.waiting.get(id);
+    if (waiting?.delete(socket) && !waiting.size) this.waiting.delete(id);
   }
 }
 

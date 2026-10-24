@@ -6,9 +6,10 @@ import SwiftUI
 /// 排队中只描边、跟系统文字色，两者之间 0.3 秒淡入淡出；太长的折到 messageFold 高，底下渐隐，下面一个展开、收起的按钮；
 /// 附件排在气泡上面（AttachmentRowView，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，见 TranscriptListView.rise。
-/// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上，排队中同人发的只描边；气泡上面一行是发信方的头像和名字（SenderLineView），折叠和操作同人发的。
-/// Kite 的通知也是它：气泡同代理来信，里面是正文；上面一行是 NoticeHeaderView（图标、种类、箭头）。默认收着、只有这一行，
-/// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。
+/// 来信（代理来信、Kite 的通知）也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上，排队中的代理来信同人发的只描边；
+/// 气泡上面一行是 LetterHeaderView（发信方的头像和名字，或通知的图标和种类，连同箭头）。来信默认收着、只有这一行，
+/// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动；点开以后折叠和操作同人发的。
+/// Kite 的通知没有输入 ID，不能当压缩的起点终点。
 final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private let container = BubbleRowView()
     private let coordinator = ProseRowCoordinator()
@@ -19,16 +20,16 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     private(set) var sender: Sender?
     /// Kite 的通知，别的为 nil。
     private var notice: Notice?
-    /// 通知露着气泡；默认收着，点上面那一行露出来。
+    /// 来信露着气泡；默认收着，点上面那一行露出来。
     private var opened = false
-    /// 通知正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
+    /// 来信正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
     private var toggling = false
     /// 展开了全文。
     private(set) var expanded = false
     private var context: TranscriptRowContext?
     /// 怎么量、怎么摆，两端共用。
     private var layout = BubbleLayout()
-    /// 气泡上面那一截（附件或发信方）连同间距多高。
+    /// 气泡上面那一截（附件或来信那一行）连同间距多高。
     private var topHeight: CGFloat = 0
     private var hasBlocks = false
     /// 上次整条排过、没有一行是被行宽折下来的：贴字的宽。拖缝时能给的宽还放得下它，排出来一样，不用再排（见 height），同 iOS。
@@ -63,7 +64,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
             heightChanged?(nil)
         }
         container.fold.action = { [weak self] in self?.setExpanded(!(self?.expanded ?? false)) }
-        container.toggleNotice = { [weak self] in self?.setOpened(!(self?.opened ?? false)) }
+        container.toggleLetter = { [weak self] in self?.setOpened(!(self?.opened ?? false)) }
     }
 
     override var hasView: Bool { true }
@@ -93,7 +94,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         let toggle: (() -> Void)? = context.actionable ? { context.toggleActions(id) } : nil
         container.text.secondaryClick = toggle
         container.bubble.secondaryClick = toggle
-        container.text.setAccessibilityLabel(notice != nil ? TranscriptSpeech.noticeBody : TranscriptSpeech.bubble(sender: sender, queued: queued))
+        container.text.setAccessibilityLabel(letter ? TranscriptSpeech.letterBody(notice: notice != nil) : TranscriptSpeech.message(queued: queued))
         container.text.setAccessibilityCustomActions(toggle.map { toggle in
             [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { toggle(); return true }]
         })
@@ -110,9 +111,8 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         coordinator.show(content.text)
         container.style(queued: queued, agent: letter, animated: !first && wasQueued != queued, environment: environment)
         container.setAttachments(message.attachments, source: environment.attachmentSource)
-        container.setSender(sender, environment: environment)
-        container.setNotice(notice, expanded: opened, environment: environment)
-        if notice == nil { container.bubble.isHidden = attachmentsOnly } else if first { container.bubble.isHidden = !opened }
+        container.setHeading(heading, expanded: opened, environment: environment)
+        if !letter { container.bubble.isHidden = attachmentsOnly } else if first { container.bubble.isHidden = !opened }
     }
 
     private var attachmentsOnly: Bool { message?.attachmentsOnly == true }
@@ -120,12 +120,15 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     /// 靠左、浅底的来信：代理来信、Kite 的通知。
     private var letter: Bool { sender != nil || notice != nil }
 
+    /// 来信上面那一行，人发的为 nil。
+    private var heading: LetterHeading? { notice.map(LetterHeading.init) ?? sender.map { LetterHeading($0, queued: queued) } }
+
     /// 量正文见 BubbleLayout：拖缝和吸附中按近似量，记作 provisional，停下后按精确的重量。
     /// 拖缝中没折行的短消息（大多数）能给的宽还放得下就不再排：贴字的宽和高本来就不随能给的宽变，量准过的也还是准的。
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        // 收着的通知只有那一行，正文不排
-        if notice != nil, !opened {
+        // 收着的来信只有那一行，正文不排
+        if letter, !opened {
             provisional = false
             topHeight = container.topHeight(width: width)
             let height = container.header?.height ?? 0
@@ -162,10 +165,10 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     override func viewFrame(in column: CGRect) -> CGRect { column }
 
     /// 摆好气泡里的东西：行的高可能正在展开、收起的动画里（比量的矮或高），正文按它截。
-    /// 通知点开、收起的途中气泡按停着时的样子摆（缩放、淡入淡出是图层动画），箭头按行的高走到哪了转。
+    /// 来信点开、收起的途中气泡按停着时的样子摆（缩放、淡入淡出是图层动画），箭头按行的高走到哪了转。
     override func layoutView(in frame: CGRect) {
         var size = frame.size
-        if notice != nil {
+        if letter {
             let header = container.header?.height ?? 0
             let full = topHeight + bubbleHeight(expanded: expanded)
             var turn: CGFloat = opened ? 1 : 0
@@ -245,9 +248,9 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
         heightChanged?(.spring(.snappy))
     }
 
-    /// 通知点开、收起：气泡从左上角放大出来、缩回去，下面的行跟着按 snappy 的弹簧动。收起时开着的操作栏一起收起，缩回去以后藏起气泡。
+    /// 来信点开、收起：气泡从左上角放大出来、缩回去，下面的行跟着按 snappy 的弹簧动。收起时开着的操作栏一起收起，缩回去以后藏起气泡。
     private func setOpened(_ opened: Bool) {
-        guard notice != nil, opened != self.opened else { return }
+        guard letter, opened != self.opened else { return }
         self.opened = opened
         container.header?.expanded = opened
         if !opened, let selection = context?.environment.selectedRow, selection.wrappedValue == row.id { selection.close() }
@@ -262,20 +265,19 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     }
 }
 
-/// 气泡这一行的视图：上面的附件、发信方或通知那一行，气泡（底色、描边、截住的正文、展开按钮）。翻转坐标。
+/// 气泡这一行的视图：上面的附件或来信那一行，气泡（底色、描边、截住的正文、展开按钮）。翻转坐标。
 final class BubbleRowView: NSView {
     let bubble = BubbleView()
     let text = ProseTextView.make()
     let fold = FoldButton()
-    /// Kite 通知的那一行，别的为 nil。
-    private(set) var header: NoticeHeaderView?
-    /// 点了通知那一行。
-    var toggleNotice: (() -> Void)?
+    /// 来信那一行，人发的为 nil。
+    private(set) var header: LetterHeaderView?
+    /// 点了来信那一行。
+    var toggleLetter: (() -> Void)?
     /// 正文按折起来的高截住，底下渐隐。
     private let clip = FlippedLayerView()
     private let fade = CAGradientLayer()
     private var attachments: AttachmentRowView?
-    private var sender: SenderLineView?
 
     override var isFlipped: Bool { true }
 
@@ -314,49 +316,32 @@ final class BubbleRowView: NSView {
         row.show(list, source: source)
     }
 
-    /// 代理来信上面的头像和名字，人发的为 nil 时拿掉。
-    func setSender(_ sender: Sender?, environment: EnvironmentValues) {
-        guard let sender else {
-            self.sender?.removeFromSuperview()
-            self.sender = nil
-            return
-        }
-        let line = self.sender ?? {
-            let line = SenderLineView()
-            addSubview(line)
-            self.sender = line
-            return line
-        }()
-        line.show(sender, environment: environment)
-    }
-
-    /// Kite 通知的那一行（Kite 的图标、那一句、箭头），别的为 nil 时拿掉。
-    func setNotice(_ notice: Notice?, expanded: Bool, environment: EnvironmentValues) {
-        guard let notice else {
+    /// 来信那一行（图标或头像、那一句、箭头），人发的为 nil 时拿掉。
+    func setHeading(_ heading: LetterHeading?, expanded: Bool, environment: EnvironmentValues) {
+        guard let heading else {
             header?.removeFromSuperview()
             header = nil
             return
         }
         let header = self.header ?? {
-            let header = NoticeHeaderView()
-            header.action = { [weak self] in self?.toggleNotice?() }
+            let header = LetterHeaderView()
+            header.action = { [weak self] in self?.toggleLetter?() }
             addSubview(header)
             self.header = header
             return header
         }()
-        header.show(notice, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, environment: environment)
+        header.show(heading, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, environment: environment)
         header.expanded = expanded
     }
 
-    /// 气泡上面那一截（附件那一行、发信方那一行、通知那一行）连同和气泡之间的间距多高，都没有为 0。
+    /// 气泡上面那一截（附件那一行、来信那一行）连同和气泡之间的间距多高，都没有为 0。
     func topHeight(width: CGFloat) -> CGFloat {
-        if let header { return header.height + SenderLineView.gap }
-        if let sender { return sender.height + SenderLineView.gap }
+        if let header { return header.height + LetterHeaderView.gap }
         guard let attachments else { return 0 }
         return ceil(attachments.size(width: width).height) + 6
     }
 
-    var topWidth: CGFloat { header?.width ?? sender?.width ?? attachments?.frame.width ?? 0 }
+    var topWidth: CGFloat { header?.width ?? attachments?.frame.width ?? 0 }
 
     /// 按 BubbleLayout 给的框摆：上面那一截、气泡、截住正文的那层（底下渐隐）、正文、折叠按钮。
     func place(_ frames: BubbleLayout.Frames, topHeight: CGFloat, foldable: Bool, expanded: Bool) {
@@ -364,7 +349,6 @@ final class BubbleRowView: NSView {
             let size = attachments.size(width: bounds.width)
             attachments.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: topHeight - 6)
         }
-        sender?.frame = CGRect(x: 0, y: 0, width: min(sender?.width ?? 0, bounds.width), height: sender?.height ?? 0)
         header?.frame = CGRect(x: 0, y: 0, width: min(header?.width ?? 0, bounds.width), height: header?.height ?? 0)
         if bubble.frame != frames.bubble { bubble.frame = frames.bubble }
         clip.frame = CGRect(x: 0, y: 0, width: frames.bubble.width, height: frames.shown)
@@ -442,69 +426,6 @@ final class BubbleView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         if let secondaryClick, event.modifierFlags.contains(.control) { secondaryClick() } else { super.mouseDown(with: event) }
-    }
-}
-
-/// 代理来信上面那一行：发信方的头像（不动的一帧，见 AgentAvatar.still）、间距 6、名字（次要色小字，放不下截掉），竖着居中。
-final class SenderLineView: NSView {
-    /// 和下面的气泡之间。
-    static let gap: CGFloat = 8
-    private let avatar = CALayer()
-    private let name = LineLabel()
-    private var diameter: CGFloat = 18
-    private var shown: (sender: Sender, environment: EnvironmentValues)?
-
-    override var isFlipped: Bool { true }
-
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.addSublayer(avatar)
-        addSubview(name)
-        // 读屏由正文前面的说明读发信方（TranscriptSpeech.agent）
-        setAccessibilityElement(false)
-        name.setAccessibilityElement(false)
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func show(_ sender: Sender, environment: EnvironmentValues) {
-        let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
-        diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-        name.set(sender.name, font: font, color: .secondaryLabelColor)
-        shown = (sender, environment)
-        drawAvatar()
-        needsLayout = true
-    }
-
-    private func drawAvatar() {
-        guard let shown else { return }
-        let scale = window?.backingScaleFactor ?? 2
-        let instance = shown.sender.instance
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        avatar.contentsScale = scale
-        avatar.contents = AgentAvatar.still(design: AgentAvatar.design(for: instance, environment: shown.environment), instance: instance,
-                                            diameter: diameter, scale: scale, environment: shown.environment)
-        CATransaction.commit()
-    }
-
-    override func viewDidChangeBackingProperties() {
-        super.viewDidChangeBackingProperties()
-        drawAvatar()
-    }
-
-    var height: CGFloat { max(diameter, name.lineHeight) }
-    var width: CGFloat { diameter + 6 + name.textWidth }
-
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        avatar.frame = CGRect(x: 0, y: (bounds.height - diameter) / 2, width: diameter, height: diameter)
-        CATransaction.commit()
-        let x = diameter + 6
-        name.frame = CGRect(x: x, y: (bounds.height - name.lineHeight) / 2, width: max(bounds.width - x, 0), height: name.lineHeight)
     }
 }
 

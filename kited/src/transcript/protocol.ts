@@ -2,7 +2,7 @@
 import type { DiffReference } from '../workspace/file-diffs.ts';
 import type { DomainEvent, Stamped } from '../events.ts';
 import type { CheckResult } from '../check.ts';
-import type { AttachmentRef, Input, InputNotice, Json, Phase, Outcome, Recovery } from '../harness/types.ts';
+import type { AttachmentRef, Input, InputNotice, Json, Phase, Outcome } from '../harness/types.ts';
 import { senderName } from '../harness/input.ts';
 import type { WorkspaceStatus } from '../model.ts';
 import type { Ask, Waiting } from '../waiting.ts';
@@ -44,7 +44,6 @@ export interface DisplayState {
   /** 没回应的提问与密钥请求，按发出的先后；不阻塞回合。 */
   asks?: Ask[];
   lastOutcome?: Outcome;
-  recovery?: Recovery;
   status: WorkspaceStatus;
   error?: string;
   /** 最近一次完成请求的输入用量与当时生效的运行窗口；窗口未知时不能用模型最大能力计算百分比。 */

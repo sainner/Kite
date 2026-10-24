@@ -273,6 +273,27 @@ extension Notice {
     }
 }
 
+/// 来信（代理来信、Kite 的通知）上面那一行：图标、一句。来信默认收着、只有这一行，点开才露出气泡和正文。
+struct LetterHeading {
+    let mark: Notice.Mark
+    let title: String
+    /// 读屏读的那一句。
+    let speech: String
+
+    init(_ notice: Notice) {
+        mark = notice.mark
+        title = notice.heading
+        speech = TranscriptSpeech.notice(notice)
+    }
+
+    /// 代理来信：发信方的头像和名字。
+    init(_ sender: Sender, queued: Bool) {
+        mark = .agent(instance: sender.instance)
+        title = sender.name
+        speech = TranscriptSpeech.agent(sender, queued: queued)
+    }
+}
+
 /// 两段话之间 agent 做的事折成的一行怎么量、展开到哪了，两端原生列表的工具行共用：汇总一行，点开下面是步骤，
 /// 展开收起和下面的行一起按 0.25 秒的普通缓出动，箭头跟着转、步骤跟着淡入淡出。汇总行、步骤的视图各端自己建。
 enum WorkLayout {

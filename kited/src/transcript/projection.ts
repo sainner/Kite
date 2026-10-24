@@ -1,5 +1,5 @@
 import type { Stamped, ThreadEvent } from '../events.ts';
-import type { JournalRecord, Phase, Outcome, Recovery, ModelStreamEvent } from '../harness/types.ts';
+import type { JournalRecord, Phase, Outcome, ModelStreamEvent } from '../harness/types.ts';
 import type { PluginInstance, ThreadContext, WorkspaceStatus } from '../model.ts';
 import { instanceAgent } from '../agents/definition.ts';
 import { ClaudeProjection } from './claude-projection.ts';
@@ -36,7 +36,6 @@ export class TranscriptProjection {
   private waiting?: Waiting;
   private asks: Ask[] = [];
   private lastOutcome?: Outcome;
-  private recovery?: Recovery;
   private error?: string;
   private context?: DisplayState['context'];
   private contextRuntime?: ThreadContext['runtime'];
@@ -90,11 +89,8 @@ export class TranscriptProjection {
 
   finishReplay(): void {
     this.claudeProjection.restoreInputs();
-    // 未收口的原生回合必须由宿主核查；读历史绝不能为此唤醒工具或模型。
-    if (this.busy) {
-      this.recovery = { message: '上一回合未收尾，须由宿主核查执行状态' };
-      this.waitingForResume = true;
-    } else if (this.pending.size) this.waitingForResume = true;
+    // 未收口的回合是否接着做由 kited 决定（见 continueInterrupted）；读历史不唤醒工具或模型。
+    if (this.busy || this.pending.size) this.waitingForResume = true;
     this.endDrafts();
     for (const record of this.records.values()) {
       if (record.block.type === 'tool_use' && ['queued', 'running'].includes(record.block.stage ?? '')) {
@@ -115,7 +111,6 @@ export class TranscriptProjection {
     const status = this.threadStatus === 'archived' ? 'archived' : this.workspaceStatus;
     const open = status === 'open';
     const interactive = open;
-    const error = this.recovery?.message ?? this.error;
     let context = this.context;
     // 控制查询可能晚于用量消息，只给同一模型和请求的 Claude 测量补窗口；harness 自带请求快照中的窗口。
     if (context && this.contextRuntime === 'claude' && this.claudeWindow?.model === this.configuredModel
@@ -126,17 +121,14 @@ export class TranscriptProjection {
       ...(this.waiting ? { waiting: this.waiting } : {}),
       ...(this.asks.length ? { asks: this.asks } : {}),
       ...(this.lastOutcome ? { lastOutcome: this.lastOutcome } : {}),
-      ...(this.recovery ? { recovery: this.recovery } : {}),
-      ...(error ? { error } : {}),
+      ...(this.error ? { error: this.error } : {}),
       ...(context ? { context } : {}),
-      // 恢复阻塞时，App 的发送、继续和换后端连带确认恢复，所以空闲后照常可用；交接未知的输入随发送或继续重发。
-      capabilities: { send: interactive && this.phase !== 'stopping' && (!this.recovery || !this.busy),
+      capabilities: { send: interactive && this.phase !== 'stopping',
         // 停下后留在队列里、等继续的不算要停的：再停一次什么也不做
         interrupt: interactive && (this.busy || (this.pending.size > 0 && !this.waitingForResume)) && this.phase !== 'stopping',
-        resume: interactive && !this.busy && (!!this.recovery || this.waitingForResume), cancel: interactive,
-        switchRuntime: open && !this.busy && this.phase === 'idle' && this.pending.size === 0
-          && !this.claudeProjection.hasUnconfirmedInput,
-        compact: open && !this.busy && !this.recovery && this.phase === 'idle' && !this.claudeProjection.hasUnconfirmedInput } };
+        resume: interactive && !this.busy && this.waitingForResume, cancel: interactive,
+        switchRuntime: open && !this.busy && this.phase === 'idle' && this.pending.size === 0,
+        compact: open && !this.busy && this.phase === 'idle' } };
   }
   private emit(event: ThreadDisplayEvent): void { if (!this.replaying) this.feed.emit({ ...event, threadId: this.threadId }); }
   private put(record: DisplayRecord): void {
@@ -163,8 +155,7 @@ export class TranscriptProjection {
           this.phase = e.state.phase; this.busy = e.state.busy; this.compacting = e.state.compacting === true;
           this.waitingForResume = e.state.waitingForResume;
           this.lastOutcome = e.state.lastOutcome;
-          this.recovery = e.state.recovery;
-          this.error = this.recovery?.message ?? (this.phase === 'idle' && this.lastOutcome?.kind === 'failed' ? this.lastOutcome.message : undefined);
+          this.error = this.phase === 'idle' && this.lastOutcome?.kind === 'failed' ? this.lastOutcome.message : undefined;
           this.emit({ type: 'thread.state', state: this.state() });
         } else if (e.type === 'delta' || e.type === 'item.started') {
           this.stream(e, e.requestId, event.at);
@@ -211,7 +202,7 @@ export class TranscriptProjection {
       case 'input.received': {
         // 停下后留在队列里的不会自己开回合，这时来的是新一轮的头一条
         const midTurn = this.busy || (this.pending.size > 0 && !this.waitingForResume);
-        if (!this.recovery) this.waitingForResume = false;
+        this.waitingForResume = false;
         this.pending.set(row.input.id, { ...row.input, midTurn }); this.emitPending();
         this.emit({ type: 'thread.state', state: this.state() }); break;
       }
@@ -280,7 +271,6 @@ export class TranscriptProjection {
       case 'tool.finished': {
         const record = this.records.get(`call:${row.callId}`);
         if (record?.block.type === 'tool_use') this.put({ ...record, block: { ...record.block, stage: 'finished', finishedAt: row.at } });
-        if (row.result.status === 'unknown') this.recovery = { message: row.result.output || '存在执行结果未知的工具，等待确认残留执行停止' };
         put(`result:${row.callId}`, { type: 'tool_result', call: row.callId, output: row.result.output, status: row.result.status, ...(row.result.diff ? { diff: row.result.diff } : {}) }); break;
       }
       case 'turn.feedback': put(`journal:${row.seq}`, { type: 'kite', text: row.text }); break;
@@ -290,14 +280,9 @@ export class TranscriptProjection {
         this.phase = 'idle';
         this.lastOutcome = row.outcome;
         this.waitingForResume = row.outcome.kind === 'failed' || this.waitingForResume;
-        if (row.recovery) this.recovery = row.recovery;
         // 失败说明与打断只在状态里，客户端显示在窗口标题栏，不进记录。
         this.error = 'message' in row.outcome ? row.outcome.message : undefined;
         break;
-      case 'recovery.confirmed':
-        this.phase = 'idle'; this.busy = false; this.waitingForResume = true;
-        this.recovery = undefined;
-        this.error = this.lastOutcome?.kind === 'failed' ? this.lastOutcome.message : undefined; break;
       case 'context.compacted': {
         const ids = [...this.records.keys()];
         const at = (seq: number | undefined) => {
@@ -406,8 +391,8 @@ export class TranscriptProjection {
   claudeControl(state: ClaudeState): void {
     this.claudeWindow = state.contextWindow;
     this.phase = state.phase; this.busy = state.busy; this.compacting = state.compacting === true; this.waitingForResume = state.waitingForResume;
-    this.lastOutcome = state.lastOutcome; this.recovery = state.recovery;
-    this.error = state.recovery?.message ?? (state.lastOutcome?.kind === 'failed' ? state.lastOutcome.message : undefined);
+    this.lastOutcome = state.lastOutcome;
+    this.error = state.lastOutcome?.kind === 'failed' ? state.lastOutcome.message : undefined;
     this.pending.clear();
     this.claudeProjection.syncInputs(state, this.pending);
     if (state.phase === 'idle') this.endDrafts();

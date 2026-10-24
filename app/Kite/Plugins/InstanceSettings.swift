@@ -145,7 +145,7 @@ struct InstanceSettings: View {
                     .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
                 }
             }
-            if caller == "plugin", operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) }) {
+            if caller == "plugin", operations.contains(where: { $0.name == "agent.list" && $0.callers.contains(caller) && $0.accepts("workspace") }) {
                 let grant = OperationGrant(operation: "agent.list", targets: .init(kind: "workspace"))
                 Toggle("查询代理", isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
             }
@@ -156,7 +156,8 @@ struct InstanceSettings: View {
             }
             if caller == "plugin" {
                 DisclosureGroup("自己创建的代理") {
-                    ForEach(operations.filter { ["agent.send", "agent.resume", "agent.stop"].contains($0.name) }) { operation in
+                    // 继续只给界面，代理之间发消息就是继续，不授予插件
+                    ForEach(operations.filter { ["agent.send", "agent.stop"].contains($0.name) && $0.callers.contains(caller) && $0.accepts("created") }) { operation in
                         let grant = OperationGrant(operation: operation.name, targets: .init(kind: "created"))
                         Toggle(operation.title, isOn: selection({ $0.grants.contains(grant) }, { $0.set(grant, enabled: $1) }))
                     }
@@ -165,9 +166,10 @@ struct InstanceSettings: View {
         }.disabled(!available)
     }
 
+    /// 按目标逐个授予：只列授权能写显式实例（instances）的。不分目标的（预览的操作）授予的是工作区里的全部，不放在某个实例下面。
     @ViewBuilder private func instanceGrants(_ target: RemotePluginInstance) -> some View {
         let allowed = operations.filter {
-            $0.callers.contains(caller) && (area.definition(of: target)?.operations.contains($0.name) ?? false)
+            $0.callers.contains(caller) && $0.accepts("instances") && (area.definition(of: target)?.operations.contains($0.name) ?? false)
                 && !(target.id == instance.id && $0.name.hasPrefix("agent."))
         }
         if !allowed.isEmpty {

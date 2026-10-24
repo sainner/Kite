@@ -39,7 +39,7 @@ const findRole = (body: { roles: Entry[] }, id: string) => {
 const collaboration: OperationGrant[] = [
   { operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
   ...(['preview.open', 'preview.list', 'preview.action', 'preview.inspect', 'preview.read', 'preview.stop'] as const).map((operation) => ({ operation })),
-  ...(['agent.list', 'agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const)
+  ...(['agent.list', 'agent.send', 'agent.stop', 'agent.merge', 'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const)
     .map((operation) => ({ operation, targets: { kind: 'workspace' } }) as OperationGrant),
 ];
 /** 授权按操作名排序后比较；顺序不是约定。 */

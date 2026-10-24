@@ -6,7 +6,7 @@ import type { Client, JsonSchemaType, JsonSchemaValidator, Tool as McpTool } fro
 import { z } from 'zod';
 import type { Kite } from '../kite.ts';
 import { KiteError, OperationError } from '../errors.ts';
-import { processGroupAlive } from '../execution/command.ts';
+import { ownedProcessGroups, processGroupSchema } from '../execution/command.ts';
 import type { startPluginProcess } from './process.ts';
 import type { OperationCaller, OperationGrant } from '../operations/contract.ts';
 import { bindPluginTool, toolRevision, toolVisible, type PluginToolBinding } from './tools.ts';
@@ -15,7 +15,6 @@ type PluginServices = Pick<Kite, 'store' | 'home' | 'bus' | 'catalog' | 'workspa
 
 const object = z.record(z.string(), z.unknown());
 const stateSchema = z.object({ revision: z.string(), value: object }).strict();
-const processMarkerSchema = z.object({ pid: z.number().int().min(2) }).strict();
 type PluginProcess = Awaited<ReturnType<typeof startPluginProcess>>;
 const revision = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
@@ -45,8 +44,9 @@ export class PluginHost {
   private previousProcessAlive(id: string): boolean {
     const path = this.marker(id);
     if (!existsSync(path)) return false;
-    const { pid } = processMarkerSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
-    if (processGroupAlive(pid)) return true;
+    // pid 已给了别的进程、组里只剩别的用户的进程（EPERM）都当已不在；ps 没跑成、确认不了时照旧当还在。
+    const owned = ownedProcessGroups([processGroupSchema.parse(JSON.parse(readFileSync(path, 'utf8')))]);
+    if (!owned || owned.length) return true;
     rmSync(path, { force: true });
     return false;
   }
@@ -71,10 +71,10 @@ export class PluginHost {
       this.instance(id);
       const connected = await startPluginProcess({ bundle: this.kite.catalog.package(definitionId).bundle,
         configure: (client) => this.configure(id, client),
-        onProcess: (pid, active) => {
+        onProcess: (pid, active, started) => {
           if (active) {
             mkdirSync(join(this.kite.home, 'sessions', id), { recursive: true });
-            writeFileSync(this.marker(id), JSON.stringify({ pid }), { mode: 0o600 });
+            writeFileSync(this.marker(id), JSON.stringify({ pid, started }), { mode: 0o600 });
           } else {
             rmSync(this.marker(id), { force: true });
             if (this.processes.get(id) === opening) this.processes.delete(id);

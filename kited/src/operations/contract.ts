@@ -53,8 +53,8 @@ const coordinate = z.array(z.number().min(0)).length(2);
 const summary = z.object({
   ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
-  busy: z.boolean(), waitingForResume: z.boolean(), recovery: z.string().nullable(),
-  /** 一行状态：空闲、运行中、等用户批准、等确认恢复或上一回合失败。 */
+  busy: z.boolean(), waitingForResume: z.boolean(),
+  /** 一行状态：空闲、运行中、等用户批准或上一回合失败。 */
   state: z.string(),
 }).strict();
 
@@ -62,7 +62,7 @@ const summary = z.object({
  * 对其他代理、monitor 与终端的操作；代理按协作范围授予，这几项的授权共用一个目标范围（descendants 或 workspace），
  * 见 docs/实例操作.md「代理的协作范围」。
  */
-export const scopedOperations = ['agent.list', 'agent.send', 'agent.resume', 'agent.stop', 'agent.merge',
+export const scopedOperations = ['agent.list', 'agent.send', 'agent.stop', 'agent.merge',
   'monitor.list', 'monitor.stop', 'terminal.list', 'terminal.read', 'terminal.stop'] as const;
 
 export const operationContracts = {
@@ -92,9 +92,10 @@ export const operationContracts = {
     // attachments 只给界面：用户发的消息带的附件，模型的工具声明里没有；正文为空时由宿主拒绝，带附件的可以没有正文。
     input: target.extend({ text: z.string(), attachments: z.array(id).min(1).max(MAX_MESSAGE_ATTACHMENTS).optional() }).strict(), output: z.object({ id }).strict(),
   },
+  // 只给界面的「继续」：代理之间发消息就是继续，不另给模型工具，也不授予插件（operationGrantsSchema 里没有它）。
   'agent.resume': {
-    title: '继续执行', description: '继续获准的 agent 实例。',
-    tool: 'agent_resume', effect: 'write', retry: 'receipt', input: target, output: ok,
+    title: '继续执行', description: '继续 agent 实例。',
+    tool: null, effect: 'write', retry: 'receipt', input: target, output: ok,
   },
   'agent.stop': {
     title: '停止执行', description: '停止获准的 agent 实例，等待受管执行停止。你发给它、它还没读到的消息退回给你（returned），还要它做的停下后再用 agent_send 发，新消息会让它继续。',
@@ -305,7 +306,7 @@ export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
   z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
   ...(['agent.list', 'monitor.list', 'terminal.list'] as const).map((operation) => z.object({ operation: z.literal(operation), targets: range }).strict()),
-  ...(['agent.send', 'agent.resume', 'agent.stop', 'agent.merge', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
+  ...(['agent.send', 'agent.stop', 'agent.merge', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   /** 预览的操作不分目标：本工作区的预览都能起、看、操作和停，不限创建来源。 */
   ...previewOperations.map((operation) => z.object({ operation: z.literal(operation) }).strict()),
@@ -354,14 +355,45 @@ export function roleOperationGrants(definitionId: string, grants: OperationGrant
     && !kept.some((other) => other.operation === grant.operation)).map((grant) => scope && 'targets' in grant ? { ...grant, targets: scope } as OperationGrant : grant)];
 }
 
-export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_resume', 'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop',
+export const operationToolNames = ['agent_start', 'agent_list', 'agent_send', 'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop',
   'terminal_list', 'terminal_read', 'terminal_stop', 'preview_open', 'preview_action', 'preview_inspect', 'preview_read', 'preview_list', 'preview_stop'] as const;
 const failure = z.object({ error: z.string(), outcome: z.enum(['denied', 'failed', 'cancelled', 'unknown']) }).strict();
+
+/** 目标的 schema 能取哪几种 kind，见 targets、range。 */
+const targetKinds = (schema: z.core.$ZodType): string[] => schema instanceof z.ZodDiscriminatedUnion ? schema.options.flatMap(targetKinds)
+  : schema instanceof z.ZodObject ? [(schema.shape.kind as z.ZodLiteral<string>).value] : [];
+
+/**
+ * 能授予代理和插件的操作，各自的授权要写什么：params 是 operation 以外的字段，targets 是目标能取的种类（不带目标的没有）。
+ * 从 operationGrantsSchema 推出来；不在这里的它们调不了（agent.resume、monitor.read 这类），目录里不列插件为调用方，界面也就不给这项授权。
+ */
+const grantShapes = new Map(operationGrantsSchema.element.options.map((option) => {
+  const { operation, ...params } = option.shape;
+  return [operation.value as string, { params: Object.keys(params), ...('targets' in params ? { targets: targetKinds(params.targets) } : {}) }];
+}));
+
+/** 界面调不了的操作与拒绝时的说明：起的 monitor 和预览归开启它的代理或插件。 */
+const uiDenied: Partial<Record<OperationName, string>> = {
+  'monitor.start': 'monitor 由代理开启，唤醒的是开启它的代理',
+  'preview.open': '界面用新建窗口起预览',
+};
+
+/**
+ * 这类调用方调不了这项操作时给出说明：模型只调有工具的和 plugin.call，插件只调能授予的（见 grantShapes），界面调 uiDenied 以外的。
+ * 操作入口的授权与操作目录里的调用方都按它。
+ */
+export function callerDenied(name: OperationName, kind: OperationCaller['kind']): string | undefined {
+  if (kind === 'ui') return uiDenied[name];
+  if (kind === 'model') return operationContracts[name].tool || name === 'plugin.call' ? undefined : '此操作未向模型开放';
+  return grantShapes.has(name) ? undefined : '此操作未向插件开放';
+}
 
 export function operationCatalog() {
   return Object.entries(operationContracts).map(([name, contract]) => ({
     name, title: contract.title, description: contract.description, effect: contract.effect, retry: contract.retry,
-    callers: contract.tool || name === 'plugin.call' ? ['ui', 'model', 'plugin'] : ['ui', 'plugin'], cancellation: '提交前可取消；提交后等待确定结果，不撤销已执行的动作',
+    callers: (['ui', 'model', 'plugin'] as const).filter((kind) => !callerDenied(name as OperationName, kind)),
+    ...(grantShapes.has(name) ? { grant: grantShapes.get(name) } : {}),
+    cancellation: '提交前可取消；提交后等待确定结果，不撤销已执行的动作',
     input: z.toJSONSchema(contract.input), output: z.toJSONSchema(contract.output), error: z.toJSONSchema(failure),
   }));
 }

@@ -4,8 +4,8 @@
  * tool_choice 没有 allowed_tools，推理以明文 reasoning_text 给出、交回时并进相邻的助手消息，上下文缓存自动按前缀命中。
  * 文档没列由客户端执行的 tool_search，deepseek-flash 实测可用，defer_loading 与 additional_tools 被忽略，见 spikes/tool-search。
  */
-import { responseEvents, responsesInput, responsesToolChoice, responsesTools } from './responses.ts';
-import type { JsonObject, Model, ModelEvent, ModelRequest } from './types.ts';
+import { connect, responseEvents, responsesInput, responsesToolChoice, responsesTools, retryableStatus } from './responses.ts';
+import { ModelRequestError, type JsonObject, type Model, type ModelEvent, type ModelRequest } from './types.ts';
 
 const ENDPOINT = 'https://api.deepseek.com/responses';
 /** V4 系列的上下文窗口是 1M，harness 按它自动压缩。 */
@@ -62,7 +62,7 @@ export class DeepSeekModel implements Model {
     signal.throwIfAborted();
     // DeepSeek 自己的条目原样交回，推理随之交回。
     const input = withReasoning(responsesInput(request.history, { format: 'deepseek' }));
-    const response = await (this.options.fetch ?? fetch)(ENDPOINT, {
+    const response = await connect(signal, () => (this.options.fetch ?? fetch)(ENDPOINT, {
       method: 'POST', signal, redirect: 'error',
       headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'text/event-stream', 'user-agent': 'kite-harness/0.1' },
       body: JSON.stringify({
@@ -71,13 +71,13 @@ export class DeepSeekModel implements Model {
         // 上游把 medium、xhigh 归到 high。
         reasoning: { effort: this.options.reasoning ?? 'medium' }, stream: true,
       }),
-    });
+    }));
     if (!response.ok) {
       await response.body?.cancel();
       const reason = failures[response.status] ?? (response.status >= 500 ? '服务暂时不可用，请稍后重试' : '请求失败');
-      throw new Error(`DeepSeek ${reason}（HTTP ${response.status}）`);
+      throw new ModelRequestError(`DeepSeek ${reason}（HTTP ${response.status}）`, retryableStatus(response.status));
     }
-    if (!response.body) throw new Error('DeepSeek 响应没有正文');
+    if (!response.body) throw new ModelRequestError('DeepSeek 响应没有正文', true);
     yield* responseEvents(response.body, request, signal, 'deepseek');
   }
 }

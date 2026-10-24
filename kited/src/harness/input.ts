@@ -32,6 +32,8 @@ export const senderName = (from: InputSender) => from.kind === 'line' ? 'Line' :
 const attachmentIds = (input: Input) => input.source === 'human' ? (input.attachments ?? []).map((ref) => ref.id).join('\n') : '';
 /** 同一个输入 ID 重发时是不是同一条：正文、来源和附件都要一样。点选的 skill 由宿主按正文开头的 /名字 定下，App 退回重发时不带，不比。 */
 export const sameInput = (a: Input, b: Input) => a.id === b.id && a.text === b.text && a.source === b.source && attachmentIds(a) === attachmentIds(b);
+/** 用户本人做的：人发的消息，或 Kite 转交的用户回应（回答提问、密钥请求的结果）。连续崩溃据此重新计数。 */
+export const fromUser = (input: Input) => input.source === 'human' || (input.source === 'kite' && !!input.response);
 
 /**
  * 停止时退回的：退给发起停止的一方。用户自己停下时退人发的，回到输入框；代理或 Line 停下时退它自己发来的，

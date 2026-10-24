@@ -10,7 +10,7 @@ export interface BatchOptions {
   started(call: ToolCall): void;
   output?(call: ToolCall, text: string, limit: number): void;
   finished(call: ToolCall, result: ToolResult): void;
-  /** 存储故障或结果未知时停止当前请求与其余工具。 */
+  /** 存储故障时停止当前请求与其余工具。 */
   fatal(error: unknown): void;
 }
 
@@ -42,7 +42,7 @@ export class ToolBatch {
 
   private async run(call: ToolCall, tool: Tool | undefined): Promise<void> {
     const o = this.options;
-    if (this.failed) return; // 存储故障后不能继续写记录或启动副作用，留给恢复处理。
+    if (this.failed) return; // 存储故障后不能继续写记录或启动副作用，等关掉重开。
     if (o.signal.aborted) {
       o.finished(call, { status: 'not_executed', output: '本次执行已停止，工具未启动。' });
       return;
@@ -71,10 +71,9 @@ export class ToolBatch {
       result = await tool.execute(call.arguments, { cwd: o.cwd, signal: o.signal, callId: call.id, turnId: o.turnId,
         output: (text, limit) => { if (acceptingOutput) o.output?.(call, text, limit); } });
     } catch (error) {
-      result = { status: o.signal.aborted ? 'unknown' : 'error', output: String(error) };
+      result = o.signal.aborted ? { status: 'unknown', output: `工具执行被打断，结果未知：${String(error)}` } : { status: 'error', output: String(error) };
     }
     acceptingOutput = false;
     o.finished(call, result);
-    if (result.status === 'unknown') o.fatal(new Error(`工具 ${call.id} 的执行结果未知，需要确认恢复`));
   }
 }

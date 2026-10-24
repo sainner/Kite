@@ -63,7 +63,7 @@ nonisolated struct LineInbox: Decodable, Equatable, Sendable {
     nonisolated struct Delegated: Decodable, Equatable, Sendable { let by: String; let at: Double; var sent: Double? }
     nonisolated struct Item: Decodable, Equatable, Identifiable, Sendable {
         let id: String
-        /// approval、question、turn、failed、recovery、preparation、unreachable。
+        /// approval、question、turn、failed、preparation、unreachable。
         let kind: String
         let machine: Named
         var workspace: Workspace?

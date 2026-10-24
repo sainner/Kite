@@ -1,8 +1,8 @@
 /** Journal 的同步投影：请求、工具与压缩段共享同一份历史状态。 */
 import { restoreContext } from './context/assembler.ts';
 import { roughTokens, SKILL_LOADED } from './compaction.ts';
-import { sameInput } from './input.ts';
-import type { ContextItem, Input, JournalRecord, ModelItem, Outcome, Recovery, ToolDefinition, ToolImage, ToolResult } from './types.ts';
+import { fromUser, sameInput } from './input.ts';
+import type { ContextItem, Input, JournalRecord, ModelItem, Outcome, ToolDefinition, ToolImage, ToolResult } from './types.ts';
 
 /** 段由产生它的记录 seq 标识，压缩按 seq 区间替换。 */
 interface Placed { seq: number; at: number }
@@ -38,14 +38,13 @@ interface Compaction {
   seq: number;
 }
 
-/** 回合未正常结束、确认恢复后给模型的说明；跨后端翻译沿用同一正文。 */
+/** 回合未正常结束时给模型的说明；跨后端翻译沿用同一正文。 */
 export function outcomeFeedback(outcome: Outcome): string | undefined {
   if (outcome.kind === 'completed') return undefined;
   return outcome.kind === 'interrupted'
     ? '上一回合被打断。已完成的工具操作没有被撤销；请根据实际结果继续。'
     : `上一回合未完成：${outcome.message}。不要自动重复已有工具调用，先检查实际状态。`;
 }
-export const recoveryFeedback = '宿主已确认先前的执行停止。结果未知的操作仍需检查实际效果，不能假定已回滚。';
 
 /** 按记录重放出当前实际进入请求的历史，已应用压缩；只读，不恢复、不执行。调用方须确认会话已停止。 */
 export function replayHistory(records: readonly JournalRecord[]): ContextItem[] {
@@ -92,7 +91,15 @@ export class HarnessHistory {
   openTurn?: string;
   lastOutcome?: Outcome;
   waitingForResume = false;
-  recovery?: Recovery;
+  /** 最近一个回合被 kited 退出打断，此后还没开始新回合、也没被手动停止：kited 启动时由 continueInterrupted 接着做。 */
+  exited = false;
+  /**
+   * 连续被 kited 崩溃打断的次数（关闭时停下的不算）；只在回合正常完成、用户本人发来消息或回应、显式继续时清零。
+   * 工具结果不算：续跑后模型先检查实际状态，检查本身就会成功。
+   */
+  exits = 0;
+  /** 收到手动停止时正在进行的回合；没收尾就被 kited 崩溃打断的，恢复时按停止收尾。 */
+  stoppedTurn?: string;
   readonly stops = new Map<string, Input[]>();
 
   constructor(records: readonly JournalRecord[]) {
@@ -123,7 +130,8 @@ export class HarnessHistory {
         if (row.images?.length) this.images.set(row.input.id, row.images);
         if (row.skill) this.skills.set(row.input.id, row.skill);
         this.pending.add(row.input.id);
-        if (!this.recovery) this.waitingForResume = false;
+        this.waitingForResume = false;
+        if (fromUser(row.input)) this.exits = 0;
         return;
       case 'input.cancelled':
         if (!this.pending.delete(row.inputId)) throw new Error('记录撤回了非待处理输入');
@@ -137,15 +145,22 @@ export class HarnessHistory {
           this.pending.delete(input.id);
         }
         this.stops.set(row.id, structuredClone(row.returned));
-        // 没退回的通知和来信留在队列里，等新输入或继续，不自动推进。
+        // 没退回的通知和来信留在队列里，等新输入或继续，不自动推进；被 kited 打断后还没续跑的也不再续跑。
         this.waitingForResume = this.pending.size > 0;
-        if (!this.openTurn) this.lastOutcome = { kind: 'interrupted' };
+        this.exited = false;
+        if (this.openTurn) this.stoppedTurn = this.openTurn;
+        else this.lastOutcome = { kind: 'interrupted' };
+        return;
+      case 'thread.resumed':
+        this.waitingForResume = false;
+        this.exits = 0;
         return;
       case 'turn.started':
         if (this.openTurn) throw new Error('记录包含重叠回合');
         this.openTurn = row.turnId;
         this.lastOutcome = undefined;
         this.waitingForResume = false;
+        this.exited = false;
         return;
       case 'context.prepared':
         if (this.contexts.has(row.snapshot.id)) throw new Error('上下文快照重复');
@@ -214,7 +229,6 @@ export class HarnessHistory {
         const request = this.mustCall(row);
         if (request.results.has(row.callId)) throw new Error('工具重复结束');
         request.results.set(row.callId, structuredClone(row.result));
-        if (row.result.status === 'unknown') this.recovery = { message: row.result.output || '存在执行结果未知的工具，等待确认残留执行停止' };
         return;
       }
       case 'turn.feedback':
@@ -228,14 +242,10 @@ export class HarnessHistory {
         this.lastOutcome = row.outcome;
         // 回合里只有手动停止会把它置为真（开回合时为假，停止期间不收新输入），收尾时保留。
         this.waitingForResume = row.outcome.kind === 'failed' || this.waitingForResume;
-        if (row.recovery) this.recovery = structuredClone(row.recovery);
+        this.exited = !!row.exited;
+        if (row.exited === 'crashed') this.exits += 1;
+        else if (row.outcome.kind === 'completed') this.exits = 0;
         if (row.outcome.kind !== 'completed') this.segments.push({ feedback: outcomeFeedback(row.outcome)!, seq: row.seq, at: row.at });
-        return;
-      case 'recovery.confirmed':
-        if (this.openTurn) throw new Error('回合尚未收尾，不能确认恢复');
-        this.recovery = undefined;
-        this.waitingForResume = true;
-        this.segments.push({ feedback: recoveryFeedback, seq: row.seq, at: row.at });
         return;
       case 'context.imported':
         if (this.openTurn || this.unfinishedRequest() || this.pending.size) throw new Error('只能在空闲且没有待处理输入时导入上下文');

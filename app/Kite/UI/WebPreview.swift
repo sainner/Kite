@@ -3,8 +3,9 @@ import WebKit
 
 /// 网页视图看哪里：工作区里的静态 HTML，或者本机能直接打开的网址（工作机上的开发服务器、设备上转发到它的端口，浏览里还有互联网）。
 enum WebSource: Equatable {
-    /// 相对资源从同一工作区读取；version 变了就重新加载。
-    case workspaceFile(client: KitedClient, workspace: String, path: String, version: String)
+    /// 相对资源从同一工作区读取；version（内容的版本）变了就重新加载。snapshot 是看历史版本时那枚快照的提交号，
+    /// 页面和它引用的资源都读那一枚里的，nil 是现在的。
+    case workspaceFile(client: KitedClient, workspace: String, path: String, version: String, snapshot: String? = nil)
     /// store 是这个目标在本设备的网站数据（Cookie、本地存储），同一目标下次打开仍是登录状态。
     /// 有 roaming 时主框架可以去任何网址（浏览）；没有时只停在自己的来源上（预览的网页画面）。
     case address(URL, store: UUID, roaming: WebRoaming? = nil)
@@ -13,7 +14,7 @@ enum WebSource: Equatable {
 
     fileprivate var url: URL {
         switch self {
-        case .workspaceFile(_, _, let path, _):
+        case .workspaceFile(_, _, let path, _, _):
             var components = URLComponents()
             components.scheme = Self.fileScheme
             components.host = "workspace"
@@ -82,10 +83,10 @@ struct WebPreview: View {
     private func makePage() -> WebPage {
         var configuration = WebPage.Configuration()
         switch source {
-        case .workspaceFile(let client, let workspace, _, _):
+        case .workspaceFile(let client, let workspace, _, _, let snapshot):
             configuration.websiteDataStore = .nonPersistent()
             configuration.urlSchemeHandlers[URLScheme(WebSource.fileScheme)!] = WorkspaceFileScheme { path in
-                try await FileContentCache.shared.file(client: client, workspace: workspace, path: path)
+                try await FileContentCache.shared.file(client: client, workspace: workspace, path: path, version: snapshot)
             }
         case .address(_, let store, _):
             configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: store)

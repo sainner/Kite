@@ -200,7 +200,7 @@ final class CodeEditorView: UITextView {
         isEditable = document.editable
         alwaysBounceVertical = true
         keyboardDismissMode = .interactive
-        text = document.text
+        text = document.current
         document.storage = textStorage
         if let manager = textLayoutManager { styler = SyntaxStyler(layoutManager: manager, language: CodeLanguage.forPath(document.path)) }
         styler?.edited = { [sync] in sync.edited() }
@@ -224,6 +224,9 @@ final class CodeEditorView: UITextView {
         sync.apply(storage: textStorage, styler: styler, attributes: [.font: font as Any, .foregroundColor: UIColor.label], undo: undoManager,
                    focus: focus, match: match, reveal: reveal)
     }
+
+    /// 要拆掉了：没保存的文字交给 SourceDocument 留着。
+    func detach() { sync.document.detach(textStorage) }
 
     private func reveal(_ range: NSRange) {
         selectedRange = range
@@ -253,6 +256,8 @@ extension CodeEditor: UIViewRepresentable {
         view.save = save
         view.apply(focus: focus, match: match)
     }
+
+    static func dismantleUIView(_ view: CodeEditorView, coordinator: ()) { view.detach() }
 }
 #else
 /// Mac 的代码编辑器：折行的 NSTextView，行号栏在滚动视图左边，跟着滚动重画。撤销记录各编辑器自己一份，不和窗口里别的输入框混在一起。
@@ -296,7 +301,7 @@ final class CodeEditorView: NSView, NSTextViewDelegate {
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
-        textView.string = document.text
+        textView.string = document.current
         textView.delegate = self
         document.storage = textView.textStorage
         if let manager = textView.textLayoutManager { styler = SyntaxStyler(layoutManager: manager, language: CodeLanguage.forPath(document.path)) }
@@ -330,6 +335,11 @@ final class CodeEditorView: NSView, NSTextViewDelegate {
         guard let storage = textView.textStorage else { return }
         sync.apply(storage: storage, styler: styler, attributes: [.font: textView.font as Any, .foregroundColor: NSColor.labelColor], undo: undo,
                    focus: focus, match: match, reveal: reveal)
+    }
+
+    /// 要拆掉了：没保存的文字交给 SourceDocument 留着。
+    func detach() {
+        if let storage = textView.textStorage { sync.document.detach(storage) }
     }
 
     private func reveal(_ range: NSRange) {
@@ -369,5 +379,7 @@ extension CodeEditor: NSViewRepresentable {
         view.textView.save = save
         view.apply(focus: focus, match: match)
     }
+
+    static func dismantleNSView(_ view: CodeEditorView, coordinator: ()) { view.detach() }
 }
 #endif

@@ -1,11 +1,11 @@
 ---
 name: todo-preview-plugin
-description: 预览的目标模型（.kite/preview/、实例随进程）、模拟器改用 Xcode 自带的，10-22 已实现、待手测；10-23 浏览并进文件插件、能开外网，待手测；别的工作机升级前要清 agent 里的旧工具名；Xcode 批准待用户跑命令、DeviceHub 窗口裁不出屏幕；我自己定的实现取舍与已知问题
+description: 预览的目标模型（.kite/preview/、实例随进程）、模拟器改用 Xcode 自带的，10-22 已实现、待手测；10-23 浏览并进文件插件、能开外网，待手测；别的工作机升级前要清 agent 里的旧工具名；Xcode 批准待用户跑命令、DeviceHub 窗口裁不出屏幕；插件授予预览等不带目标的操作待定；我自己定的实现取舍与已知问题
 metadata:
   node_type: memory
   type: todo
   originSessionId: 1fd0107c-f8bf-4003-bdfa-77630176dfbc
-  modified: 2026-10-22T15:35:10.413Z
+  modified: 2026-10-24T12:25:33.513Z
 ---
 
 **来源：** 2026-10-21 讨论终端的预置脚本时延伸出来；10-22 用户重新讨论预览给谁用，定为「目标」模型加独立的浏览、模拟器改用 Xcode 自带的、设备从列表里选（真机只装包、agent 装真机每次审批）。10-23 用户定浏览并进文件插件、插件改名「浏览」（浏览互联网与本机的文件），这次就能开外网。设计在 [成果查看与位置 · 预览](../../docs/成果查看与位置.md#预览) 与 [实例操作 · 预览](../../docs/实例操作.md#预览)，是现行文档，这里不重复。
@@ -25,6 +25,8 @@ metadata:
 **已知问题（沿用）：** kite-window 第一次用时要在「隐私与安全性」里允许录屏与辅助功能，源码一改要重新允许。App 不在前台时，不接受首次点按的 AppKit 自绘视图吞左键（spikes/mac-app-window）。Safari 开会话会到前台。Playwright 的 Firefox 在 macOS 27.2 上起不来。浏览器第一次用时下载到 ~/Library/Caches/ms-playwright，磁盘紧时注意 [[disk-space]]。目标里的 `simctl launch --console-pty` 是之前两次内核崩溃前的最后一步，onboarding skill 还推荐它，待查。
 
 **待定（docs 待定节有）：** 测试平台的假设先在一个项目试一轮；Mac 之间传 .app 的动作放哪。
+
+**待定（10-24 用户定先不加）：** 插件设置里没有入口授予不带目标的操作（`preview.*`、`monitor.start`），Bun 插件拿不到预览授权。App 已按操作目录的 `grant` 只在能写对应目标的组里给开关，以前生成的带目标授权本来就存不上。要加时在「工作区」那组按 `grant.params` 为空给开关，先想清插件开的 monitor 唤醒谁；有插件需要时再设计。
 
 **候选改进（未定）：** 等画面稳定的 1 秒定时改为各画面自己判断；App 窗口改 SCStream 推帧；照 Claude 桌面版（idb 取帧、H.264 推流、WebCodecs 解码）把模拟器画面改成视频流。
 

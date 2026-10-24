@@ -4,15 +4,16 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { inputSchema, stopBy } from '../harness/input.ts';
-import type { Outcome, Phase, Recovery } from '../harness/types.ts';
+import type { Outcome, Phase } from '../harness/types.ts';
+import { processGroupsSchema } from '../execution/command.ts';
 
 const input = inputSchema;
 const schema = z.object({
   /** skill 是点选的 skill 收下时固定的正文（见 InputMaterial），交给 Claude 时接在输入后面。 */
   inputs: z.array(z.object({ input, skill: z.string().min(1).optional(), sdkId: z.string(), at: z.number(),
-    status: z.enum(['queued', 'submitted', 'unconfirmed', 'active', 'done', 'cancelled']), delivered: z.boolean(), midTurn: z.boolean().default(false) })),
+    status: z.enum(['queued', 'submitted', 'active', 'done', 'cancelled']), delivered: z.boolean(), midTurn: z.boolean().default(false) })),
   stops: z.array(z.object({ id: z.string(), request: z.string(), returned: z.array(input), completed: z.boolean().default(false), by: stopBy.optional() })),
-  processes: z.array(z.number().int().positive()),
+  processes: processGroupsSchema,
   initialContext: z.string().optional(), context: z.string().optional(), through: z.number().default(0),
   paused: z.boolean().default(false),
   /** 切换后端前由另一后端处理过的输入，重发同一 ID 不再投递。 */
@@ -21,7 +22,10 @@ const schema = z.object({
   contextWindow: z.object({ model: z.string().min(1), tokens: z.number().int().positive(), requestId: z.string().min(1) }).optional(),
   outcome: z.discriminatedUnion('kind', [z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
     z.object({ kind: z.literal('failed'), message: z.string() })]).optional(),
-  recovery: z.object({ message: z.string() }).optional(),
+  /** 回合被 kited 退出打断（关闭时停下，或打开时发现崩溃），还没接着做；下一回合开始或人停下时清除，见 openClaudeHost。 */
+  exited: z.boolean().default(false),
+  /** 连续被 kited 崩溃打断的次数（关闭时停下的不算）；回合正常完成、用户本人发来消息或回应、继续时清零，工具结果不清零。 */
+  exits: z.number().int().nonnegative().default(0),
 });
 export type ClaudeControl = z.infer<typeof schema>;
 export interface ClaudeState {
@@ -33,15 +37,10 @@ export interface ClaudeState {
   contextWindow?: ClaudeControl['contextWindow'];
   waitingForResume: boolean;
   lastOutcome?: Outcome;
-  recovery?: Recovery;
 }
 export function readClaudeControl(directory: string): ClaudeControl {
   const path = join(directory, 'claude-control.json');
-  const data = existsSync(path) ? schema.parse(JSON.parse(readFileSync(path, 'utf8'))) : schema.parse({ inputs: [], stops: [], processes: [] });
-  if (data.inputs.some((entry) => entry.status === 'active' || entry.status === 'submitted')) data.recovery ??= { message: '上次 Claude 执行未收尾，请确认旧进程已停止后恢复；不会重放工具。' };
-  if (data.stops.some((entry) => !entry.completed)) data.recovery ??= { message: '上次停止尚未确认完成，请核查旧执行后恢复，再重试原停止请求。' };
-  if (data.inputs.some((entry) => entry.status === 'queued')) data.paused = true;
-  return data;
+  return existsSync(path) ? schema.parse(JSON.parse(readFileSync(path, 'utf8'))) : schema.parse({ inputs: [], stops: [], processes: [] });
 }
 export function saveClaudeControl(directory: string, data: z.input<typeof schema>): void {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -53,9 +52,9 @@ export function saveClaudeControl(directory: string, data: z.input<typeof schema
   const folder = openSync(dirname(path), 'r');
   try { fsyncSync(folder); } finally { closeSync(folder); }
 }
-export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 'recovery' | 'paused' | 'contextWindow'>, phase: Phase = 'idle', compacting = false): ClaudeState => ({
+export const claudeState = (data: Pick<ClaudeControl, 'inputs' | 'outcome' | 'paused' | 'contextWindow'>, phase: Phase = 'idle', compacting = false): ClaudeState => ({
   // 压缩在回合之间进行，宿主内部仍是空闲；对外同 harness，压缩期间是 running。
-  inputs: data.inputs, phase: compacting && phase === 'idle' ? 'running' : phase, busy: phase !== 'idle' || compacting, ...(compacting ? { compacting } : {}), lastOutcome: data.outcome, recovery: data.recovery,
+  inputs: data.inputs, phase: compacting && phase === 'idle' ? 'running' : phase, busy: phase !== 'idle' || compacting, ...(compacting ? { compacting } : {}), lastOutcome: data.outcome,
   contextWindow: data.contextWindow,
-  waitingForResume: !!data.recovery || (phase === 'idle' && data.paused),
+  waitingForResume: phase === 'idle' && data.paused,
 });

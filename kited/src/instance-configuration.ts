@@ -115,7 +115,6 @@ export class InstanceConfiguration {
       const grants = await normalizeExecutionChanges(value);
       if (executionRevision(grants) === revision) return this.executionGrants(id);
       const runtime = await this.control.runtime(instance);
-      // 恢复阻塞期间不执行，新授权等发送或继续时生效。
       if (runtime?.busy || runtime?.state === 'stopping') throw new KiteError('请先停止实例，再修改执行授权', 409);
       // 转到后台的命令按旧授权跑在沙箱里，收紧之前要先停下（Agent与插件契约 7.2）。
       if (this.kite.terminals.owned(id).length) throw new KiteError('这个代理转到后台的命令还在运行，请先停下再修改执行授权', 409);

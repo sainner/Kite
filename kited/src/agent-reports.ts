@@ -112,7 +112,7 @@ export class AgentReports {
     const notification = () => this.host.notify(target, {
       id: randomUUID(), kind, source, authority: 'observation', context: assembled.snapshot });
     if (!this.spendWake(target)) return notification();
-    // 交代方正在停止、等确认恢复时收不下输入，改成通知，下一次自然请求时纳入。
+    // 交代方正在停止时收不下输入，改成通知，下一次自然请求时纳入。
     try { await this.host.deliver(target, assembled.instructions, `${kind}:${source}:${randomUUID()}`, notice); }
     catch { notification(); }
   }

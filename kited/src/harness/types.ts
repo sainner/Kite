@@ -178,6 +178,14 @@ export interface Model {
   stream(request: ModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
 }
 
+/**
+ * 模型请求没成功：retryable 的（连不上、中途断开、服务端出错、限流）由 runner 退避重试，
+ * 其余（登录失效、余额不足、请求本身不对）直接让回合失败。适配器抛的其他错误都不重试。
+ */
+export class ModelRequestError extends Error {
+  constructor(message: string, readonly retryable: boolean) { super(message); }
+}
+
 export interface Tool extends ToolDefinition {
   /** 默认排他；只有宿主明确声明的工具才允许并发。 */
   parallel?: boolean;
@@ -193,7 +201,6 @@ export type Outcome =
   | { kind: 'interrupted' }
   | { kind: 'failed'; message: string };
 
-export interface Recovery { message: string }
 /** by 是发起停止的代理或经界面入口的 Line，它发来、还没交给模型的消息退给它；用户在界面上停止时没有。 */
 export interface StopRequest { id: string; inputs?: Input[]; by?: { kind: 'agent'; instance: string } | InputVia }
 
@@ -202,6 +209,8 @@ export type JournalEvent =
   | { type: 'input.cancelled'; inputId: string }
   /** 停止收据同时撤回队列、登记未确认输入，迟到重试不得重新入队。 */
   | { type: 'thread.stopped'; id: string; returned: Input[] }
+  /** 显式继续（resume）：解除等待继续，连续崩溃的次数从头算。 */
+  | { type: 'thread.resumed' }
   | { type: 'turn.started'; turnId: string }
   | { type: 'context.prepared'; snapshot: ContextSnapshot }
   | { type: 'request.configured'; snapshot: RequestSnapshot }
@@ -213,8 +222,11 @@ export type JournalEvent =
   | { type: 'tool.started'; turnId: string; requestId: string; callId: string }
   | { type: 'tool.finished'; turnId: string; requestId: string; callId: string; result: ToolResult }
   | { type: 'turn.feedback'; turnId: string; text: string }
-  | { type: 'turn.finished'; turnId: string; outcome: Outcome; recovery?: Recovery }
-  | { type: 'recovery.confirmed' }
+  /**
+   * exited：回合被 kited 退出打断（crashed 是崩溃后补记的，closed 是关闭时停下的），由上层决定接着做；连续崩溃几次就不再继续，见 HarnessRunner。
+   * 已收到手动停止的回合不标，按停止收尾。
+   */
+  | { type: 'turn.finished'; turnId: string; outcome: Outcome; exited?: 'crashed' | 'closed' }
   /** 切换后端时导入另一后端在本段产生的上下文；through 指向来源原生记录中已导入的最后位置。 */
   | { type: 'context.imported'; id: string; source: { runtime: 'claude'; through: string }; items: ContextItem[];
       /** 来源后端已交接的通知游标与当前基础上下文，避免切换后重复投递。 */
@@ -244,7 +256,6 @@ export interface ThreadState {
   /** 正在生成压缩摘要。 */
   compacting?: boolean;
   waitingForResume: boolean;
-  recovery?: Recovery;
   turnId?: string;
   lastOutcome?: Outcome;
 }
@@ -261,8 +272,6 @@ export interface HarnessOptions {
   journal: Journal;
   /** 同步取得本次配置与尚未投递的通知；读取不得启动模型或产生工具副作用。 */
   prepareRequest(cursor: { afterNotification: number }): HarnessRequest;
-  /** 管理宿主打开旧会话时先暂停待处理输入，等 send 或 resume 明确启动。 */
-  startPaused?: boolean;
   onEvent?(event: HarnessEvent): void;
   afterTools?(turnId: string, callIds: string[]): Promise<void>;
   afterTurn?(turnId: string, outcome: Outcome): Promise<void>;
@@ -279,14 +288,19 @@ export type CompactionRequest = { id: string } & ({ from: string; through: strin
 export interface ThreadRunner {
   readonly state: ThreadState;
   readonly lifecycle: 'open' | 'closing' | 'closed';
+  /** 会话记录写入失败（如磁盘满）：执行已停下，之后的操作都拒绝，要关掉从记录重新打开。 */
+  readonly broken: boolean;
   /** 收下返回 true；同一 ID 已收下过（重试）时不再处理，返回 false。material 是宿主收下时固定、随输入记下交给模型的材料。 */
   send(input: Input, material?: InputMaterial): Promise<boolean>;
   cancel(inputId: string): Promise<void>;
   interrupt(request?: StopRequest): Promise<Input[]>;
-  /** 显式继续错误或恢复后的会话；可以在没有新输入时继续已有上下文。 */
+  /** 显式继续失败或停下的会话；可以在没有新输入时继续已有上下文。 */
   resume(): Promise<void>;
-  /** 宿主必须先确认残留进程已停止；只解除恢复阻塞，不自动执行。 */
-  confirmRecovery(): Promise<void>;
+  /**
+   * 打开会话本身不开始执行：上次被 kited 退出打断的（回合被切断，或收下的输入还没开始处理）停在等待继续，由上层决定接着做。
+   * 被切断的回合先放一条继续说明，note 附在说明里（如原工作机可能还在执行）；连续被崩溃打断到上限的不接着做。没被打断时什么也不做。
+   */
+  continueInterrupted(note?: string): Promise<void>;
   /** 校验范围并开始压缩后返回；结果以记录送达，失败以 error 事件报告。 */
   compact(request: CompactionRequest): Promise<void>;
   /** 撤销最外层的一次压缩。 */

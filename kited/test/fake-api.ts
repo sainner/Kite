@@ -153,7 +153,7 @@ export function startFakeApi(): FakeApi {
       const { text, results } = lastUser(body);
       const model = body.model ?? 'claude-fake';
       let content: Reply[] = [{ type: 'text', text: main ? `echo: ${text.slice(-60)}` : 'ok' }];
-      const call = main && /^(READ|PATCH|SHELL|AGENT_START|AGENT_LIST|AGENT_SEND|AGENT_RESUME|AGENT_STOP) (.+)$/m.exec(text);
+      const call = main && /^(READ|PATCH|SHELL|AGENT_START|AGENT_LIST|AGENT_SEND|AGENT_STOP) (.+)$/m.exec(text);
       const steps = main ? [...(results.length ? lastUser(body, true).text : text).matchAll(/^CALL (\S+) (.+)$/gm)] : [];
       const step = steps[stepsDone(body)];
       const calls = (name: string, json: string): Reply[] => {

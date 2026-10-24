@@ -6,6 +6,7 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { z } from 'zod';
 import { prepareSandbox, secretEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { ToolResult } from '../harness/types.ts';
 import type { SecretValue } from '../secrets.ts';
@@ -27,8 +28,8 @@ export interface CommandOptions {
   onOutput?(text: string, limit: number): void;
   /** 只收标准输出，同样在写入日志之后；monitor 把它的每一行当作事件。 */
   onStdout?(text: string): void;
-  /** 进程组登记由宿主保存，恢复时据此确认是否仍有执行。 */
-  onProcess?(pid: number, active: boolean): void;
+  /** 进程组登记由宿主保存，恢复时据此确认是否仍有执行；started 是起进程的时刻，登记时一并存下，见 ProcessGroup。 */
+  onProcess?(pid: number, active: boolean, started: number): void;
   /** 有它时名单外的主机不直接拒绝，交给它决定；命令结束时仍在问的一并作废。 */
   askNetwork?: NetworkAsk;
   /** 有它时命令可以转到后台：超时、用户插话或一开始就要求时不停进程，交给它接着管，工具立刻返回。带凭据的命令不转。 */
@@ -40,6 +41,8 @@ export interface CommandOptions {
 /** 转到后台的命令：进程照跑，输出接着写进日志并交给监听者，结束时 done 给出结果。 */
 export interface BackgroundCommand {
   pid: number;
+  /** 起进程的时刻，接管方登记进程组时一并存下，见 ProcessGroup。 */
+  started: number;
   /** 完整输出的日志文件。 */
   log: string;
   /** 转后台之前的输出，只留尾部。 */
@@ -110,9 +113,78 @@ function unsandboxed(command: string, env: NodeJS.ProcessEnv, credentials: Recor
   catch (error) { dispose(); throw error; }
 }
 
-export function processGroupAlive(pid: number): boolean {
-  try { process.kill(-pid, 0); return true; }
+export function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
   catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
+}
+
+export function processGroupAlive(pid: number): boolean { return processAlive(-pid); }
+
+/**
+ * 登记下来的命令进程组：组长的 pid（也是组号）与 kited 起它的时刻（毫秒）。kited 异常退出后再打开时，
+ * 这个号可能已经给了别的进程，停之前凭启动时刻核对还是不是这一组。
+ */
+export const processGroupSchema = z.object({ pid: z.number().int().min(2), started: z.number().int().nonnegative() });
+export const processGroupsSchema = z.array(processGroupSchema);
+export type ProcessGroup = z.infer<typeof processGroupSchema>;
+
+/** ps 的启动时刻只到秒，再加上起进程本身的耗时；同一个 pid 在这么短的时间里退出又被复用不会发生。 */
+const START_TOLERANCE = 2_000;
+const MONTHS = 'JanFebMarAprMayJunJulAugSepOctNovDec';
+
+/** 各 pid 的进程启动时刻（毫秒）；不在的不列。ps 没跑成时为 undefined。同步跑，插件状态这类同步的调用方也要用。 */
+function processStarts(pids: number[]): Map<number, number> | undefined {
+  let stdout: string;
+  // 带上 kited 自己：它一定在，输出里没有它就是 ps 没跑成，不能当作这些进程都不在了。
+  try {
+    stdout = Bun.spawnSync(['ps', '-o', 'pid=,lstart=', '-p', [process.pid, ...pids].join(',')],
+      { env: { PATH: '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC' }, stdin: 'ignore', stdout: 'pipe', stderr: 'ignore', timeout: 5_000 }).stdout.toString();
+  } catch { return undefined; }
+  const starts = new Map<number, number>();
+  for (const line of stdout.split('\n')) {
+    // lstart 形如 Sat Oct 24 10:38:04 2026，按 UTC 给出。
+    const match = /^\s*(\d+)\s+\w+\s+(\w{3})\s+(\d+)\s+(\d+):(\d+):(\d+)\s+(\d+)\s*$/.exec(line);
+    const month = match ? MONTHS.indexOf(match[2]!) : -1;
+    if (!match || month % 3 !== 0) continue;
+    const [year, day, hour, minute, second] = [7, 3, 4, 5, 6].map((index) => Number(match[index]));
+    starts.set(Number(match[1]), Date.UTC(year!, month / 3, day, hour, minute, second));
+  }
+  return starts.has(process.pid) ? starts : undefined;
+}
+
+/** 组里还有 kited 能发信号的进程；全是别的用户的（EPERM）不会是 Kite 起的，也停不了，同不在一样看。 */
+function groupSignalable(pid: number): boolean {
+  try { process.kill(-pid, 0); return true; } catch { return false; }
+}
+
+/**
+ * 登记的进程组里眼下还在、仍是 Kite 起的那些；ps 没跑成、确认不了时为 undefined。组长还在的按启动时刻核对，
+ * 对不上的是复用了这个 pid 的别的进程。组长已经退出、组里还有进程的算：组在时这个号不会分给新进程，除非原来的组
+ * 整个结束后有新进程拿到它当了组长又先退出，ps 分辨不出这种情况。
+ */
+export function ownedProcessGroups(groups: ProcessGroup[]): ProcessGroup[] | undefined {
+  const present = groups.filter((group) => groupSignalable(group.pid));
+  if (!present.length) return [];
+  const starts = processStarts(present.map((group) => group.pid));
+  if (!starts) return undefined;
+  return present.filter(({ pid, started }) => {
+    const start = starts.get(pid);
+    return start === undefined || Math.abs(start - started) <= START_TOLERANCE;
+  });
+}
+
+/**
+ * 会话登记的命令进程组：kited 退出时它们不跟着退出，打开会话时先停掉。只停核对过仍是 Kite 起的（见 ownedProcessGroups），
+ * 返回停不掉的，留在登记里下次再停；不在了的、不是这一组的都不再返回。ps 没跑成时一个都不停，还在的原样返回。
+ */
+export async function stopProcessGroups(groups: ProcessGroup[]): Promise<ProcessGroup[]> {
+  const ours = ownedProcessGroups(groups);
+  if (!ours) return groups.filter((group) => groupSignalable(group.pid));
+  for (const { pid } of ours) { try { process.kill(-pid, 'SIGKILL'); } catch {} }
+  const alive = () => ours.filter((group) => groupSignalable(group.pid));
+  const deadline = Date.now() + 1000;
+  while (alive().length && Date.now() < deadline) await delay(20);
+  return alive();
 }
 
 export async function runCommand(command: string, timeout: number, signal: AbortSignal, options: CommandOptions): Promise<ToolResult> {
@@ -159,6 +231,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     child = spawn(sandbox.executable, sandbox.args, { cwd: options.cwd, env: sandbox.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (error) { closeSync(fd); asking?.close(); sandbox?.dispose(); throw error; }
   const pid = child.pid;
+  const started = Date.now();
   const stop = (reason: string) => {
     stopped ??= reason;
     if (!pid || killTimer) return;
@@ -235,7 +308,7 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     timer = undefined;
     signal.removeEventListener('abort', onAbort);
     askingEnded.abort();
-    if (pid) options.onProcess?.(pid, false);
+    if (pid) options.onProcess?.(pid, false, started);
     const done = (async () => {
       try {
         const code = await closed;
@@ -243,12 +316,12 @@ export async function runCommand(command: string, timeout: number, signal: Abort
         return { code, ...(stopped ? { stopped } : {}), ...(unknown ? { unknown: true } : {}) };
       } finally { cleanup(); }
     })();
-    const message = background!.adopt({ pid: pid!, log, output: tail, listen: (listener) => { listeners.push(listener); }, done, stop });
+    const message = background!.adopt({ pid: pid!, started, log, output: tail, listen: (listener) => { listeners.push(listener); }, done, stop });
     return { status: 'success', output: reason + message };
   };
   try {
     if (pid) {
-      try { options.onProcess?.(pid, true); }
+      try { options.onProcess?.(pid, true, started); }
       catch (error) { ioError = error; stop('进程登记失败'); }
     }
     if (signal.aborted) onAbort();
@@ -256,13 +329,13 @@ export async function runCommand(command: string, timeout: number, signal: Abort
     if ('reason' in first && pid && !stopped && !ioError) return detach(first.reason);
     const code = 'code' in first ? first.code : await closed;
     const alive = await settle();
-    if (pid && !alive) options.onProcess?.(pid, false);
+    if (pid && !alive) options.onProcess?.(pid, false, started);
     if (ioError && !alive) throw ioError;
     const status = alive ? 'unknown' : stopped || code !== 0 ? 'error' : 'success';
     return {
       status,
       output: [
-        alive ? '无法确认进程组已停止，需要人工检查。' : stopped ?? `退出码：${code}`,
+        alive ? '命令结束后进程组没能停下，可能还在运行。' : stopped ?? `退出码：${code}`,
         confidential ? '凭据命令的输出已隐藏；标准输出和错误输出不会保存到日志或会话。' : '',
         total > limit ? `（前面省略 ${total - limit} 个字符）` : '', tail,
         confidential ? '' : `完整日志：${log}`,

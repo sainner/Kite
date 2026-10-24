@@ -107,14 +107,20 @@ export class WorkspaceFiles {
 
   /**
    * 把一个已有的文本文件改成 text：只改普通文件、不新建，上限同读（2 MiB、不含 NUL），现在读不成文本的也不改。
+   * 现在的字节不是合法 UTF-8 的（GBK、Latin-1 等）不改：读时坏字节换成了替换符，按 UTF-8 写回会改坏原有内容。
    * 文件已是这份内容时不写（重试幂等，written 为 false）；现在的内容和打开时（baseVersion）不同又没带 force 时拒绝，免得盖掉别人的改动。
    * 原地写入，保留权限与 inode。
    */
   write({ path, text, baseVersion, force = false }: { path: string; text: string; baseVersion: string; force?: boolean }) {
     if (Buffer.byteLength(text) > TEXT_LIMIT) throw new KiteError('内容超过 2 MiB，不能按文本保存', 413);
     if (text.includes('\0')) throw new KiteError('内容含 NUL，不能按文本保存', 415);
-    const target = this.resolve(path);
-    const current = textVersion(this.text(target));
+    const { target, size } = this.regular(path);
+    const current = textVersion(textContent(size, () => {
+      const bytes = readFileSync(target);
+      // 保留开头的 BOM，与按文本读（readFileSync 的 utf8）得到的内容一致，version 才对得上。
+      try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+      catch { throw new KiteError('文件不是 UTF-8 编码的文本，按文本保存会改坏原有内容', 415); }
+    }));
     const version = textVersion(text);
     const saved = { path: relative(this.root, target), version };
     if (current === version) return { ...saved, written: false };

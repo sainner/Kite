@@ -219,7 +219,7 @@ extension PerfProbe {
     private static func runningState(_ state: RemoteState?) -> RemoteState? {
         guard let state else { return nil }
         return RemoteState(phase: "running", busy: true, compacting: state.compacting, waitingForResume: false,
-                           lastOutcome: state.lastOutcome, recovery: state.recovery, context: state.context,
+                           lastOutcome: state.lastOutcome, context: state.context,
                            status: state.status, error: state.error, capabilities: state.capabilities)
     }
 

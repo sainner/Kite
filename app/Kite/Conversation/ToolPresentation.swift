@@ -7,7 +7,7 @@ enum ToolKind: Hashable {
     case read, edit, notebookEdit, write, command, check, webSearch, webFetch, agent, skill, tools
     case cronCreate, cronDelete, cronList, monitor, taskStop, terminalRead, terminalList, listAgents, sendMessage
     /// Kite 自己的工具：提问、密钥引用、代理协作、监视和个人 agent（Line）的工具，见 kited 的 agentToolCatalog。
-    case question, credentials, agentStart, agentResume, agentStop, agentMerge, monitorStart, monitorList, monitorStop
+    case question, credentials, agentStart, agentStop, agentMerge, monitorStart, monitorList, monitorStop
     case previewOpen, previewAction, previewInspect, previewRead, previewList, previewStop
     case lineStatus, lineHandle, lineRelay, lineControl, lineWorkspace
     /// 插件实例的工具。
@@ -36,7 +36,6 @@ enum ToolKind: Hashable {
         case .question: "questionmark.bubble"
         case .credentials: "key"
         case .agentStart: "person.badge.plus"
-        case .agentResume: "play.circle"
         case .agentStop, .monitorStop: "stop.circle"
         case .agentMerge: "arrow.triangle.merge"
         case .monitorStart, .monitorList: "waveform.path.ecg"
@@ -83,7 +82,6 @@ enum ToolKind: Hashable {
         case .question: "向用户提了 \(count) 次问题"
         case .credentials: "查看了密钥引用"
         case .agentStart: "创建了 \(count) 个 agent"
-        case .agentResume: "让 agent 继续了 \(count) 次"
         case .agentStop: "停了 \(count) 次 agent"
         case .agentMerge: "合回了 \(count) 个子工作区"
         case .monitorStart: "开了 \(count) 个监视"
@@ -133,7 +131,6 @@ extension ToolUse {
         case "question": .question
         case "credentials": .credentials
         case "agent_start": .agentStart
-        case "agent_resume": .agentResume
         case "agent_stop": .agentStop
         case "agent_merge": .agentMerge
         case "monitor_start": .monitorStart
@@ -208,7 +205,6 @@ extension ToolUse {
         case .question: "提问"
         case .credentials: "密钥引用"
         case .agentStart: "创建 agent"
-        case .agentResume: "继续 agent"
         case .agentStop: "停止 agent"
         case .agentMerge: "合回子工作区"
         case .monitorStart: "开始监视"
@@ -383,7 +379,6 @@ extension ToolUse {
             return texts.count == 1 ? "问「\(texts[0])」" : "问 \(texts.count) 个问题"
         case .credentials: return "列出密钥引用"
         case .agentStart: return input["title"]?.string.map { "创建 agent「\($0)」" } ?? "创建 agent"
-        case .agentResume: return "让 agent 继续"
         case .agentStop: return "停下 agent"
         case .agentMerge: return "合回子工作区"
         case .monitorStart: return input["title"]?.string.map { "开始监视「\($0)」" } ?? "开始监视"

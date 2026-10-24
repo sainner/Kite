@@ -43,7 +43,7 @@ struct ThreadHeaderActions: View {
     }
     private var roleApproval: ApprovalMode? { role?.role.approval ?? model.roles(in: area)?.defaultApproval }
     private var approval: ApprovalMode? { pendingApproval ?? storedApproval }
-    /// 换到另一厂商的模型就是换后端，运行中或有排队消息时不能换；待恢复时换后端连带确认恢复。
+    /// 换到另一厂商的模型就是换后端，运行中或有排队消息时不能换。
     private var canChangeVendor: Bool {
         if choice != nil { return canOpenModels }
         return canOpenModels && !savingModel && !loadingModels && !thread.showStop && thread.state?.capabilities.switchRuntime == true
@@ -135,7 +135,7 @@ struct ThreadHeaderActions: View {
                 thread.raw = thread.raw == nil ? RawTranscript() : nil
             },
         ]
-        // 停止、继续和恢复确认都归输入区：待恢复时发送或继续即确认。
+        // 停止与继续都归输入区。
         return [windowActions?.commands ?? [], general, debug].filter { !$0.isEmpty }
     }
 

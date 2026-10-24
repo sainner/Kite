@@ -27,7 +27,7 @@ import { agentRevision, instanceAgent } from './agents/definition.ts';
 import { agentTools } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import { lineToolNames, operationToolNames } from './operations/contract.ts';
-import type { CompactionRequest, Input, Model, Outcome, Phase, Recovery, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
+import type { CompactionRequest, Input, Model, Outcome, Phase, StopRequest, ThreadNotification, Tool } from './harness/types.ts';
 import type { UpdatesOptions } from './update/updates.ts';
 import type { LightTaskOptions } from './light-tasks.ts';
 import type { ProjectToolRule } from './roles.ts';
@@ -39,13 +39,15 @@ import type { NetworkAsk } from './execution/command.ts';
 export interface Runtime {
   readonly state: RunnerState | Phase;
   readonly busy: boolean;
-  readonly recovery?: Recovery;
+  /** 会话记录写入失败（如磁盘满）：执行已停下，要关掉从记录重新打开。 */
+  readonly broken: boolean;
   /** skill 是 /名字 点选的 skill 收下时固定的正文（名字在 input.skill），见 InputMaterial。 */
   send(input: Input, skill?: string): Promise<boolean>;
   interrupt(request?: StopRequest): Promise<Input[]>;
   shutdown(): Promise<void>;
   resume?(): Promise<void>;
-  recover?(): Promise<void>;
+  /** 见 ThreadRunner.continueInterrupted：打开不开始执行，被 kited 退出打断的由上层决定接着做。 */
+  continueInterrupted(note?: string): Promise<void>;
   cancel?(inputId: string): Promise<void>;
   compact?(request: CompactionRequest): Promise<void>;
   revertCompaction?(id: string): Promise<void>;
@@ -180,8 +182,10 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   }
   const inputs = new Map<string, string>();
   let busy = false;
+  /** 刚结束的回合被 kited 关闭停下：下次启动接着做，不算回合结束，不回报。 */
+  let cut = false;
   const thread = await openThreadHost({
-    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, startPaused: true, policy, secrets, askNetwork: host.askNetwork, skills,
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, policy, secrets, askNetwork: host.askNetwork, skills,
     ...(host.background ? { background: host.background } : {}),
     ...(host.outside ? { outside: host.outside } : {}),
     prepareRequest(tools, { afterNotification }) {
@@ -226,6 +230,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const row = event.record;
         if (row.type === 'input.received') inputs.set(row.input.id, row.input.text);
         if (row.type === 'input.cancelled') inputs.delete(row.inputId);
+        if (row.type === 'turn.finished') cut = !!row.exited;
         if (row.type === 'thread.stopped') for (const input of row.returned) inputs.delete(input.id);
         if (row.type === 'request.started') for (const id of row.inputIds) {
           const text = inputs.get(id);
@@ -239,20 +244,17 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const was = busy;
         // 手动压缩也把阶段置为运行、busy 为真，但不在回合里（没有 turnId）；回合中途的自动压缩照旧算在回合里。
         busy = event.state.phase !== 'idle' && !(event.state.compacting && !event.state.turnId);
-        if (was && !busy) on.idle(event.state.lastOutcome);
+        if (was && !busy && !cut) on.idle(event.state.lastOutcome);
       }
     },
   });
   return {
     get state() { return thread.runner.state.phase; }, get busy() { return thread.runner.state.busy; },
-    get recovery() { return thread.runner.state.recovery; },
+    get broken() { return thread.runner.broken; },
     send: (input, skill) => thread.runner.send(input, { images: images(input), ...(skill ? { skill } : {}) }),
     interrupt: (request) => thread.runner.interrupt(request), shutdown: () => thread.close(),
-    resume: async () => {
-      if (thread.runner.state.recovery) throw new KiteError('请先确认旧执行已停止，再恢复会话', 409);
-      await thread.runner.resume();
-    },
-    recover: () => thread.confirmRecovery(),
+    resume: () => thread.runner.resume(),
+    continueInterrupted: (note) => thread.continueInterrupted(note),
     cancel: (inputId) => thread.runner.cancel(inputId),
     compact: (request) => thread.runner.compact(request),
     revertCompaction: (id) => thread.runner.revertCompaction(id),

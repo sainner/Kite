@@ -7,9 +7,10 @@ import UIKit
 /// 附件排在气泡上面（托管 MessageAttachmentRow，很少有）。正文和代码段用 SelectableText 同一套属性串，复制给打的原文。
 /// 长按气泡任何地方（含内边距、折叠按钮）都开操作栏，接着拖是选字（用户 2026-10-13 定）；
 /// iPad 指针右键开关操作栏。刚发出去时从下面 bubbleRise 处浮上来、淡显，跟着对话往上滑的那一下走，浮的途中不能选字（同 Mac）。
-/// 代理来信也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上，排队中同人发的只描边；气泡上面一行是发信方的头像和名字（PhoneSenderLine），同 Mac。
-/// Kite 的通知也是它：气泡同代理来信，里面是正文；上面一行是 PhoneNoticeHeader（图标、种类、箭头）。默认收着、只有这一行，
-/// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动。没有输入 ID，不能当压缩的起点终点。同 Mac。
+/// 来信（代理来信、Kite 的通知）也是它：靠左，agentBubble 的浅底、系统文字色，小圆角在左上，排队中的代理来信同人发的只描边；
+/// 气泡上面一行是 PhoneLetterHeader（发信方的头像和名字，或通知的图标和种类，连同箭头）。来信默认收着、只有这一行，
+/// 点它气泡从左上角放大出来，再点缩回左上角（BubbleLayout.pop），下面的行跟着按 snappy 的弹簧动；点开以后折叠和操作同人发的。
+/// Kite 的通知没有输入 ID，不能当压缩的起点终点。同 Mac。
 final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneBubbleRowView?
     var proseViews: [PhoneProseTextView]? { container.map { [$0.text] } ?? [] }
@@ -22,16 +23,16 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private(set) var sender: Sender?
     /// Kite 的通知，别的为 nil。
     private var notice: Notice?
-    /// 通知露着气泡；默认收着，点上面那一行露出来。
+    /// 来信露着气泡；默认收着，点上面那一行露出来。
     private var opened = false
-    /// 通知正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
+    /// 来信正在点开、收起：气泡按停着时的样子摆，行的高走到量的高为止。
     private var toggling = false
     /// 展开了全文。
     private(set) var expanded = false
     private var context: TranscriptRowContext?
     /// 怎么量、怎么摆，两端共用。
     private var layout = BubbleLayout()
-    /// 气泡上面那一截（附件或发信方）连同间距多高。
+    /// 气泡上面那一截（附件或来信那一行）连同间距多高。
     private var topHeight: CGFloat = 0
     private var hasBlocks = false
     /// 折起来时显示多高：messageFold 随动态字体缩放。
@@ -63,7 +64,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
             context?.select(nil)
             setExpanded(!expanded)
         }
-        container.toggleNotice = { [weak self] in self?.setOpened(!(self?.opened ?? false)) }
+        container.toggleLetter = { [weak self] in self?.setOpened(!(self?.opened ?? false)) }
         self.container = container
         interaction = PhoneTextInteraction(text: text, host: container.bubble)
         interaction?.enabled = rise == 0
@@ -116,7 +117,7 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         interaction.showActions = { if context.actionable { context.select(id) } }
         interaction.dismissActions = { context.select(nil) }
         interaction.secondaryClick = context.actionable ? { context.toggleActions(id) } : nil
-        container.text.accessibilityLabel = notice != nil ? TranscriptSpeech.noticeBody : TranscriptSpeech.bubble(sender: sender, queued: queued)
+        container.text.accessibilityLabel = letter ? TranscriptSpeech.letterBody(notice: notice != nil) : TranscriptSpeech.message(queued: queued)
         container.text.accessibilityCustomActions = context.actionable
             ? [UIAccessibilityCustomAction(name: TranscriptSpeech.actions) { _ in context.select(id); return true }] : nil
     }
@@ -142,15 +143,17 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         container.style(queued: queued, agent: letter, animated: !first && wasQueued.map { $0 != queued } == true, environment: environment)
         container.setAttachments(message.attachments.isEmpty ? nil : AnyView(
             MessageAttachmentRow(attachments: message.attachments).environment(\.self, environment)))
-        container.setSender(sender, environment: environment)
-        container.setNotice(notice, expanded: opened, environment: environment)
-        if notice == nil { container.setBubbleShown(!attachmentsOnly) } else if first { container.setBubbleShown(opened) }
+        container.setHeading(heading, expanded: opened, environment: environment)
+        if !letter { container.setBubbleShown(!attachmentsOnly) } else if first { container.setBubbleShown(opened) }
     }
 
     private var attachmentsOnly: Bool { message?.attachmentsOnly == true }
 
     /// 靠左、浅底的来信：代理来信、Kite 的通知。
     private var letter: Bool { sender != nil || notice != nil }
+
+    /// 来信上面那一行，人发的为 nil。
+    private var heading: LetterHeading? { notice.map(LetterHeading.init) ?? sender.map { LetterHeading($0, queued: queued) } }
 
     /// 上次整条排过、没有一行是被行宽折下来的：贴字的宽。拖缝时能给的宽还放得下它，排出来一样，不用再排（见 height）。
     private var unwrapped: CGFloat?
@@ -201,8 +204,8 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     /// 拖缝中没折行的短消息（大多数）能给的宽还放得下就不再排，高照旧：每步改宽时文本视图也就不用重排。
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        // 收着的通知只有那一行，正文不排
-        if notice != nil, !opened {
+        // 收着的来信只有那一行，正文不排
+        if letter, !opened {
             let container = rowView
             provisional = false
             topHeight = container.topHeight(width: width)
@@ -263,11 +266,11 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     /// 摆好气泡里的东西：行的高可能正在展开、收起的动画里（比量的矮或高），正文按它截。
-    /// 通知点开、收起的途中气泡按停着时的样子摆（缩放、淡入淡出是图层动画），箭头按行的高走到哪了转，同 Mac。
+    /// 来信点开、收起的途中气泡按停着时的样子摆（缩放、淡入淡出是图层动画），箭头按行的高走到哪了转，同 Mac。
     override func layoutView(in frame: CGRect) {
         guard let container else { return }
         var size = frame.size
-        if notice != nil {
+        if letter {
             let header = container.header?.height ?? 0
             let full = topHeight + bubbleHeight(expanded: expanded)
             var turn: CGFloat = opened ? 1 : 0
@@ -315,12 +318,12 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
         heightChanged?(.spring(.snappy))
     }
 
-    /// 通知点开、收起：气泡从左上角放大出来、缩回去，下面的行跟着按 snappy 的弹簧动；缩回去以后藏起气泡。同 Mac。
+    /// 来信点开、收起：气泡从左上角放大出来、缩回去，下面的行跟着按 snappy 的弹簧动；缩回去以后藏起气泡。同 Mac。
     private func setOpened(_ opened: Bool) {
-        guard let notice, let context, let container, opened != self.opened else { return }
+        guard let heading, let context, let container, opened != self.opened else { return }
         context.select(nil)
         self.opened = opened
-        container.setNotice(notice, expanded: opened, environment: context.environment)
+        container.setHeading(heading, expanded: opened, environment: context.environment)
         toggling = true
         measured = nil
         heightChanged?(.spring(.snappy))
@@ -347,22 +350,21 @@ final class PhoneBubbleRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 }
 
-/// 气泡这一行的视图：上面的附件、发信方或通知那一行，气泡（底色、描边、截住的正文、展开按钮）。
+/// 气泡这一行的视图：上面的附件或来信那一行，气泡（底色、描边、截住的正文、展开按钮）。
 final class PhoneBubbleRowView: UIView {
     let bubble = PhoneBubbleView()
     let text = PhoneProseTextView.make()
     let fold = PhoneFoldButton()
-    /// Kite 通知的那一行，别的为 nil。
-    private(set) var header: PhoneNoticeHeader?
-    /// 点了通知那一行。
-    var toggleNotice: (() -> Void)?
+    /// 来信那一行，人发的为 nil。
+    private(set) var header: PhoneLetterHeader?
+    /// 点了来信那一行。
+    var toggleLetter: (() -> Void)?
     /// 正文按折起来的高截住，底下渐隐。
     private let clip = UIView()
     private let fade = CAGradientLayer()
     /// 渐隐上次设的起点和底下淡掉多少。
     private var faded: (start: CGFloat, amount: CGFloat)?
     private var attachments: UIHostingController<AnyView>?
-    private var sender: PhoneSenderLine?
 
     init() {
         super.init(frame: .zero)
@@ -377,7 +379,7 @@ final class PhoneBubbleRowView: UIView {
         orderAccessibility()
     }
 
-    /// 读屏按通知那一行、附件、正文、展开按钮的顺序读，气泡本身不是一个元素；收着的通知不读气泡。
+    /// 读屏按来信那一行、附件、正文、展开按钮的顺序读，气泡本身不是一个元素；收着的来信不读气泡。
     private func orderAccessibility() {
         var elements: [Any] = []
         if let header { elements.append(header) }
@@ -386,16 +388,16 @@ final class PhoneBubbleRowView: UIView {
         accessibilityElements = elements
     }
 
-    /// 露出、藏起气泡：Kite 的通知收着时藏着。
+    /// 露出、藏起气泡：来信收着时藏着。
     func setBubbleShown(_ shown: Bool) {
         guard bubble.isHidden == shown else { return }
         bubble.isHidden = !shown
         orderAccessibility()
     }
 
-    /// Kite 通知的那一行（Kite 的图标、那一句、箭头），别的为 nil 时拿掉。
-    func setNotice(_ notice: Notice?, expanded: Bool, environment: EnvironmentValues) {
-        guard let notice else {
+    /// 来信那一行（图标或头像、那一句、箭头），人发的为 nil 时拿掉。
+    func setHeading(_ heading: LetterHeading?, expanded: Bool, environment: EnvironmentValues) {
+        guard let heading else {
             guard let header else { return }
             header.removeFromSuperview()
             self.header = nil
@@ -403,14 +405,14 @@ final class PhoneBubbleRowView: UIView {
             return
         }
         let header = self.header ?? {
-            let header = PhoneNoticeHeader()
-            header.action = { [weak self] in self?.toggleNotice?() }
+            let header = PhoneLetterHeader()
+            header.action = { [weak self] in self?.toggleLetter?() }
             addSubview(header)
             self.header = header
             orderAccessibility()
             return header
         }()
-        header.show(notice, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont, expanded: expanded,
+        header.show(heading, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont, expanded: expanded,
                     environment: environment)
     }
 
@@ -419,22 +421,6 @@ final class PhoneBubbleRowView: UIView {
     func style(queued: Bool, agent: Bool, animated: Bool, environment: EnvironmentValues) {
         bubble.style(queued: queued, agent: agent, animated: animated, environment: environment)
         fold.style(color: queued || agent ? .label : .white)
-    }
-
-    /// 代理来信上面的头像和名字，人发的为 nil 时拿掉。
-    func setSender(_ sender: Sender?, environment: EnvironmentValues) {
-        guard let sender else {
-            self.sender?.removeFromSuperview()
-            self.sender = nil
-            return
-        }
-        let line = self.sender ?? {
-            let line = PhoneSenderLine()
-            addSubview(line)
-            self.sender = line
-            return line
-        }()
-        line.show(sender, environment: environment)
     }
 
     func setAttachments(_ content: AnyView?) {
@@ -464,10 +450,9 @@ final class PhoneBubbleRowView: UIView {
         if let attachments { adopt(attachments) }
     }
 
-    /// 气泡上面那一截（附件那一行、发信方那一行、通知那一行）连同和气泡之间的间距多高，都没有为 0。
+    /// 气泡上面那一截（附件那一行、来信那一行）连同和气泡之间的间距多高，都没有为 0。
     func topHeight(width: CGFloat) -> CGFloat {
-        if let header { return header.height + PhoneSenderLine.gap }
-        if let sender { return sender.height + PhoneSenderLine.gap }
+        if let header { return header.height + PhoneLetterHeader.gap }
         guard let size = attachmentsSize(width: width) else { return 0 }
         return PhonePixel.ceil(size.height) + 6
     }
@@ -483,7 +468,7 @@ final class PhoneBubbleRowView: UIView {
         return size
     }
 
-    var topWidth: CGFloat { header?.width ?? sender?.width ?? attachments?.view.frame.width ?? 0 }
+    var topWidth: CGFloat { header?.width ?? attachments?.view.frame.width ?? 0 }
 
     /// 按 BubbleLayout 给的框摆：气泡、截住正文的那层（底下渐隐）、正文、折叠按钮。正文的文本视图按整段的高摆（textHeight），
     /// 由截住的那层截：关了滚动的 UITextView 只排到视图那么高，跨过折叠线的那一行就不排、不画了（原来渐隐里露着半行）；
@@ -491,10 +476,6 @@ final class PhoneBubbleRowView: UIView {
     func place(_ frames: BubbleLayout.Frames, textHeight: CGFloat, topHeight: CGFloat, foldable: Bool, expanded: Bool) {
         if let attachments, let size = attachmentsSize(width: bounds.width) {
             attachments.view.frame = CGRect(x: bounds.width - size.width, y: 0, width: size.width, height: topHeight - 6)
-        }
-        if let sender {
-            let frame = CGRect(x: 0, y: 0, width: min(sender.width, bounds.width), height: sender.height)
-            if sender.frame != frame { sender.frame = frame }
         }
         if let header {
             let frame = CGRect(x: 0, y: 0, width: min(header.width, bounds.width), height: header.height)
@@ -579,66 +560,6 @@ final class PhoneBubbleView: UIView {
         stroke.frame = bounds
         stroke.path = form.inset(by: 0.5).path(in: bounds).cgPath
         CATransaction.commit()
-    }
-}
-
-/// 代理来信上面那一行：发信方的头像（不动的一帧，见 AgentAvatar.still）、间距 6、名字（次要色小字，放不下截掉），竖着居中，同 Mac 的 SenderLineView。
-final class PhoneSenderLine: UIView {
-    /// 和下面的气泡之间。
-    static let gap: CGFloat = 8
-    private let avatar = CALayer()
-    private let name = PhoneTextLine()
-    private var diameter: CGFloat = 24
-    private var shown: (sender: Sender, environment: EnvironmentValues)?
-
-    init() {
-        super.init(frame: .zero)
-        layer.addSublayer(avatar)
-        addSubview(name)
-        // 读屏由正文前面的说明读发信方（TranscriptSpeech.agent）
-        isAccessibilityElement = false
-        accessibilityElementsHidden = true
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func show(_ sender: Sender, environment: EnvironmentValues) {
-        let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
-        diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-        name.set(sender.name, font: font, color: .secondaryLabel)
-        shown = (sender, environment)
-        drawAvatar()
-        setNeedsLayout()
-    }
-
-    private func drawAvatar() {
-        guard let shown else { return }
-        let scale = traitCollection.displayScale > 0 ? traitCollection.displayScale : 3
-        let instance = shown.sender.instance
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        avatar.contentsScale = scale
-        avatar.contents = AgentAvatar.still(design: AgentAvatar.design(for: instance, environment: shown.environment), instance: instance,
-                                            diameter: diameter, scale: scale, environment: shown.environment)
-        CATransaction.commit()
-    }
-
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        if window != nil { drawAvatar() }
-    }
-
-    var height: CGFloat { max(diameter, name.lineHeight) }
-    var width: CGFloat { diameter + 6 + name.naturalWidth }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        avatar.frame = CGRect(x: 0, y: PhonePixel.round((bounds.height - diameter) / 2), width: diameter, height: diameter)
-        CATransaction.commit()
-        let x = diameter + 6
-        name.frame = CGRect(x: x, y: PhonePixel.round((bounds.height - name.lineHeight) / 2), width: max(bounds.width - x, 0), height: name.lineHeight)
     }
 }
 

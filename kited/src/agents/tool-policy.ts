@@ -20,11 +20,11 @@ const ruleAllows = (rule: Pick<ToolRule, 'mode' | 'tools'>, name: string): boole
  * 离开另一个工具就用不全的工具。skill 照 Claude Code 的 Skill 工具只交正文，文件夹里的其他文件靠 read 按绝对路径读，
  * 没有 read 时 skill 也不给。被依赖的工具自己不再有依赖。
  */
-const dependencies: Readonly<Record<string, readonly string[]>> = { skill: ['read'] };
+const dependencies: ReadonlyMap<string, readonly string[]> = new Map([['skill', ['read']]]);
 
 export function permittedTools(universe: readonly string[], rules: readonly Pick<ToolRule, 'mode' | 'tools'>[]): string[] {
   const direct = universe.filter((name) => rules.every((rule) => ruleAllows(rule, name)));
-  return direct.filter((name) => (dependencies[name] ?? []).every((dependency) => direct.includes(dependency)));
+  return direct.filter((name) => (dependencies.get(name) ?? []).every((dependency) => direct.includes(dependency)));
 }
 
 /** 必需工具中不在有效集里的那些；非空即角色在这一处不可用。 */

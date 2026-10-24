@@ -170,7 +170,7 @@ export class Runner {
     if (q && this.state === 'running') {
       const receipt = await (q as unknown as InputControl).interrupt({ cancelQueued: true });
       if (!receipt || !Array.isArray(receipt.cancelled) || receipt.still_queued.length) {
-        q.close(); throw new Error('Claude 未确认清空输入队列，请核查后恢复');
+        q.close(); throw new Error('Claude 未确认清空输入队列');
       }
       cancelled.push(...receipt.cancelled);
     }

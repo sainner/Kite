@@ -37,7 +37,9 @@ export interface TransferHost {
   control<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
   workspace(id: string): WorkspaceModel;
   /** 线程的显示状态，只读，不启动执行。 */
-  threadState(id: string): Promise<{ phase: string; busy: boolean; recovery?: unknown }>;
+  threadState(id: string): Promise<{ phase: string; busy: boolean }>;
+  /** 工作区里有协作操作正在做，见 OperationReceipts.running。 */
+  operationsRunning(workspaceId: string): boolean;
   stopThread(thread: AgentInstance): Promise<void>;
   /** 停下工作区的插件进程，返回放行函数。 */
   closePlugins(workspaceId: string): Promise<() => void>;
@@ -48,6 +50,8 @@ export interface TransferHost {
   removed(workspaceId: string): void;
   /** 这些线程的会话记录换了：按旧记录读出的显示历史作废。 */
   recordsReplaced(threadIds: string[]): void;
+  /** 强制接管来的线程：副本里被打断的接着做，告诉代理原工作机可能还在执行。 */
+  continueTakenOver(threadIds: string[]): void;
   environment(projectId: string): Promise<Environment>;
   /** 本机该项目的检出；没有时 clone 到数据目录并登记。 */
   ensureCheckout(projectId: string): Promise<Checkout>;
@@ -77,7 +81,7 @@ export class WorkspaceTransfers {
   }
 
   /**
-   * 交出工作区：所有线程空闲、没有恢复阻塞与结果未知的操作才行，不满足就拒绝。进入可交接状态后本地拒绝新的执行，
+   * 交出工作区：所有线程空闲、没有正在做的操作才行，不满足就拒绝。进入可交接状态后本地拒绝新的执行，
    * 停下执行进程，保存最后的快照；有远程的项目同时把 lease 置为 handing_off。中途失败停在可交接状态，可以重试或撤回。
    */
   handover(id: string): Promise<{ epoch: number }> {
@@ -87,9 +91,9 @@ export class WorkspaceTransfers {
       const threads = this.host.store.threads(id).filter((t) => t.status !== 'archived');
       for (const t of threads) {
         const state = await this.host.threadState(t.id);
-        if (state.busy || state.phase !== 'idle' || state.recovery) throw new KiteError('有线程正在工作或等待恢复确认，空闲后再交接', 409);
+        if (state.busy || state.phase !== 'idle') throw new KiteError('有线程正在工作，空闲后再交接', 409);
       }
-      if (this.host.store.unfinishedOperations(id)) throw new KiteError('工作区有结果尚未确认的操作，先核查再交接', 409);
+      if (this.host.operationsRunning(id)) throw new KiteError('工作区有操作正在做，做完再交接', 409);
       const access = project.remote ? await originAccess(checkout.path, this.host.git) : undefined;
       if (access) {
         // lease 的推送同时探测平台是否接受自定义 ref：被拒时在这里明确报错，不改走别的路径。
@@ -306,6 +310,8 @@ export class WorkspaceTransfers {
       rmSync(backup, { recursive: true, force: true });
       this.host.store.setWorkspaceEpoch(workspaceId, epoch);
       this.host.setStatus(workspaceId, 'open');
+      // 正常交接时线程都已空闲；强制接管时源机可能停在回合中途。
+      if (options.force) this.host.continueTakenOver(threadIds);
       return this.host.workspace(workspaceId);
     } catch (error) {
       let restored = true;

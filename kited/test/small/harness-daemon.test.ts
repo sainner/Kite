@@ -3,15 +3,16 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
-import { FileJournal, readJournal } from '../../src/harness/journal.ts';
+import { ownedProcessGroups, processGroupsSchema } from '../../src/execution/command.ts';
 import { responsesInput } from '../../src/harness/responses.ts';
+import { exitOutcome } from '../../src/harness/runner.ts';
 import type { Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import { attachmentPath } from '../../src/workspace/attachments.ts';
 import {
-  addProject, after, call, createWorkspace, folderWorkspace, type Kited, listSnapshots, machine, mark, openAgent, putAttachment, startKited, waitIdle,
+  addProject, after, call, createWorkspace, folderWorkspace, type Kited, listSnapshots, mark, openAgent, putAttachment, startKited, waitIdle,
 } from '../harness.ts';
-import { input, item, ManualModel, Seen } from '../harness-loop.ts';
+import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
 import { commitMainline, git, gitOk, imageSize, makeTemp, newDir, png, read, writeFiles } from '../util.ts';
 
 const roots: string[] = [];
@@ -353,8 +354,8 @@ test('同一 home 重启后用原 nativeId 续接旧 opaque 历史且不重执�
   expect(read(join(session.workspace.cwd, 'marker.txt'))).toBe('once\n');
 }, 1000);
 
-// 关闭时仍有模型请求和排队输入；归档为管理目的打开会话，不得唤醒旧输入再发请求。
-test('挂起请求关闭后直接归档不会执行排队消息，工作树仍能安全清理', async () => {
+// 关闭时仍有模型请求和排队输入；重启后接着做的会话直接强制归档，工作树仍能安全清理。
+test('挂起请求关闭后直接归档，工作树仍能安全清理', async () => {
   const root = makeTemp();
   roots.push(root);
   const home = join(root, 'kite');
@@ -375,117 +376,62 @@ test('挂起请求关闭后直接归档不会执行排队消息，工作树仍�
   restarted = daemon;
   const archived = await call(daemon.url, 'POST', `/workspaces/${session.workspace.id}/archive`, { force: true });
   expect(archived.status).toBe(200);
-  expect(secondModel.calls.values).toHaveLength(0);
   expect(existsSync(session.workspace.cwd)).toBe(false);
   const view = await call(daemon.url, 'GET', `/threads/${session.id}`);
   expect(view.body.status).toBe('archived');
 }, 1000);
 
-/**
- * 构造自研后端的恢复阻塞，按真实崩溃留下的日志：线程的第一轮请求已发给 model，放它正常结束，日志里留下宿主自己的上下文和请求配置；
- * 停掉 kk 后续写一轮工具 shell 已开始而没有结果的记录，重开后补成结果未知。
- */
-async function crashMidTool(kk: Kited, id: string, model: ManualModel): Promise<void> {
-  const first = await model.call(1);
-  const since = mark(kk);
-  first.response.complete();
-  await waitIdle(kk, id, since);
-  await kk.halt();
-  const path = join(kk.home, 'sessions', id, 'journal.jsonl');
-  const records = readJournal(path);
-  const contextId = records.findLast((record) => record.type === 'context.prepared')!.snapshot.id;
-  const configurationId = records.findLast((record) => record.type === 'request.configured')!.snapshot.id;
-  const journal = new FileJournal(path);
-  const ids = { turnId: 'crashed-turn', requestId: 'crashed-request' };
-  const uncertain = item('uncertain', 'shell');
-  journal.append({ type: 'input.received', input: input('before-crash') });
-  journal.append({ type: 'turn.started', turnId: ids.turnId });
-  journal.append({ type: 'request.started', ...ids, inputIds: ['before-crash'], contextId, configurationId });
-  journal.append({ type: 'model.item', ...ids, item: uncertain });
-  journal.append({ type: 'tool.started', ...ids, callId: uncertain.id });
-  journal.close();
-}
-
-// 几个部分的配合：HTTP 的 confirmRecovery、宿主确认恢复和 agent.send 交接。自研主循环确认恢复后仍停在待继续，
-// 同一请求里的发送要接在确认之后进主循环，不能只确认不发送，也不能被尚未解除的恢复挡回；被拒的发送不能顺带确认。
-test('自研后端崩溃后的恢复阻塞只由 App 带确认的发送解除，新消息接在补齐的未知工具结果后交给模型，普通发送和 Line 的发送不解除', async () => {
-  const model = new ManualModel();
-  kited = startKited(() => model);
-  const kk = kited;
-  const project = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
-  const id = await openAgent(kk.call, project.workspace.id);
-  expect((await kk.call('POST', `/threads/${id}/messages`, { id: 'first', text: '先正常对话一轮' })).status).toBe(200);
-  await crashMidTool(kk, id, model);
-
-  const resumedModel = new ManualModel();
-  restarted = startDaemon({ home: kk.home, port: 0, lightTasks: false, model: () => resumedModel });
-  const url = restarted.url;
-  const events = new Seen<Envelope>();
-  restarted.kite.bus.subscribe(undefined, (event) => events.add(event));
-  const history = async () => (await call(url, 'GET', `/threads/${id}/history`)).body as History;
-  expect((await history()).state.recovery).toBeDefined();
-  expect((await call(url, 'POST', `/threads/${id}/messages`, { id: 'plain', text: '没带确认' })).status).toBe(409);
-  const fromLine = await fetch(`${url}/threads/${id}/messages`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json', 'X-Kite-Machine': (await machine(url)).id,
-      'X-Kite-Source': JSON.stringify({ kind: 'line', machine: 'line-machine', instance: 'line-instance' }),
-    },
-    body: JSON.stringify({ id: 'from-line', text: 'Line 想顺带确认', confirmRecovery: true }),
-  });
-  expect(fromLine.status).toBe(400);
-  expect((await history()).state.recovery).toBeDefined();
-  expect(resumedModel.calls.values).toHaveLength(0);
-
-  const sending = events.values.length;
-  const sent = await call(url, 'POST', `/threads/${id}/messages`, { id: 'after-crash', text: '确认并继续', confirmRecovery: true });
-  expect(sent.status).toBe(200);
-  const next = await resumedModel.call(1);
-  expect(next.request.history.flatMap((entry) => entry.type === 'input' ? [entry.input.id] : []))
-    .toEqual(['first', 'before-crash', 'after-crash']);
-  expect(next.request.history.flatMap((entry) => entry.type === 'tool_result' ? [[entry.callId, entry.result.status]] : []))
-    .toEqual([['uncertain', 'unknown']]);
-  expect(next.request.history.at(-1)).toEqual({ type: 'input', input: { id: 'after-crash', text: '确认并继续', source: 'human' } });
-  next.response.complete();
-  await events.wait((event) => event.type === 'idle' && event.threadId === id && events.values.indexOf(event) >= sending);
-  const done = await history();
-  expect(done.state.recovery).toBeUndefined();
-  expect(done.state.waitingForResume).toBe(false);
-  expect(resumedModel.calls.values).toHaveLength(1);
-}, 1000);
 
 /*
- * 几个部分的配合：HTTP 的 adopt 带 confirmRecovery 时，宿主要在工作区里逐个找出待恢复的线程，打开它的主循环确认恢复，
- * 再过合回前「没有线程在工作或等待恢复确认」的检查；只确认不合回、或确认后仍被挡回，都要跑起来才看得出。
- * 重开后先不读线程状态，确认前是否已恢复看日志，免得测试自己先把线程的主循环打开，盖住合回这条路径上的打开。
+ * 几个部分的配合：关闭时要先停会话（回合记为被 kited 关闭打断，在跑的 shell 随之停下），再关终端、插件、操作等子系统和组网；
+ * 次序反了，在跑的 shell 先撞上已经关掉的子系统（「kited 正在关闭」），回合按一次普通的工具失败往下走、接着请求模型。
+ * 重启时 kited 打开上次被退出打断的会话并接着做，模型拿到继续说明和那次 shell 的结果。
  */
-test('工作区的线程崩溃后恢复阻塞时合回被拒，带确认合回先解除线程的恢复再合回本机主线，不请求模型', async () => {
-  const model = new ManualModel();
-  kited = startKited(() => model);
-  const kk = kited;
-  // 没有远程的项目：合回只到本机主线，不去推送。
-  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '原始\n' }) });
-  const session = await createWorkspace(kk, project.id, '先正常对话一轮', 'harness');
-  const checkout = session.checkout.path;
-  await crashMidTool(kk, session.id, model);
-  // 工作区是异步准备的，等首轮请求发出（crashMidTool 里）后工作树才在，这时再放要合回的改动。
-  writeFiles(session.workspace.cwd, { 'w.txt': '工作区\n' });
+test('kited 关闭时回合正停在一条长 shell 上：回合记为被关闭打断，不留「kited 正在关闭」一类的假工具失败、不再请求模型；重启后带着继续说明自动接着做', async () => {
+  const root = makeTemp();
+  roots.push(root);
+  const home = join(root, 'kite');
+  const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
+  const firstModel = new ManualModel();
+  let daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => firstModel });
+  restarted = daemon;
+  const events = new Seen<Envelope>();
+  daemon.kite.bus.subscribe(undefined, (event) => events.add(event));
+  const session = await createWorkspace(daemon, (await addProject(daemon, { path: repo })).id, '跑一条长命令', 'harness');
+  const directory = join(home, 'sessions', session.id);
+  try {
+    const first = await firstModel.call(1);
+    const long = calledItem('long-shell', 'shell', { description: '长时间运行', command: 'echo started; sleep 30' });
+    await first.response.emit({ type: 'item', item: long });
+    await events.wait((event) => event.type === 'harness' && event.threadId === session.id
+      && event.event.type === 'tool.output' && event.event.text.includes('started'));
+    await daemon.stop();
+    restarted = undefined;
+    expect(firstModel.calls.values).toHaveLength(1);
+    const journal = readFileSync(join(directory, 'journal.jsonl'), 'utf8');
+    expect(journal).not.toContain('正在关闭');
+    expect(diskRecords(join(directory, 'journal.jsonl')).filter((record) => record.type === 'turn.finished').at(-1))
+      .toMatchObject({ exited: 'closed', outcome: exitOutcome() });
 
-  const resumedModel = new ManualModel();
-  restarted = startDaemon({ home: kk.home, port: 0, lightTasks: false, model: () => resumedModel });
-  const url = restarted.url;
-  const adopt = `/workspaces/${session.workspace.id}/adopt`;
-  const confirmations = () => readJournal(join(kk.home, 'sessions', session.id, 'journal.jsonl'))
-    .filter((record) => record.type === 'recovery.confirmed').length;
-  expect(await call(url, 'POST', adopt)).toEqual({ status: 409, body: { error: '工作区有线程正在工作或等待恢复确认' } });
-  expect(confirmations()).toBe(0);
-  expect(gitOk(checkout, 'cat-file', '-e', 'HEAD:w.txt')).toBe(false);
-
-  const adopted = await call(url, 'POST', adopt, { confirmRecovery: true });
-  expect(adopted).toMatchObject({ status: 200, body: { status: 'adopted', push: { status: 'local' } } });
-  expect(git(checkout, 'show', 'HEAD:w.txt')).toBe('工作区');
-  expect(confirmations()).toBe(1);
-  const state = ((await call(url, 'GET', `/threads/${session.id}/history`)).body as History).state;
-  expect(state.recovery).toBeUndefined();
-  expect(resumedModel.calls.values).toHaveLength(0);
+    const secondModel = new ManualModel();
+    daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => secondModel });
+    restarted = daemon;
+    const later = new Seen<Envelope>();
+    daemon.kite.bus.subscribe(undefined, (event) => later.add(event));
+    const resumed = await secondModel.call(1);
+    expect(resumed.request.history).toContainEqual({ type: 'output', item: long });
+    expect(resumed.request.history).toContainEqual(expect.objectContaining({ type: 'tool_result', callId: 'long-shell' }));
+    expect(resumed.request.history).toContainEqual({ type: 'input',
+      input: expect.objectContaining({ source: 'kite', notice: expect.objectContaining({ kind: 'resumed' }) }) });
+    const finishedShell = diskRecords(join(directory, 'journal.jsonl'))
+      .filter((record) => record.type === 'tool.finished' && record.callId === 'long-shell');
+    expect(finishedShell).toHaveLength(1);
+    resumed.response.complete();
+    await later.wait((event) => event.type === 'idle' && event.threadId === session.id);
+  } finally {
+    // 失败时也别把那条 sleep 留下：登记里还在、仍是这次起的进程组整组 SIGKILL。
+    const file = join(directory, 'processes.json');
+    const registered = processGroupsSchema.safeParse(existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : []);
+    for (const { pid } of ownedProcessGroups(registered.success ? registered.data : []) ?? []) process.kill(-pid, 'SIGKILL');
+  }
 }, 1000);

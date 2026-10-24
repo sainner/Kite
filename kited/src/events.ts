@@ -17,7 +17,7 @@ export type RuntimeEvent =
   | { type: 'sdk'; message: SDKMessage }
   | { type: 'harness'; event: HarnessEvent }
   | { type: 'runner'; state: RunnerState; error?: string }
-  /** completed：回合正常完成；停止、失败与恢复阻塞时为 false。 */
+  /** completed：回合正常完成；停止、失败时为 false。 */
   | { type: 'idle'; completed: boolean }
   /** 等你批准的审批出现或解除（waiting 缺省）；对象由宿主的 Waits 持有，两个后端共用。 */
   | { type: 'waiting'; waiting?: Waiting }

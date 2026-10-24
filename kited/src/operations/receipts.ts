@@ -3,7 +3,8 @@ import { OperationError, operationError } from '../errors.ts';
 import type { Store } from '../store.ts';
 
 export class OperationReceipts {
-  private active = new Map<string, Promise<unknown>>();
+  /** 正在做的调用，带请求里的工作区；库里没有结果、又不在这里的，是执行中被 kited 退出、工作区被接管打断，或结果没写进去的。 */
+  private active = new Map<string, { execution: Promise<unknown>; workspaceId?: string }>();
 
   constructor(private store: Pick<Store, 'operationReceipt' | 'beginOperation' | 'finishOperation'>) {}
 
@@ -19,8 +20,8 @@ export class OperationReceipts {
     if (saved) {
       if (saved.request !== request) throw new OperationError('operationId 已用于其他参数', 'denied');
       const active = this.active.get(key);
-      if (active) return active as Promise<T>;
-      if (saved.result === null) throw new OperationError('上次操作结果尚未确认；请先查询状态，不能自动重放', 'unknown');
+      if (active) return active.execution as Promise<T>;
+      if (saved.result === null) throw new OperationError('这次操作执行中被打断，结果未知；不会自动重放', 'unknown');
       const result = JSON.parse(saved.result);
       if ('error' in result) throw new OperationError(result.error, result.outcome, result.status);
       return result.value;
@@ -42,7 +43,13 @@ export class OperationReceipts {
       if ('error' in result) throw result.error;
       return result.value;
     });
-    this.active.set(key, execution);
+    const workspaceId = (JSON.parse(request) as { workspaceId?: unknown } | null)?.workspaceId;
+    this.active.set(key, { execution, ...(typeof workspaceId === 'string' ? { workspaceId } : {}) });
     try { return await execution; } finally { this.active.delete(key); }
+  }
+
+  /** 工作区里有操作正在做。 */
+  running(workspaceId: string): boolean {
+    return [...this.active.values()].some((entry) => entry.workspaceId === workspaceId);
   }
 }

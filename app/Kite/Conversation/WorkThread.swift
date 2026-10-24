@@ -80,7 +80,7 @@ final class WorkThread: Identifiable {
     }
     /// 在等人回应的是哪一类：卡着回合的审批；没回应的提问、密钥请求不阻塞，代理停下以后才算在等（同工作机的活动摘要）。
     var awaiting: String? { state?.waiting?.kind ?? (state?.phase == "idle" ? state?.asks?.first?.kind : nil) }
-    /// 会话自身的错误：本地操作失败，或工作机报回的错误（含恢复阻塞与上一轮失败的说明）。
+    /// 会话自身的错误：本地操作失败，或工作机报回的错误（含上一轮失败的说明）。
     /// 作为窗口信息区的提示盖住圆环，圆环的说明里不再重复。
     var problem: String? { error ?? state?.error ?? (state?.status == "failed" ? "工作区准备失败" : nil) }
     var statusLabel: String {
@@ -365,7 +365,7 @@ final class WorkThread: Identifiable {
             do {
                 try await client.post("/threads/\(id)/messages", body: SendBody(id: message.id, text: message.typed,
                                                                                  attachments: message.attachments.isEmpty ? nil : message.attachments.map(\.id),
-                                                                                 confirmRecovery: confirmsRecovery, skipWaiting: skips[message.id]))
+                                                                                 skipWaiting: skips[message.id]))
                 skips[message.id] = nil
             } catch {
                 guard !returned.contains(message.id) else { return }
@@ -411,10 +411,9 @@ final class WorkThread: Identifiable {
 
     private func startStop() throws -> Task<Void, Error> {
         guard let client, !stopping else { throw KitedError(message: "代理尚不可停止，请刷新状态后重试") }
-        var request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
+        let request = stopRequest ?? StopRequest(id: UUID().uuidString, inputs: outbox.map {
             RemoteInput(id: $0.id, text: $0.typed, source: "human", attachments: $0.attachments.isEmpty ? nil : $0.attachments)
         })
-        request.confirmRecovery = confirmsRecovery
         // 同步冻结收据，点击停止后立即阻止继续发送或重复停止。
         stopRequest = request
         stopping = true
@@ -522,15 +521,12 @@ final class WorkThread: Identifiable {
     func resume() {
         guard let client else { return }
         Task {
-            do { try await client.post("/threads/\(id)/resume", body: ResumeBody(confirmRecovery: confirmsRecovery)); error = nil }
+            do { try await client.post("/threads/\(id)/resume"); error = nil }
             catch { self.error = error.localizedDescription }
         }
     }
 
-    /// 恢复阻塞时，用户发送、继续或停止就算确认旧执行已核查，由工作机先解除阻塞再处理。
-    private var confirmsRecovery: Bool? { state?.recovery != nil ? true : nil }
-    private struct SendBody: Encodable { let id: String; let text: String; let attachments: [String]?; let confirmRecovery: Bool?; let skipWaiting: String? }
-    private struct ResumeBody: Encodable { let confirmRecovery: Bool? }
+    private struct SendBody: Encodable { let id: String; let text: String; let attachments: [String]?; let skipWaiting: String? }
 }
 
 /// 控件的刻度顺序；可选档位由服务端模型能力筛选。

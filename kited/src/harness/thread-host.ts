@@ -6,13 +6,13 @@ import { FileJournal } from './journal.ts';
 import { HarnessRunner } from './runner.ts';
 import { localTools, type ShellBackground, type ShellOutside } from '../execution/local-tools.ts';
 import type { SecretProvider } from '../secrets.ts';
-import { processGroupAlive, type NetworkAsk } from '../execution/command.ts';
+import { processAlive, processGroupsSchema, stopProcessGroups, type NetworkAsk } from '../execution/command.ts';
 import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { SkillCatalog } from './context/project.ts';
 import { systemSkillSources } from './context/skills.ts';
 import type { HarnessRequest, JournalEvent, JournalRecord, RequestSettings, HarnessOptions, ThreadRunner, Tool } from './types.ts';
 
-export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'startPaused' | 'compactionFiles'> {
+export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'afterTools' | 'afterTurn' | 'beforeStop' | 'compactionFiles'> {
   cwd: string;
   threadDir: string;
   diffDir?: string;
@@ -34,9 +34,20 @@ export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'aft
 
 export interface ThreadHost {
   runner: ThreadRunner;
-  /** 检查登记的进程组后解除恢复阻塞；不自动开始执行。 */
-  confirmRecovery(): Promise<void>;
+  /** 见 ThreadRunner.continueInterrupted；打开时有命令进程没能停下的，一并写进继续说明。 */
+  continueInterrupted(note?: string): Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * 会话目录里的标记：回合在跑，或被 kited 退出打断后还没续跑时留着，由宿主照记录推导（harness 见 HarnessRunner.running）。
+ * kited 启动时据此打开这些会话，打开时由宿主按记录决定是否接着做；两个后端共用。
+ */
+export const RUNNING_MARKER = 'running';
+export function markRunning(directory: string, running: boolean): void {
+  const path = join(directory, RUNNING_MARKER);
+  if (running) writeFileSync(path, '');
+  else rmSync(path, { force: true });
 }
 
 interface ThreadMetadata {
@@ -79,36 +90,40 @@ export async function withThreadJournal<T>(threadDir: string, work: (journal: Fi
   } finally { release(); }
 }
 
-function lockThread(threadDir: string): () => void {
-  mkdirSync(threadDir, { recursive: true, mode: 0o700 });
-  const lock = join(threadDir, 'lock');
+/** 占住锁目录（会话目录下），返回释放函数；占着它的进程已经不在了（上次异常退出留下的锁）就收回。两个后端共用。 */
+export function lockDirectory(lock: string, busy: (pid: number) => Error): () => void {
+  mkdirSync(dirname(lock), { recursive: true, mode: 0o700 });
   try { mkdirSync(lock, { mode: 0o700 }); }
-  catch { throw new Error(`会话已被占用，或上次异常退出留下了锁：${lock}。确认旧进程和命令均已停止后才能删除该锁。`); }
-  return () => rmSync(lock, { recursive: true });
+  catch {
+    let pid = 0;
+    try { pid = Number(readFileSync(join(lock, 'owner'), 'utf8')); } catch { /* 建锁与写 owner 之间退出，视为无主的旧锁。 */ }
+    if (Number.isSafeInteger(pid) && pid > 0 && processAlive(pid)) throw busy(pid);
+    rmSync(lock, { recursive: true, force: true });
+    mkdirSync(lock, { mode: 0o700 });
+  }
+  try { writeFileSync(join(lock, 'owner'), String(process.pid)); }
+  catch (error) { rmSync(lock, { recursive: true, force: true }); throw error; }
+  return () => rmSync(lock, { recursive: true, force: true });
 }
+
+const lockThread = (directory: string) => lockDirectory(join(directory, 'lock'), (pid) => new Error(`会话已被进程 ${pid} 占用：${directory}`));
 
 export async function openThreadHost(options: ThreadHostOptions): Promise<ThreadHost> {
   const cwd = realpathSync(options.cwd);
   mkdirSync(options.threadDir, { recursive: true, mode: 0o700 });
   const directory = realpathSync(options.threadDir);
-  const lock = join(directory, 'lock');
-  try { mkdirSync(lock, { mode: 0o700 }); }
-  catch { throw new Error(`会话已被占用，或上次异常退出留下了锁：${lock}。确认旧进程和命令均已停止后才能删除该锁。`); }
+  const release = lockThread(directory);
   let journal: FileJournal | undefined;
   try {
-    save(join(lock, 'owner.json'), { pid: process.pid, at: Date.now() });
     const metadataPath = join(directory, 'metadata.json');
     const previous = readThreadMetadata(directory);
     if (previous && previous.cwd !== cwd) throw new Error('不能更换已有会话的工作目录；请新建会话');
     const processFile = join(directory, 'processes.json');
-    const checkProcesses = () => {
-      const pids: unknown = existsSync(processFile) ? JSON.parse(readFileSync(processFile, 'utf8')) : [];
-      if (!Array.isArray(pids) || !pids.every((pid) => Number.isSafeInteger(pid) && pid > 0)) throw new Error('会话进程登记损坏，不能自动恢复');
-      if (pids.some((pid) => processGroupAlive(pid as number))) throw new Error('会话登记的命令进程组仍可能在运行，请先确认并停止旧执行');
-    };
-    checkProcesses();
-    const active = new Set<number>();
-    save(processFile, []);
+    const registered = processGroupsSchema.safeParse(existsSync(processFile) ? JSON.parse(readFileSync(processFile, 'utf8')) : []);
+    if (!registered.success) throw new Error('会话进程登记损坏');
+    // 停不掉的留在登记里，下次打开或关闭时再停。
+    const active = new Map((await stopProcessGroups(registered.data)).map((group) => [group.pid, group]));
+    save(processFile, [...active.values()]);
     save(metadataPath, { cwd, ...(options.settings ? { settings: options.settings } : {}) });
     journal = new FileJournal(join(directory, 'journal.jsonl'));
     const env = commandEnvironment(options.env);
@@ -123,31 +138,43 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
         const current = policy();
         return { ...current, denyRead: [...(current.denyRead ?? []), directory], denyWrite: [...(current.denyWrite ?? []), directory] };
       },
-      onProcess(pid, running) { if (running) active.add(pid); else active.delete(pid); save(processFile, [...active]); },
+      onProcess(pid, running, started) { if (running) active.set(pid, { pid, started }); else active.delete(pid); save(processFile, [...active.values()]); },
     });
-    const runner = new HarnessRunner({
+    const leftovers = active.size ? '有命令的进程没能停下，可能还在运行' : undefined;
+    // 运行标记只照 runner.running 放下、收起，每条记录之后对一次；构造时补记的恢复记录等构造完一起对（那时 marked 还没有值）。
+    let marked: boolean | undefined;
+    const mark = (running: boolean) => {
+      if (running === marked) return;
+      marked = running;
+      markRunning(directory, running);
+    };
+    const runner: HarnessRunner = new HarnessRunner({
       cwd, journal, prepareRequest: (cursor) => { skills.refresh(); return options.prepareRequest(tools, cursor); },
-      onEvent: options.onEvent,
-      startPaused: options.startPaused,
+      onEvent(event) {
+        if (event.type === 'record' && marked !== undefined) mark(runner.running);
+        options.onEvent?.(event);
+      },
       afterTools: options.afterTools, afterTurn: options.afterTurn, beforeStop: options.beforeStop,
       compactionFiles: options.compactionFiles,
     });
+    mark(runner.running);
     let closing: Promise<void> | undefined;
     return {
       runner,
-      async confirmRecovery() { checkProcesses(); await runner.confirmRecovery(); },
+      continueInterrupted: (note) => runner.continueInterrupted([note, leftovers].filter(Boolean).join('；') || undefined),
       close() {
         closing ??= (async () => {
-          await runner.shutdown();
-          checkProcesses();
-          rmSync(lock, { recursive: true });
+          try {
+            await runner.shutdown();
+            if (active.size) save(processFile, await stopProcessGroups([...active.values()]));
+          } finally { release(); }
         })();
         return closing;
       },
     };
   } catch (error) {
     journal?.close();
-    rmSync(lock, { recursive: true, force: true });
+    release();
     throw error;
   }
 }

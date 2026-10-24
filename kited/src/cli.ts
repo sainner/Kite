@@ -17,7 +17,6 @@ const USAGE = `用法：
   kite follow-workspace <工作区>      跟工作区操作事件
   kite interrupt <线程>               停止会话并退回排队消息
   kite resume <线程>                  继续等待中的线程
-  kite recover <线程>                 确认旧执行已停止，随后用 resume 继续
   kite snapshots <工作区>               列出快照
   kite restore <工作区> <快照>          把工作树恢复到某一枚快照
   kite adopt <工作区>                   按项目的集成方式集成：直接合入或提交 PR
@@ -58,7 +57,7 @@ function brief(input: any): string {
 const printedText = new Map<string, { text: string; parts: string[] }>();
 const printedTools = new Map<string, string>();
 const printedOutcomes = new Map<string, string | undefined>();
-const isPaused = (e: any): boolean => e.type === 'thread.state' && !e.state.busy && (e.state.waitingForResume || e.state.recovery);
+const isPaused = (e: any): boolean => e.type === 'thread.state' && !e.state.busy && e.state.waitingForResume;
 
 function printText(key: string, parts: string[], text = parts.join('\n\n')): void {
   const previous = printedText.get(key)?.text ?? '';
@@ -96,13 +95,13 @@ function print(e: any): void {
       break;
     }
     case 'thread.state': {
-      // 回合失败、打断、恢复阻塞的说明只在状态里，变了才打一次。
+      // 回合失败、打断的说明只在状态里，变了才打一次。
       const outcome = e.state.error ? `! ${e.state.error}` : e.state.lastOutcome?.kind === 'interrupted' ? '· 已打断' : undefined;
       if (e.state.status === 'failed') console.log(`! 工作区准备失败${e.state.error ? `：${e.state.error}` : ''}`);
       else if (e.state.status === 'archived') console.log('· 线程已归档');
       else if (outcome && outcome !== printedOutcomes.get(e.threadId)) console.log(outcome);
       printedOutcomes.set(e.threadId, outcome);
-      if (isPaused(e)) console.log(`· 会话 已停止，${e.state.recovery ? '确认旧执行停止后用 recover，再用 resume 继续' : '用 resume 继续'}`);
+      if (isPaused(e)) console.log('· 会话 已停止，用 resume 继续');
       break;
     }
     case 'workspace.changed': console.log(`· 工作区 ${e.workspaceId}：${e.status}`); break;
@@ -191,7 +190,7 @@ async function follow(scope: EventScope, untilIdle = false, action?: () => Promi
 }
 
 const terminalState = (state: any): boolean => ['failed', 'archived'].includes(state.status)
-  || (!state.busy && (state.waitingForResume || !!state.recovery));
+  || (!state.busy && state.waitingForResume);
 
 async function main(): Promise<void> {
   const [cmd, ...args] = process.argv.slice(2);
@@ -245,11 +244,6 @@ async function main(): Promise<void> {
     case 'resume':
       need(1);
       await follow({ threadId: args[0]! }, true, () => call('POST', `/threads/${args[0]}/resume`));
-      break;
-    case 'recover':
-      need(1);
-      await call('POST', `/threads/${args[0]}/recover`);
-      console.log('· 已确认恢复，用 resume 继续');
       break;
     case 'snapshots':
       need(1);

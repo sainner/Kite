@@ -48,7 +48,6 @@ bun run harness --resume <会话id>
 | `/status` | 查看状态与上一回合结果 |
 | `/stop` 或执行中按 Ctrl+C | 停止会话并退回队列，等待命令及其进程组停止 |
 | `/resume` | 继续暂停的上下文 |
-| `/recover` | 确认旧执行已经停止后解除恢复阻塞；仍需 `/resume` |
 | `/exit` 或空闲时按 Ctrl+C | 停止执行、保存记录并退出 |
 
 当前提供 `read`、`patch`、`shell`、`credentials`，参数、失败和取消语义见 [基础工具契约](harness-主循环.md#工具执行约定)。上下文的编辑与生效见 [上下文模板](harness-上下文组装.md)。
@@ -63,7 +62,7 @@ bun run harness --resume <会话id>
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
 
-后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例、窗口和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队或交接未确认的输入，有恢复阻塞时切换连带确认恢复，否则返回 409。
+后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例、窗口和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队的输入，否则返回 409。
 
 自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
 
@@ -203,8 +202,8 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 |---|---|
 | 登记项目 | 远程地址只写进项目登记表，不 clone。本机文件夹有 origin 的按远程登记；没有的在这台工作机上导入成没有远程的项目，原文件夹不动。可以一起保存环境变量文件为项目密钥。都不创建工作区 |
 | 创建工作区 | 在这台工作机上为项目建工作区：先检查环境，不满足就不建；没有该项目的检出时自动 clone 并登记，检出保留。先拉取主线，从最新的主线开出工作树。可以先建空工作区，也可在准备完成后运行首条消息。名称跟着代理的标题，见 [轻任务与会话标题](#轻任务与会话标题) |
-| 添加线程 | 工作区可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或恢复阻塞时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
-| 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区；超过 10 MiB 且项目 Git 未跟踪的文件不进快照，与被忽略的文件一样回退不碰（见 [成果查看与位置](成果查看与位置.md#大文件)）。回退先保存现状，再恢复文件；任一线程在执行或恢复阻塞期间不允许回退 |
+| 添加线程 | 工作区可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或等待继续时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
+| 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区；超过 10 MiB 且项目 Git 未跟踪的文件不进快照，与被忽略的文件一样回退不碰（见 [成果查看与位置](成果查看与位置.md#大文件)）。回退先保存现状，再恢复文件；任一线程在执行期间不允许回退 |
 | 采纳（集成） | 按项目的集成方式：直接合入把工作区改动合进主线并推送到远程；提交 PR 把工作区分支推到远程并开 PR。同一检出的采纳串行执行，冲突留在工作树；采纳后工作区与线程仍可继续使用 |
 | 同步 | 拉取主线并合进工作区分支，不推送；要求线程全部空闲，冲突同采纳，合完保存快照。工作区聚合带 `behind`，是主线比工作区分支多出的提交数，按最近一次拉取计算 |
 | 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；归档代理时，同一工作区里它开出的各层子代理一起归档。随窗口回收的实例关闭窗口即可，不提供归档 |
@@ -228,9 +227,9 @@ Claude 负责模型循环与原生对话恢复；Kite 负责工具、项目上�
 
 Claude 使用统一的 `kite.agent` 定义，工具由角色、实例选择、项目约束及授权共同决定。基础工具共用 [工具契约](harness-主循环.md#工具执行约定)，协作与授权共用 [实例操作](实例操作.md)，工具名与自研 harness 相同，不带 MCP 前缀。工具执行完成并保存快照后才能继续模型请求。
 
-模型、工具与基础上下文绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲时修改，恢复阻塞期间也可以改；可选型号与思考档位通过能力接口获取。项目规则、记忆索引与 skill 清单仅由 Kite 的模板提供，skill 正文由 Kite 的 `skill` 工具加载，Claude 不自行扫描，自己的 skill 发现与 Skill 工具保持关闭。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
+模型、工具与基础上下文绑定到实例；`KITE_CLAUDE_MODEL` 可覆盖创建时的模型。配置和执行授权须在空闲时修改；可选型号与思考档位通过能力接口获取。项目规则、记忆索引与 skill 清单仅由 Kite 的模板提供，skill 正文由 Kite 的 `skill` 工具加载，Claude 不自行扫描，自己的 skill 发现与 Skill 工具保持关闭。具体生效时机见 [线程通知投递](线程通知投递.md#claude-的交接边界)。
 
-Claude Code 进程随实例常驻：首次需要时启动，回合结束后不退出，在实例归档、切换后端、手动停止或 kited 退出时结束；回合之间意外退出的，下一条消息到来时恢复原生会话。运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回、停止与异常恢复遵守 [会话状态机](会话状态机.md#手动停止与消息交接)；已有原生记录不能重复投递，未知执行效果不能自动重放。
+Claude Code 进程随实例常驻：首次需要时启动，回合结束后不退出，在实例归档、切换后端、手动停止或 kited 退出时结束；回合之间意外退出的，下一条消息到来时恢复原生会话。运行中插话沿用 Claude 原生输入队列，在自然请求边界纳入，不要求等整轮结束。发送确认、撤回与停止遵守 [会话状态机](会话状态机.md#手动停止与消息交接)，被 kited 退出打断后的接续见 [被打断之后](会话状态机.md#被打断之后)；已有原生记录不能重复投递，未知执行效果不能自动重放。
 
 App、HTTP 和 CLI 的显示与控制能力见 [会话显示协议](会话显示协议.md#当前边界)。搜索网页、定时任务和原生 Claude 子 agent 尚未开放。Kite 工具受沙箱限制不表示整个 Claude SDK 进程已被隔离。
 
@@ -328,11 +327,11 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本，打开的工作区带 `workspace.rootNames`（工作区目录顶层的名字，App 据此识别消息里的路径，顶层在快照后有增减时发 `workspace.changed`）；创建 `{project, prompt?, role?, id?, windowId?, messageId?}`（先检查环境，没有检出时先 clone，clone 时远程要账号的错误体带 `gitLogin`），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
 | GET | `/environment?project=&needs=` | 这台工作机为该项目建工作区前的环境，只读；`needs` 是逗号分隔的换机环境需求，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的工作区重跑准备，设了路径的项目密钥重新写入；工作树没建成时重建 |
-| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId, confirmRecovery?}`：`confirmRecovery: true` 先确认工作区里待恢复的线程（App 手动流转用），本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误。本机或目标访问远程时要账号的，错误体带 `gitLogin`，出在目标上的另带 `gitLoginMachine` |
+| POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId}`：本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误。本机或目标访问远程时要账号的，错误体带 `gitLogin`，出在目标上的另带 `gitLoginMachine` |
 | POST | `/workspaces/:id/handover` | 交出工作区：停下线程、保存最后的快照，进入可交接状态，返回 `{epoch}`；`/handover/cancel` 撤回，`/lease/check` 立即核对执行权。约定见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | POST | `/workspaces/:id/handover/complete` | 仅工作机：没有远程的项目，目标装好后通知源机交出 `{epoch, machine}`（machine 是目标自己），源机冻结本地记录并记下目标；源机已撤回、epoch 不符或这次交接已交给别的工作机时 409，已交给同一台的再通知照样成功 |
 | POST | `/workspaces/restore` | 在本机还原并接管流转来的工作区 `{project?, workspaceId, operationId, from?, force?, continue?}`（没给 `project` 时从本机副本里取）：`from` 是交出它的工作机，先把副本补到它的末尾；`force` 是用户确认源机已丢失后用本机副本强制接管；`continue` 是源机有预告地离开时打断的线程与收回的排队输入，接管后接着做 |
-| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态、等你回应的对象、最近一次回合结束的时间（`settledAt`）与是否 Line 发起的工作（`byLine`） |
+| GET | `/summary` | 这台工作机的状态汇总：未归档工作区、线程执行状态、等你回应的对象、最近一次回合结束的时间（`settledAt`）与是否 Line 发起的工作（`byLine`）。被 kited 退出打断、要接着做的会话接着做之前像是失败了在等继续，汇总等它们接着做起来才返回；kited 关闭期间返回 503 |
 | POST | `/line` | 在这台工作机启用个人 agent Line，同时建它的收件箱（Line 的 monitor 实例）；收件箱的读取、代处理与托管走实例操作，见 [实例操作](实例操作.md#monitor)。其他工作机的目录摘要里已有 Line 时返回 409。约定见 [Line](Line与工作区流转.md#line) |
 | GET / PUT | `/attention` | 关注设备：`PUT {device, focused}` 声明这台设备是否在关注 Kite，须同时连着带 `device` 的事件流才生效；`GET` 返回 `{focusedDevices, awaySince?}` |
 | GET | `/threads/:id/reply` | 线程最后一回合的回复（最后一条输入之后的正文）与执行状态，供 Line 读取 |
@@ -376,24 +375,23 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
 | POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, mcp?, windowId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
-| GET | `/threads/:id/state` | 只读执行与恢复状态，不启动模型 |
+| GET | `/threads/:id/state` | 只读执行状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
 | GET | `/threads/:id/raw` | 调试查看原生记录，只读：harness 的 journal 与 Claude 的会话文件逐条原样给出，两份各按文件顺序、按时间交错。`?journal=&claude=` 是上次读到的条数，省略为 0；返回 `{journal, claude, reset, entries}`，每条 `{source, index, at, label, text}`，`text` 是缩进好的原文，图片的 base64 换成占位；起点超出现有条数（记录被整份换掉）时 `reset` 为 true、从头给。格式随后端与 CLI 版本变，不是稳定契约 |
 | PUT / GET / DELETE | `/workspaces/:id/attachments/:attachment` | 上传、读取（`?size=` 取缩略图，原件认 `Range`）、删除还没发出的消息附件，语义见 [会话显示协议](会话显示协议.md#附件) |
 | PUT / POST | `/workspaces/:id/attachments/:attachment/parts/:offset`、`/workspaces/:id/attachments/:attachment/parts` | 分段上传附件：各段 PUT 到自己的位置，传完 POST 核对后收下，见 [会话显示协议](会话显示协议.md#附件) |
-| POST | `/threads/:id/messages` | 发消息 `{text, id?, attachments?, relay?, confirmRecovery?}`，返回 `{id}`；`attachments` 是这个工作区里存好的附件 ID，只有人发的消息能带；`confirmRecovery: true` 先确认恢复再发送，只用于 App 里用户的发送，带 `X-Kite-Source` 时拒绝；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
+| POST | `/threads/:id/messages` | 发消息 `{text, id?, attachments?, relay?}`，返回 `{id}`；`attachments` 是这个工作区里存好的附件 ID，只有人发的消息能带；harness 落盘后确认，同 id 和内容去重。带 `X-Kite-Source` 时是 Line 的说明（来源 kite），再带 `relay: true` 是 Line 照原文转达的用户的话（来源仍是人） |
 | POST | `/threads/:id/messages/:message/cancel` | 按后端能力撤回尚未交接的输入 |
-| POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?, confirmRecovery?}`，响应 `{returned}`；`confirmRecovery: true` 先确认恢复再停止 |
-| POST | `/threads/:id/resume` | 继续暂停的线程；可带 operationId 以安全重试，`confirmRecovery: true` 先确认恢复再继续 |
-| POST | `/threads/:id/recover` | 只确认恢复，不自动执行；`kite` 命令行使用 |
+| POST | `/threads/:id/interrupt` | 停止会话，返回尚未纳入请求的队列；请求 `{id, inputs?}`，响应 `{returned}` |
+| POST | `/threads/:id/resume` | 继续等待继续的线程（App 的「继续」）；可带 operationId 以安全重试 |
 | POST | `/threads/:id/waiting/:waiting` | 回应线程在等的审批 `{decision}`，或没回应的提问 `{answers}`、密钥请求 `{secret: {values, scope?}}`（按请求的顺序逐项给值，没填的为 `null`），提问与密钥请求也可以 `{decision: "deny"}`；请求处理后结果作为一条输入交给代理，可带 `reason`；密钥请求不接受 `X-Kite-Source`，填的值只存进凭据；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应、作废或收回返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区；agent 连同同一工作区里它开出的各层子代理 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |
-| POST | `/workspaces/:id/adopt` | 按项目的集成方式集成，可带 `{confirmRecovery: true}` 先确认工作区里待恢复的线程（App 手动合回用）。直接合入返回 `{status: "adopted", commit, push}`，`push` 为 `{status: "pushed"}`、`{status: "local"}`（没有远程）或 `{status: "failed", message, gitLogin?}`，远程要账号时带 `gitLogin`（主机）；提交 PR 返回 `{status: "proposed", branch, url, number?}`，`url` 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 `number`；有冲突时返回 `{status: "conflict", files}`；提交 PR 时拉取或推送不了 409，远程要账号时错误体带 `gitLogin` |
-| POST | `/workspaces/:id/sync` | 同步：拉取主线合进工作区分支，可带 `{confirmRecovery: true}`；返回 `{status: "synced", commit}`、`{status: "current"}`（已是最新）或 `{status: "conflict", files}`；线程没有全部空闲 409。拉不到远程时照用本机主线与上次拉取的远程主线，远程要账号时不同步，409 且错误体带 `gitLogin` |
+| POST | `/workspaces/:id/adopt` | 按项目的集成方式集成。直接合入返回 `{status: "adopted", commit, push}`，`push` 为 `{status: "pushed"}`、`{status: "local"}`（没有远程）或 `{status: "failed", message, gitLogin?}`，远程要账号时带 `gitLogin`（主机）；提交 PR 返回 `{status: "proposed", branch, url, number?}`，`url` 是 PR 页面，不能自动开 PR 的平台是去开 PR 的网页、没有 `number`；有冲突时返回 `{status: "conflict", files}`；提交 PR 时拉取或推送不了 409，远程要账号时错误体带 `gitLogin` |
+| POST | `/workspaces/:id/sync` | 同步：拉取主线合进工作区分支；返回 `{status: "synced", commit}`、`{status: "current"}`（已是最新）或 `{status: "conflict", files}`；线程没有全部空闲 409。拉不到远程时照用本机主线与上次拉取的远程主线，远程要账号时不同步，409 且错误体带 `gitLogin` |
 | PUT | `/workspaces/:id/name` | `{mode: "manual", name}` 手动命名，名称须为 1～80 字符的单行文本；`{mode: "auto"}` 切回自动并当场重起，见 [轻任务与会话标题](#轻任务与会话标题)；返回工作区，已归档或已交给别的工作机时 409 |
 | POST | `/workspaces/:id/archive` | 归档工作区 `{force?}`；Line 所在的工作区 409 |
 | GET | `/events` | 目录 SSE：首帧 `catalog.snapshot`，随后检出、工作区和线程概要变更 |

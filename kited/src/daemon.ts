@@ -58,6 +58,8 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   const server = serve(kite, { hostname: '127.0.0.1', port: opts.port, network });
   kite.listening({ url: `http://127.0.0.1:${server.port}`, network });
   kite.startAccountData();
+  // 上次被 kited 退出打断的会话接着做；Line 的 monitor 读汇总时等它们都打开（见 Kite.summary）。
+  void kite.continueInterrupted();
   kite.monitor.start();
   kite.monitors.reconcile();
   return {
@@ -68,8 +70,8 @@ export function startDaemon(opts: DaemonOptions): Daemon {
     async stop() {
       clearInterval(syncTimer);
       await departure?.catch(() => {});
-      await network.stop();
-      await kite.shutdown();
+      // 组网在会话停下之后再停：回合里调用别的工作机（如 Line 的工具）经 kite-net，先停会让这些调用报错。
+      try { await kite.shutdown(); } finally { await network.stop(); }
       await Promise.all([server.stop(true), remote.stop(true)]);
       store.close();
     },

@@ -38,10 +38,9 @@ struct ThreadControlsModel {
     /// 附件、语音与固定主按钮之间的间距。
     static let actionGap: CGFloat = 4
 
-    /// 写明发出去会怎样：作答时写的是当前这题的「其他」；恢复阻塞时发送即确认已核查、接着做；审批时发出去就拒绝。
+    /// 写明发出去会怎样：作答时写的是当前这题的「其他」；审批时发出去就拒绝。
     var placeholder: String {
         if answering != nil { return "填写其他回答" }
-        if thread.state?.recovery != nil { return "发送消息并继续" }
         if skipping != nil { return "发送消息并拒绝" }
         return "发送消息"
     }

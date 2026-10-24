@@ -28,6 +28,7 @@ import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
 import { childChanged, commitParent, mergeChild, mergeParent } from './workspace/children.ts';
 import { compactTemplate } from './harness/compaction.ts';
+import { RUNNING_MARKER } from './harness/thread-host.ts';
 import type { Store } from './store.ts';
 import { holds, type AgentInstance, type Checkout, type Machine, type OpenWindowRequest, type PluginInstance, type Project, type ThreadContext, type Workspace, type WorkspaceModel, type WorkspaceStatus, type WorkspaceWindow } from './model.ts';
 import { PluginCatalog } from './plugins/catalog.ts';
@@ -106,7 +107,7 @@ export interface MachineSummary {
   workspaces: Array<{
     id: string; epoch: number; status: WorkspaceStatus; name: string; project: { id: string; name: string };
     threads: Array<{ id: string; title: string; role: string | null; phase: string; busy: boolean; waitingForResume: boolean;
-      lastOutcome?: string; failure?: string; recovery?: string; waiting?: Waiting; asks?: Ask[];
+      lastOutcome?: string; failure?: string; waiting?: Waiting; asks?: Ask[];
       /** 这台工作机实时看到的最近一次回合结束时间；重启后要等下一次回合结束才有。 */
       settledAt?: number;
       /** 最近一条输入是 Line 自己的说明：这一回合是 Line 发起的工作，结果交给 Line。 */
@@ -168,12 +169,6 @@ function proposalPage(remote: string, base: string, branch: string): string {
   if (remote.startsWith('gitlab.')) return `${site}/-/merge_requests/new?merge_request[source_branch]=${encodeURIComponent(branch)}&merge_request[target_branch]=${encodeURIComponent(base)}`;
   const path = (ref: string) => ref.split('/').map(encodeURIComponent).join('/');
   return `${site}/compare/${path(base)}...${path(branch)}?expand=1`;
-}
-
-/** 确认恢复：后端核对交接后把阻塞解开。 */
-async function recoverRuntime(r: Runtime): Promise<void> {
-  if (!r.recover) throw new KiteError('这个后端不支持恢复确认', 409);
-  await r.recover();
 }
 
 export class Kite {
@@ -239,6 +234,8 @@ export class Kite {
   private readonly checkoutManagement: CheckoutManagement;
   private runners = new Map<string, Runtime>();
   private openingRunners = new Map<string, Promise<Runtime>>();
+  /** 启动时与强制接管后接着做的会话都打开了，见 openInterrupted 与 summary。 */
+  private continuing: Promise<void> = Promise.resolve();
   private queues = new Map<string, Promise<unknown>>();
   private preparations = new Map<string, AbortController>();
   private stopping = false;
@@ -400,6 +397,7 @@ export class Kite {
       control: (id, action) => this.control(id, action),
       workspace: (id) => this.workspace(id),
       threadState: (id) => this.threadState(id),
+      operationsRunning: (id) => this.receipts.running(id),
       stopThread: (thread) => this.stopThread(thread),
       closePlugins: (id) => this.closeExtensions(id),
       snapshot: (workspace, label) => this.snapshot(workspace, [], label),
@@ -407,6 +405,7 @@ export class Kite {
       changed: (id) => this.changed(id),
       removed: (id) => bus.emit({ type: 'workspace.changed', workspaceId: id, status: 'archived' }),
       recordsReplaced: (ids) => this.transcripts.forget(ids),
+      continueTakenOver: (ids) => this.continueTakenOver(ids),
       environment: (projectId) => this.environment(projectId),
       ensureCheckout: async (projectId) => (await this.ensureCheckout(projectId)).checkout,
       setUpWorktree: (id, checkout, cwd) => this.setUpWorktree(id, checkout, cwd),
@@ -415,7 +414,7 @@ export class Kite {
     this.configuration = new InstanceConfiguration(this, {
       run: (workspaceId, action) => this.control(workspaceId, action),
       context: (id) => this.context(id), openThread: (id) => this.openThread(id),
-      runtime: (thread) => this.runnerForManagement(thread),
+      runtime: (thread) => this.openedRunner(thread.id),
       switchRuntime: (id, agent, commit) => this.switchRuntime(id, agent, commit),
       changed: (workspaceId) => this.changed(workspaceId),
     });
@@ -958,9 +957,13 @@ export class Kite {
   }
   /**
    * 这台工作机的状态汇总，供 Line 查询与 monitor 核对：未归档的工作区、其中线程的执行状态与等你回应的对象。
-   * 线程状态从显示投影读，首次读取会载入历史，不启动执行。
+   * 线程状态从显示投影读，首次读取会载入历史，不启动执行。被 kited 退出打断、马上要接着做的会话在打开之前看起来是失败了、
+   * 在等继续，monitor 会当作失败通知用户：等这些会话都打开了再读（见 openInterrupted），关闭时（停下的会话也是这样）不给。
    */
   async summary(): Promise<MachineSummary> {
+    this.assertRunning();
+    await this.continuing;
+    this.assertRunning();
     const workspaces = await Promise.all(this.store.workspaceModels().filter((model) => model.workspace.status !== 'archived').map(async (model) => {
       const threads = new Set(model.threads.map((thread) => thread.instanceId));
       return {
@@ -972,7 +975,7 @@ export class Kite {
           return { id: instance.id, title: instance.title, role: (instanceRole(instance)?.id ?? null), phase: state.phase, busy: state.busy,
             waitingForResume: state.waitingForResume, ...(state.lastOutcome ? { lastOutcome: state.lastOutcome.kind } : {}),
             ...(state.lastOutcome?.kind === 'failed' ? { failure: state.lastOutcome.message } : {}),
-            ...(state.recovery ? { recovery: state.recovery.message } : {}), ...(state.waiting ? { waiting: state.waiting } : {}),
+            ...(state.waiting ? { waiting: state.waiting } : {}),
             ...(state.asks?.length ? { asks: state.asks } : {}),
             ...(settledAt !== undefined ? { settledAt } : {}), ...(this.lineWork.has(instance.id) ? { byLine: true as const } : {}) };
         })),
@@ -1210,7 +1213,7 @@ export class Kite {
 
   /**
    * 回应线程在等的一项：阻塞的审批交回那次调用；提问与密钥请求由宿主处理（存密钥），把结果作为一条输入交给代理，交上了才撤下请求。
-   * 代理在跑就在下一次请求时纳入，空闲的就此开始新的回合；交不上（会话正在停止、在等确认恢复）时请求留着，报错给回应的一方，
+   * 代理在跑就在下一次请求时纳入，空闲的就此开始新的回合；交不上（会话正在停止）时请求留着，报错给回应的一方，
    * 再回应一次即可（密钥已存的再存一遍是替换）。via 是代用户处理的 Line：提问写明由 Line 代答，密钥请求不接受。
    */
   async respondWaiting(threadId: string, id: string, value: unknown, via?: InputVia): Promise<void> {
@@ -1567,14 +1570,8 @@ export class Kite {
     if (!(await this.threadState(id)).capabilities.switchRuntime) {
       throw new KiteError('请先停止会话、处理排队消息，再切换后端', 409);
     }
-    const runner = await this.runnerForManagement(this.context(id));
+    const runner = await this.openedRunner(id);
     if (runner?.busy) throw new KiteError('请先停止会话，再切换后端', 409);
-    // 用户在 App 里换后端连带确认恢复：旧后端先核对交接，再把会话交出去。
-    if (runner?.recovery) {
-      await recoverRuntime(runner);
-      // 换过去只带走原生记录里已有的内容，交接结果未知的输入会丢，先由用户继续或撤回。
-      if (!(await this.threadState(id)).capabilities.switchRuntime) throw new KiteError('有交接结果未知的消息，请先继续或撤回，再切换后端', 409);
-    }
     await runner?.shutdown();
     this.runners.delete(id);
     try { await handOff({ home: this.home, thread: this.context(id), to: agent.runtime, model: agent.model.model }); }
@@ -1582,16 +1579,45 @@ export class Kite {
     commit();
     await this.transcripts.reset(this.context(id));
   }
+  /** 打开会话不开始执行；被 kited 退出打断的由这里决定接着做，见 continueInterrupted。 */
   private runner(t: ThreadContext): Promise<Runtime> {
     const existing = this.runners.get(t.id);
-    if (existing) return Promise.resolve(existing);
+    if (existing && !existing.broken) return Promise.resolve(existing);
     // 同一线程只打开一个 runtime；并发的打开请求共用同一次初始化，不依赖调用方持有工作区锁。
     let opening = this.openingRunners.get(t.id);
     if (!opening) {
-      opening = this.openRunner(t).finally(() => this.openingRunners.delete(t.id));
+      // 关闭时不再打开：停下全部会话那一步之后打开的没人停，回合会对着关掉的子系统接着跑。
+      if (this.stopping) return Promise.reject(new KiteError('kited 正在关闭', 503));
+      opening = (async () => {
+        // 会话记录写不进去（如磁盘满）的关掉，从硬盘上的记录重新打开。
+        if (existing) {
+          this.runners.delete(t.id);
+          await existing.shutdown().catch((error: Error) => console.error(`[会话] ${t.id} 关闭失败：${error.message}`));
+        }
+        return this.openRunner(t);
+      })().finally(() => this.openingRunners.delete(t.id));
       this.openingRunners.set(t.id, opening);
     }
     return opening;
+  }
+  /**
+   * kited 启动时打开上次被它退出打断的会话（会话目录里留着 running 标记）接着做；只接着做本机正在执行的工作区里的，
+   * 交接中或已流转走的停在等待继续。都打开完（打不开的已记下）时返回。
+   */
+  continueInterrupted(): Promise<void> {
+    return this.openInterrupted(this.store.threads().filter((t) => t.status === 'open' && this.store.workspace(t.workspaceId)?.status === 'open'
+      && existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER))).map((t) => t.id));
+  }
+  /** 强制接管来的工作区：副本里被打断的会话在这台工作机上接着做，告诉代理原工作机可能还在执行。 */
+  continueTakenOver(ids: string[]): void {
+    void this.openInterrupted(ids.filter((id) => this.store.instance(id)?.status === 'open'), '接手前它在另一台工作机上执行，那台工作机可能还在执行');
+  }
+  /** 打开会话接着做被打断的回合（没被打断的什么也不做）；打不开的记下，不报给调用方。都接着做之前汇总先等着，见 summary。 */
+  private openInterrupted(ids: string[], note?: string): Promise<void> {
+    const opening = ids.map((id) => (async () => { await (await this.runner(this.context(id))).continueInterrupted(note); })()
+      .catch((error: Error) => console.error(`[接着做] ${id}：${error.message}`)));
+    this.continuing = Promise.all([this.continuing, ...opening]).then(() => {});
+    return this.continuing;
   }
   private async openRunner(t: ThreadContext): Promise<Runtime> {
     const { id, workspaceId, workspace, title } = t;
@@ -1616,7 +1642,7 @@ export class Kite {
             this.reportMerge(resolving.initiator, workspaceId, '没能合回',
               `没能合回：处理冲突的回合失败了（${outcome.message}）。子工作区停在合并中途，让它接着处理，回合正常结束后会接着合回。`);
           }
-          if (completed && !this.stopping && resolving?.threadId === id) {
+          if (completed && resolving?.threadId === id) {
             const next = {
               adopt: () => this.adopt(workspaceId, id, true), sync: () => this.syncWorkspace(workspaceId, id, true),
               merge: () => this.mergeWorkspace(workspaceId, { threadId: id, afterResolution: true, initiator: resolving.initiator }),
@@ -1701,10 +1727,11 @@ export class Kite {
       reason: '装到真机会覆盖设备上正在用的版本', mustAsk: true }, signal);
     return decision === 'once' || decision === 'remember';
   }
-  /** 恢复检查只打开 journal，不执行旧输入。 */
-  private async runnerForManagement(t: AgentInstance): Promise<Runtime | undefined> {
-    return this.runners.get(t.id) ?? (t.status === 'open' && existsSync(join(this.home, 'sessions', t.id))
-      ? await this.runner(this.context(t.id)) : undefined);
+  /**
+   * 查忙闲、停下或交出会话用：已打开或正在打开的会话；没打开的会话不在执行，不为此打开。写不进记录的也照样返回，由调用方关掉。
+   */
+  private async openedRunner(id: string): Promise<Runtime | undefined> {
+    return this.runners.get(id) ?? await this.openingRunners.get(id)?.catch(() => undefined);
   }
   /** 线程不再处理集成或同步的冲突：停下、归档，或宿主已接着做。 */
   /** quiet 是宿主自己接着做（或交不出去）；否则是被停下或归档，子工作区合回停在了半路，告诉发起合回的代理。 */
@@ -1721,14 +1748,13 @@ export class Kite {
   }
   /** 动整个工作区的操作（回退、采纳）要求全员空闲；线程之间的启动、发送与继续默认并行，见 docs/工作区并行.md。 */
   private async assertIdle(workspaceId: string): Promise<void> {
-    if (await this.working(workspaceId)) throw new KiteError('工作区有线程正在工作或等待恢复确认', 409);
+    if (await this.working(workspaceId)) throw new KiteError('工作区有线程正在工作', 409);
   }
-  /** 工作区有线程正在工作或等待恢复确认。 */
+  /** 工作区有线程正在工作。 */
   private async working(workspaceId: string): Promise<boolean> {
     for (const t of this.store.threads(workspaceId)) {
       if (t.status === 'archived') continue;
-      const r = await this.runnerForManagement(t);
-      if (r?.busy || r?.recovery) return true;
+      if ((await this.openedRunner(t.id))?.busy) return true;
     }
     return false;
   }
@@ -1872,26 +1898,6 @@ export class Kite {
       try { await r.revertCompaction(compactionId); }
       catch (error) { throw new KiteError((error as Error).message, 409); }
     });
-  }
-  /** 只确认恢复，`kite` 命令行用；App 在发送、继续和停止时连带确认，见 confirmRecovery。 */
-  recover(id: string): Promise<void> {
-    return this.controlThread(id, async () => recoverRuntime(await this.runner(this.openThread(id))));
-  }
-  /**
-   * 用户在 App 里发送、继续或停止时连带确认恢复。没有阻塞或还在收尾时不动，由随后的操作按当时状态处理：
-   * 重试不会把已经继续的会话再停住，重试中的停止也照旧等原来那次。
-   */
-  confirmRecovery(id: string): Promise<void> {
-    return this.controlThread(id, async () => {
-      const r = await this.runner(this.openThread(id));
-      if (r.recovery && !r.busy) await recoverRuntime(r);
-    });
-  }
-  /** 用户在 App 里合回主线或手动流转时，连带确认工作区里待恢复的线程；自动换机和冲突处理后的自动合回不经过这里。 */
-  async confirmWorkspaceRecovery(workspaceId: string): Promise<void> {
-    for (const t of this.store.threads(workspaceId)) {
-      if (t.status !== 'archived' && (await this.threadState(t.id)).recovery) await this.confirmRecovery(t.id);
-    }
   }
 
   private snapshot(w: Workspace, toolUseIds: string[], label: string, threadId?: string): Promise<void> {
@@ -2156,7 +2162,7 @@ export class Kite {
     return { status: 'merged' };
   }
   private async stopThread(t: AgentInstance): Promise<void> {
-    const r = await this.runnerForManagement(t);
+    const r = await this.openedRunner(t.id);
     this.endResolving(t);
     if (r) { await r.shutdown(); this.runners.delete(t.id); }
     this.turnLabels.delete(t.id);
@@ -2380,21 +2386,31 @@ export class Kite {
   async shutdown(): Promise<void> {
     this.stopping = true;
     clearTimeout(this.projectSync);
+    // Line 的 monitor 不再起新的一轮；进行中的那一轮后面再等。
+    const monitorStopped = this.monitor.stop();
+    for (const c of this.preparations.values()) c.abort();
+    // 先停会话再关别的子系统：回合对着关掉的终端、插件和操作接着跑，工具纷纷报错，模型看到报错可能就此正常结束回合，
+    // 下次启动不再接着做，记录里还留下一串假的工具失败。停会话时工具的收尾（命令转到后台终端、插件与操作的调用）还用得着它们。
+    await this.stopRunners();
     this.directory.close();
     this.library.close();
     await Promise.all([this.titles?.close(), this.workspaceNames.close(), this.emblems.close(), this.lightTasks?.close(), this.subscriptionLogins.close(), this.replication.close(), this.replicas.close(), this.updates.close()]);
-    await this.monitor.stop();
+    await monitorStopped;
     await this.monitors.close();
+    await Promise.allSettled(this.projectOperations);
+    await Promise.allSettled(this.queues.values());
     await this.terminals.close();
     await this.previews.close();
     await this.simulators.close();
     await this.plugins.close();
     await this.operations.close();
-    for (const c of this.preparations.values()) c.abort();
-    await Promise.allSettled(this.projectOperations);
-    await Promise.allSettled([...this.queues.values(), ...this.openingRunners.values()]);
-    await Promise.all([...this.runners.values()].map((r) => r.shutdown()));
     await this.mcp.close();
     this.accountData.close();
+  }
+  /** 关闭时停下全部会话，正在打开的打开完再停：刚接着做的回合同样记为被退出打断，下次启动再接着做。 */
+  private async stopRunners(): Promise<void> {
+    const opening = [...this.openingRunners.values()].map((r) => r.then((runner) => runner.shutdown(), () => {}));
+    const results = await Promise.allSettled([...[...this.runners.values()].map((r) => r.shutdown()), ...opening]);
+    for (const result of results) if (result.status === 'rejected') console.error(`[会话] 关闭失败：${(result.reason as Error).message}`);
   }
 }

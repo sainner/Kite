@@ -5,7 +5,21 @@
 import { z } from 'zod';
 import { modelText } from './input.ts';
 import { TOOL_SEARCH } from './tool-search.ts';
-import type { ContextItem, JsonObject, ModelEvent, ModelItem, ModelRequest, ToolImage } from './types.ts';
+import { ModelRequestError, type ContextItem, type Json, type JsonObject, type ModelEvent, type ModelItem, type ModelRequest, type ToolImage } from './types.ts';
+
+const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+/** HTTP 失败里可以重试的：限流与服务端出错；认证、余额、请求本身不对的重试也一样。 */
+export const retryableStatus = (status: number): boolean => status === 429 || status >= 500;
+
+/** 发出模型请求；连不上或连接中途断开（不是被取消）可重试，见 ModelRequestError。 */
+export async function connect(signal: AbortSignal, request: () => Promise<Response>): Promise<Response> {
+  try { return await request(); }
+  catch (error) {
+    if (signal.aborted) throw error;
+    throw new ModelRequestError(`连不上模型服务：${reason(error)}`, true);
+  }
+}
 
 const object = z.record(z.string(), z.json());
 
@@ -13,6 +27,18 @@ function asObject(value: unknown, label: string): JsonObject {
   const result = object.safeParse(value);
   if (!result.success) throw new Error(`模型响应中的 ${label} 格式无效`);
   return result.data;
+}
+
+/**
+ * 服务端在响应流里报的错误码（response.failed 的 response.error，或 error 事件）；只取像标识符的码，不回显正文。
+ * 超出窗口、额度用完、订阅不含、提示词或图片本身不对的，重试也一样；其余（服务端出错、限流、过载）可重试。
+ */
+const lastingFailure = /^(context_length_exceeded|insufficient_quota|usage_limit_reached|usage_not_included|invalid_prompt)$|image/;
+function failureCode(event: JsonObject): string | undefined {
+  const nested = (value: Json | undefined, key: string) => value && typeof value === 'object' && !Array.isArray(value) ? value[key] : undefined;
+  const error = nested(event.response, 'error') ?? event.error;
+  const code = nested(error, 'code') ?? nested(error, 'type') ?? event.code;
+  return typeof code === 'string' && /^[\w.-]{1,64}$/.test(code) ? code : undefined;
 }
 
 function text(value: unknown, label: string): string {
@@ -32,7 +58,13 @@ async function* events(body: ReadableStream<Uint8Array>, signal: AbortSignal): A
   try {
     while (true) {
       signal.throwIfAborted();
-      const { done, value } = await reader.read();
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try { chunk = await reader.read(); }
+      catch (error) {
+        signal.throwIfAborted();
+        throw new ModelRequestError(`模型响应中途断开：${reason(error)}`, true);
+      }
+      const { done, value } = chunk;
       signal.throwIfAborted();
       buffer += decoder.decode(value, { stream: !done });
       while (true) {
@@ -51,7 +83,7 @@ async function* events(body: ReadableStream<Uint8Array>, signal: AbortSignal): A
       }
       if (buffer.length > 16 * 1024 * 1024) throw new Error('单条模型响应事件过大');
       if (done) {
-        if (buffer.trim() || data.length) throw new Error('模型响应在 SSE 事件中途断开');
+        if (buffer.trim() || data.length) throw new ModelRequestError('模型响应在 SSE 事件中途断开', true);
         return;
       }
     }
@@ -240,13 +272,16 @@ export async function* responseEvents(body: ReadableStream<Uint8Array>, request:
         };
         break;
       }
-      case 'response.failed': case 'response.incomplete': case 'error':
-        // 不回显未知服务端正文，避免诊断意外带入请求或凭据。
-        throw new Error(`模型返回 ${event.type}，本次请求未成功完成`);
+      case 'response.failed': case 'response.incomplete': case 'error': {
+        // 不回显未知服务端正文，避免诊断意外带入请求或凭据。没生成完（长度、内容过滤）重试也一样。
+        const code = failureCode(event);
+        throw new ModelRequestError(`模型返回 ${event.type}${code ? `（${code}）` : ''}，本次请求未成功完成`,
+          event.type !== 'response.incomplete' && !(code && lastingFailure.test(code)));
+      }
       default:
         // 其余生命周期事件不改变执行状态。
         break;
     }
   }
-  if (!completed) throw new Error('模型响应流在完成之前关闭');
+  if (!completed) throw new ModelRequestError('模型响应流在完成之前关闭', true);
 }

@@ -92,6 +92,12 @@ final class FileContentCache {
         return Self.info(response)
     }
 
+    /// 现在这份文件的版本（ETag），不下载：工作机按大小、修改时间和 inode 算，不读内容。
+    func tag(client: KitedClient, workspace: String, path: String) async throws -> String? {
+        let (_, response) = try await client.download(Self.contentPath(workspace, path), method: "HEAD")
+        return response.value(forHTTPHeaderField: "ETag")
+    }
+
     private func fetch(key: String, client: KitedClient, workspace: String, path: String, version: String?,
                        progress: (@Sendable (Progress) -> Void)?) async throws -> CachedFile {
         let directory = root.appending(path: key, directoryHint: .isDirectory)

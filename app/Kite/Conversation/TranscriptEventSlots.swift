@@ -2,10 +2,12 @@
 import AppKit
 import SwiftUI
 
-/// Kite 通知气泡上面那一行：图标（头像大小，见 Notice.mark：Kite 的是 agentBubble 底色的圆、中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
-/// 用户、Line 的是头像）、间距 6、种类（Notice.heading，放不下截掉）、间距 8、小号箭头，竖着居中，字和箭头是次要色。
+/// 来信（代理来信、Kite 的通知）气泡上面那一行：图标（头像大小，见 Notice.mark：Kite 的是 agentBubble 底色的圆、中间次要色的铃铛，还没有 Kite 自己的图标，先用它；
+/// 用户、代理和 Line 的是头像）、间距 6、那一句（通知的种类、来信的发信方，放不下截掉）、间距 8、小号箭头，竖着居中，字和箭头是次要色。
 /// 宽是内容的宽，整块可点，指针是手形；读屏读成展开收起的三角。
-final class NoticeHeaderView: NativeButton {
+final class LetterHeaderView: NativeButton {
+    /// 和下面的气泡之间。
+    static let gap: CGFloat = 8
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat {
         get { chevron.turn }
@@ -40,12 +42,12 @@ final class NoticeHeaderView: NativeButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// environment：画图标用的环境。
-    func show(_ notice: Notice, font: NSFont, environment: EnvironmentValues) {
+    func show(_ heading: LetterHeading, font: NSFont, environment: EnvironmentValues) {
         let secondary = NSColor.secondaryLabelColor
-        speech = TranscriptSpeech.notice(notice)
-        title.set(notice.heading, font: font, color: secondary)
+        speech = heading.speech
+        title.set(heading.title, font: font, color: secondary)
         diameter = AgentAvatar.inlineDiameter(font: font.pointSize)
-        shown = (notice.mark, environment)
+        shown = (heading.mark, environment)
         drawMark()
         let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .small)
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)

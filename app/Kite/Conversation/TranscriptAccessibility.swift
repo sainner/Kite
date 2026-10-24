@@ -12,15 +12,14 @@ enum TranscriptSpeech {
     /// 折起来的长消息下面的按钮，和看到的字一样。
     static func fold(expanded: Bool) -> String { expanded ? "收起" : "展开全文" }
 
-    /// 代理来信：正文前面读的说明。
+    /// 代理来信：上面那一行读的。
     static func agent(_ sender: Sender, queued: Bool = false) -> String { "\(sender.name) 发来的消息" + (queued ? "，排队中" : "") }
-    /// 消息气泡：有发信方的读成它发来的，否则是我发的。
-    static func bubble(sender: Sender?, queued: Bool) -> String { sender.map { agent($0, queued: queued) } ?? message(queued: queued) }
     /// Kite 的通知：读那一句。
     static func notice(_ notice: Notice) -> String { "Kite 通知，" + notice.title }
-    static func noticeHint(expanded: Bool) -> String { expanded ? "收起正文" : "展开正文" }
-    /// 通知点开后气泡里的正文：那一行已经读过是什么通知。
-    static let noticeBody = "通知正文"
+    /// 来信（代理来信、Kite 的通知）上面那一行点了做什么。
+    static func letterHint(expanded: Bool) -> String { expanded ? "收起正文" : "展开正文" }
+    /// 来信点开后气泡里的正文：那一行已经读过是什么通知、谁发来的。
+    static func letterBody(notice: Bool) -> String { notice ? "通知正文" : "消息正文" }
 
     /// 压缩分界：不管展开没有都读这一句，展开收起由状态读出。
     static func compaction(_ compaction: Compaction) -> String {
@@ -76,12 +75,14 @@ enum TranscriptSpeech {
     static func summary(_ row: TranscriptRow) -> String {
         switch row.content {
         case .message(let message, let queued, let sender):
-            return bubble(sender: sender, queued: queued) + "，" + message.typed
+            // 来信收着，同通知只读那一行
+            if let sender { return agent(sender, queued: queued) }
+            return self.message(queued: queued) + "，" + message.typed
         case .item(let item):
             switch item.kind {
             case .human(let message): return self.message(queued: false) + "，" + message.typed
             case .text(let text): return text
-            case .agent(let message, let sender): return agent(sender) + "，" + message.text
+            case .agent(_, let sender): return agent(sender)
             case .kite(let notice): return self.notice(notice)
             case .thinking(let text): return thinking(text)
             case .work(let work): return self.work(work)

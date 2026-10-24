@@ -262,7 +262,7 @@ private struct InboxItemView: View {
         case "question": ("questionmark.bubble", Theme.warning)
         case "secret": ("key", Theme.warning)
         case "turn": ("checkmark.circle", Theme.unseen)
-        case "failed", "recovery", "preparation": ("exclamationmark.triangle", Theme.danger)
+        case "failed", "preparation": ("exclamationmark.triangle", Theme.danger)
         default: ("bolt.horizontal", .secondary)
         }
         return Image(systemName: symbol)
@@ -295,7 +295,6 @@ private struct InboxItemView: View {
         switch item.kind {
         case "turn": "回合结束"
         case "failed": "上一回合失败"
-        case "recovery": "等待恢复确认"
         case "preparation": "工作区准备失败"
         case "unreachable": "工作机「\(item.machine.name)」连不上"
         default: item.waiting.map { waiting in

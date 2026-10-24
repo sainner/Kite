@@ -40,10 +40,10 @@ export const lineMonitorContextDefinition: ContextDefinition = {
 };
 
 const id = z.string().min(1);
-const itemKinds = ['approval', 'question', 'secret', 'turn', 'failed', 'recovery', 'preparation', 'unreachable'] as const;
+const itemKinds = ['approval', 'question', 'secret', 'turn', 'failed', 'preparation', 'unreachable'] as const;
 export type InboxKind = (typeof itemKinds)[number];
 const itemSchema = z.object({
-  /** waiting:<等待>、turn:<线程>、failed:<线程>、recovery:<线程>、preparation:<工作区>、machine:<工作机>。 */
+  /** waiting:<等待>、turn:<线程>、failed:<线程>、preparation:<工作区>、machine:<工作机>。 */
   id,
   kind: z.enum(itemKinds),
   machine: z.object({ id, name: z.string() }).strict(),
@@ -134,7 +134,7 @@ export const DAILY_WAKES = 40;
 const RECORDS_KEEP = 200;
 const RELAYS_KEEP = 200;
 /** 没人关注时一进收件箱就单条通知的事项；回合结束走摘要。 */
-const IMMEDIATE = new Set<InboxKind>(['approval', 'question', 'secret', 'failed', 'recovery', 'preparation', 'unreachable']);
+const IMMEDIATE = new Set<InboxKind>(['approval', 'question', 'secret', 'failed', 'preparation', 'unreachable']);
 
 const clip = (text: string, limit: number) => {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -152,7 +152,7 @@ export function where(item: Pick<InboxItem, 'machine' | 'workspace' | 'thread'>)
 }
 
 const kindLabel: Record<InboxKind, string> = {
-  approval: '等待批准', question: '等待回答', secret: '等待密钥', turn: '回合结束', failed: '失败', recovery: '等待恢复确认', preparation: '准备失败',
+  approval: '等待批准', question: '等待回答', secret: '等待密钥', turn: '回合结束', failed: '失败', preparation: '准备失败',
   unreachable: '连不上',
 };
 
@@ -259,9 +259,8 @@ export function route(state: MonitorState, input: RouteInput): LineNotification[
         for (const waiting of [...(thread.waiting ? [thread.waiting] : []), ...(thread.asks ?? [])]) {
           put({ ...base, id: `waiting:${waiting.id}`, kind: waiting.kind, waiting, text: waitingText(waiting), at: waiting.since });
         }
-        if (thread.recovery) put({ ...base, id: `recovery:${thread.id}`, kind: 'recovery', text: clip(thread.recovery, 300), at: now });
         // Line 发起的工作失败交给 Line；超出预算时已经进了收件箱的照常保留到状态解除。
-        else if (thread.lastOutcome === 'failed' && thread.waitingForResume && (!thread.byLine || state.items[`failed:${thread.id}`])) {
+        if (thread.lastOutcome === 'failed' && thread.waitingForResume && (!thread.byLine || state.items[`failed:${thread.id}`])) {
           put({ ...base, id: `failed:${thread.id}`, kind: 'failed', text: clip(thread.failure ?? '上一回合失败，等待继续', 300), at: thread.settledAt ?? now });
         }
         // 回合结束：Line 发起的交给 Line，别人的只收离开期间正常结束的；用户或 Line 停下的不算。还有没回应的提问、密钥请求时
