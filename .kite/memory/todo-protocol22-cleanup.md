@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: todo
   originSessionId: a6b65669-3bb6-437a-bf94-442259ad86e4
-  modified: 2026-10-24T10:40:02.745Z
+  modified: 2026-10-24T16:42:51.416Z
 ---
 
 协议 22 去掉了「待恢复」状态和 `agent_resume` 工具（被 kited 退出打断的回合改为自动接着做）。新版不认旧数据，读不了就报错：实例配置里留着 `agent_resume` 时报「agent 配置无效」，授权里留着 `agent.resume` 时启动就崩。
@@ -15,6 +15,8 @@ metadata:
 - 停 kited，备份 `kite.db`。
 - 去掉 `plugin_instances.config` 里 `agent.tools` 中的 `agent_resume`，以及 `grants` 中 `operation` 为 `agent.resume` 的项。通知正文和操作收据里出现这个名字只是历史文字，不用改。
 - 用新代码读一遍所有会话：journal 里有 `recovery.confirmed` 记录，或 `claude-control.json` 里还有 `recovery` 或 `unconfirmed` 输入的，新版读不了。这类会话按删会话的做法删掉：先归档它的子代理，再删会话目录和库里的行。
+
+2026-10-25 本机装协议 23（3c2da15）时又清了一遍：10-24 清完后旧版 kited 还跑着，期间新建的代理照旧默认带上 `agent.resume` 授权与 `agent_resume` 工具（6 个授权、8 个工具清单），新版启动即崩、安装器自动退回旧版。所以清理要紧挨着升级做：停旧 kited、清、马上装新版。两个带 `recovery.confirmed` 的会话这次按用户选择只删那一行、把后面各条的 `seq` 依次前移一位（记录序号必须连续，否则报「会话记录序号不连续」），对话保留，读得通；备份在当次会话的草稿目录。用户已授权：这类「去掉的功能留下的条目」直接删那一项、备份、事后报告，删整个代理、整段对话或账号数据仍先问。其他工作机自动更新时会碰到同样的崩溃并退回旧版，要逐台按上面清。
 
 **Why:** 项目不做兼容，旧数据读不了就删（见 [[feedback-stale-data]]）；10-23 清 `terminal_run` 也是这么做的（见 [[todo-preview-plugin]]）。
 
