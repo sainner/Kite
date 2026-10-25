@@ -8,7 +8,7 @@ import type { Envelope } from '../../src/events.ts';
 import { restoreContext } from '../../src/harness/context/assembler.ts';
 import { TOOL_SEARCH } from '../../src/harness/tool-search.ts';
 import type { Json, ModelItem, ThreadNotification } from '../../src/harness/types.ts';
-import type { ThreadContext, WorkspaceModel } from '../../src/model.ts';
+import type { ThreadContext } from '../../src/model.ts';
 import type { DisplayEnvelope, History } from '../../src/transcript/protocol.ts';
 import { api, call, folderWorkspace, openAgent, startKited, type Kited } from '../harness.ts';
 import { diskRecords, item, ManualModel, Seen } from '../harness-loop.ts';
@@ -128,7 +128,7 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
     const aggregate = async () => {
       const response = await kk.call('GET', `/workspaces/${workspaceId}`);
       expect(response.status).toBe(200);
-      return response.body as { instances: { id: string }[]; windows: { id: string; target: { instanceId: string; viewId: string } }[] };
+      return response.body as { instances: { id: string }[] };
     };
     const roles = await kk.call('GET', '/roles');
     const review = (roles.body.roles as Array<{ role: { id: string }; revision: string }>).find((entry) => entry.role.id === 'kite.review')!;
@@ -145,7 +145,6 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
     expect(thread.body.config.agent.model).toEqual(chosen);
     const withThread = await aggregate();
     expect(withThread.instances.map((value) => value.id)).toEqual([id]);
-    expect(withThread.windows.map((value) => value.target)).toEqual([{ instanceId: id, viewId: 'conversation' }]);
     first.response.complete();
     await kk.waitEvent((event) => event.type === 'idle' && event.threadId === id);
 
@@ -153,7 +152,7 @@ test('按草稿选择创建代理时显式模型压过角色默认值和 KITE_MO
       prompt: '只读审查却不要 read', role, tools: ['shell'],
     });
     expect(rejected.status).toBe(400);
-    expect(await aggregate()).toMatchObject({ instances: withThread.instances, windows: withThread.windows });
+    expect(await aggregate()).toMatchObject({ instances: withThread.instances });
     expect(model.calls.values).toHaveLength(1);
   } finally {
     if (previous === undefined) delete process.env.KITE_MODEL;
@@ -330,7 +329,6 @@ test('空会话打开后端后按模型换后端，只改思考强度不换后�
     const initial = await k.call('GET', configPath);
     expect(initial.status).toBe(200);
     const original = structuredClone(initial.body.instance.config.agent) as AgentDefinition;
-    const initialWorkspace = (await k.call('GET', `/workspaces/${workspaceId}`)).body as WorkspaceModel;
     const initialGrants = await k.call('GET', grantsPath);
     expect(initialGrants.status).toBe(200);
     const grants = await k.call('PUT', grantsPath, {
@@ -399,7 +397,6 @@ test('空会话打开后端后按模型换后端，只改思考强度不换后�
     });
     const aggregate = await call(reopened.url, 'GET', `/workspaces/${workspaceId}`);
     expect(aggregate.status).toBe(200);
-    expect(aggregate.body.windows).toEqual(initialWorkspace.windows);
     expect(aggregate.body.threads).toEqual([{ instanceId: id, runtime: 'harness', nativeId: expect.any(String) }]);
     expect(aggregate.body.instances).toHaveLength(1);
     expect(aggregate.body.instances[0]).toMatchObject({

@@ -31,17 +31,20 @@ export type DomainEvent =
   | { type: 'model-accounts.changed'; modelAccounts: ModelAccountsSnapshot }
   /**
    * 资源库里的一类目录变了（本机改的或同步来的），读过的客户端重新读取：role 是角色列表（签名状态与点阵签名的变化也算），
-   * template 是上下文模板，skill 是 skill 列表。
+   * template 是上下文模板，skill 是 skill 列表；layout 是某个项目的布局，另带 projectId。
    */
   | { type: 'library.changed'; kind: LibraryList }
+  | { type: 'library.changed'; kind: 'layout'; projectId: string }
   /** 这台工作机的 MCP 服务连接状态或工具目录变了，客户端重新读 /mcp；catalog 为真是清单本身（服务名、说明）变了。 */
   | { type: 'mcp.changed'; catalog?: boolean }
   /** Line 的收件箱变了：客户端更新标志旁的数目，打开着的收件箱重新读取。 */
   | { type: 'line.inbox' }
   /** Line 找用户：App 发系统通知，点开是收件箱里的那一项。 */
   | { type: 'line.notification'; notification: LineNotification }
-  /** monitor 的时间线或来源状态变了，打开着的窗口重新读取。 */
+  /** monitor 的时间线或来源状态变了，正在看它的卡片重新读取。 */
   | { type: 'monitor.changed'; workspaceId: string; instanceId: string }
+  /** 代理请用户看这个实例（agent.start 带 show）：此刻在看这个工作区且处于前台的设备把它放上台面，其他设备不动。 */
+  | { type: 'instance.show'; workspaceId: string; instanceId: string }
   /** 自动更新的状态变了：客户端重新读 /update。 */
   | { type: 'update.changed' }
   | ({ workspaceId: string; originThreadId?: string } & (

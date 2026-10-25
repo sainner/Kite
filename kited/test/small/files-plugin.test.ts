@@ -17,11 +17,9 @@ async function workspace(k: Kited, repo: string) {
 }
 
 async function openFiles(k: Kited, workspaceId: string) {
-  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-  });
+  const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
   expect(opened.status).toBe(200);
-  return { instanceId: opened.body.target.instanceId as string };
+  return { instanceId: opened.body.id as string };
 }
 
 /** 按字节读取工作区文件（GET 或 HEAD /workspaces/:id/files/content）：k.call 只处理 JSON，这里直接 fetch，带上本机的 X-Kite-Machine。 */
@@ -171,16 +169,12 @@ test('文件选择跨服务重启保留，回收后新实例读取历史 diff �
     daemon = startDaemon({ home, port: 0, lightTasks: false });
     const first = await folderWorkspace(daemon, repo);
     const workspaceId = first.workspace.id;
-    const targetWindow = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-    });
-    expect(targetWindow.status).toBe(200);
-    const targetId = targetWindow.body.target.instanceId as string;
-    const sourceWindow = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-    });
-    expect(sourceWindow.status).toBe(200);
-    const sourceId = sourceWindow.body.target.instanceId as string;
+    const target = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
+    expect(target.status).toBe(200);
+    const targetId = target.body.id as string;
+    const source = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
+    expect(source.status).toBe(200);
+    const sourceId = source.body.id as string;
     const otherWorkspaceId = (await openWorkspace(daemon, first.project.id)).workspace.id;
     const filePath = 'docs/one.txt';
 
@@ -284,13 +278,11 @@ test('文件选择跨服务重启保留，回收后新实例读取历史 diff �
     expect(retriedAfterRestart.body).toEqual(selected.body);
     expect((await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId })).body)
       .toEqual(historicalSelection.body);
-    expect((await call(daemon.url, 'DELETE', `/workspaces/${workspaceId}/windows/${targetWindow.body.id}`)).status).toBe(200);
+    expect((await call(daemon.url, 'DELETE', `/instances/${targetId}`)).status).toBe(200);
     expect((await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: targetId })).status).toBe(404);
-    const replacement = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-    });
+    const replacement = await call(daemon.url, 'POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
     expect(replacement.status).toBe(200);
-    const replacementId = replacement.body.target.instanceId as string;
+    const replacementId = replacement.body.id as string;
     expect(replacementId).not.toBe(targetId);
     expect((await call(daemon.url, 'POST', operationPath(workspaceId, 'files.state'), { instanceId: replacementId })).body.path).toBeNull();
     for (const { result, files } of history) {

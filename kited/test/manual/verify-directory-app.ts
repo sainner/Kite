@@ -116,10 +116,10 @@ async function main() {
       });
     });
     const other = await openWorkspace(b, machineB.id, projectId);
-    const opened = await call(a.url, 'POST', `/workspaces/${shared.workspace.id}/windows`, {
-      id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
+    const opened = await call(a.url, 'POST', `/workspaces/${shared.workspace.id}/instances`, {
+      id: crypto.randomUUID(), definitionId: 'kite.files',
     }, machineA.id);
-    if (opened.status !== 200) throw new Error('创建保存布局用的真实文件窗口失败');
+    if (opened.status !== 200) throw new Error('创建真实浏览实例失败');
     const fullA = await call(a.url, 'GET', '/workspaces', undefined, machineA.id);
     const liveWorkspaceA = (fullA.body as WorkspaceModel[]).find((entry) => entry.workspace.id === shared.workspace.id);
     if (!liveWorkspaceA) throw new Error('缺少 A 的真实工作区快照');
@@ -156,10 +156,10 @@ async function main() {
       async fetch(request) {
         const path = new URL(request.url).pathname;
         if (path === '/assert-operation-a' && request.method === 'POST') {
-          const writes = operations.filter((entry) => entry.method === 'POST' && /\/windows$/.test(entry.path));
-          if (!writes.some((entry) => entry.machine === 'a' && entry.path === `/workspaces/${shared.workspace.id}/windows`)
+          const writes = operations.filter((entry) => entry.method === 'POST' && /\/instances$/.test(entry.path));
+          if (!writes.some((entry) => entry.machine === 'a' && entry.path === `/workspaces/${shared.workspace.id}/instances`)
             || writes.some((entry) => entry.machine === 'b')) {
-            return Response.json({ error: '选中 B 后，A 的真实窗口操作未仅发往 A' }, { status: 409 });
+            return Response.json({ error: '选中 B 后，A 的真实实例操作未仅发往 A' }, { status: 409 });
           }
         } else if (path === '/disconnect-a' && request.method === 'POST') {
           await proxyA.stop(true);

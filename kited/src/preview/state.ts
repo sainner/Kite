@@ -21,7 +21,7 @@ export const previewScreens = ['app', 'simulator', 'web', 'none'] as const;
 export type PreviewScreen = (typeof previewScreens)[number];
 
 const targetName = z.string().trim().min(1).max(255);
-/** 新建预览带的参数（窗口请求里的 preview 与 preview_open）：目标名与可选的设备。 */
+/** 新建预览带的参数（新建实例请求里的 preview 与 preview_open）：目标名与可选的设备。 */
 export const previewSpecSchema = z.object({ target: targetName, device: deviceSchema.optional() }).strict();
 export type PreviewSpec = z.infer<typeof previewSpecSchema>;
 export const previewConfig = (instance: Pick<PluginInstance, 'config'>): PreviewSpec => previewSpecSchema.parse(instance.config.preview);

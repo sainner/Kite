@@ -110,7 +110,7 @@ export interface MonitorsHost {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
   /** 实例增删或归档：工作区聚合变了。 */
   changed(workspaceId: string): void;
-  /** 时间线或来源状态变了，打开着的窗口重新读取。 */
+  /** 时间线或来源状态变了，正在看它的卡片重新读取。 */
   updated(workspaceId: string, instanceId: string): void;
   /** 事件到唤醒之间的合批等待，测试里缩短；默认 1 秒。 */
   wakeDelayMs?: number;
@@ -135,7 +135,7 @@ export class Monitors {
     queueMicrotask(() => { this.reconciling = false; this.reconcile(); });
   }
 
-  /** 代理开一个 monitor：放在代理所在的工作区，来源与对象都是这个代理，默认不开窗口。 */
+  /** 代理开一个 monitor：放在代理所在的工作区，来源与对象都是这个代理。 */
   create(workspaceId: string, origin: NonNullable<PluginInstance['origin']>, input: MonitorStart): Promise<{ instanceId: string }> {
     return this.host.run(workspaceId, async () => {
       const target = this.host.store.instance(origin.instanceId);
@@ -146,7 +146,7 @@ export class Monitors {
       const source: MonitorSource = input.command !== undefined ? { id: 'command', kind: 'command', command: input.command }
         : { id: 'timer', kind: 'timer', at: input.at!, ...(input.repeat ? { repeat: input.repeat } : {}) };
       const instance: PluginInstance = { id: randomUUID(), workspaceId, definitionId: monitorDefinitionId, title: input.title,
-        config: { monitor: { target: target.id, sources: [source] } }, state: {}, presentation: 'background', status: 'open',
+        config: { monitor: { target: target.id, sources: [source] } }, state: {}, view: 'timeline', status: 'open',
         createdAt: Date.now(), origin };
       this.host.store.addPluginInstance(instance);
       this.host.changed(workspaceId);

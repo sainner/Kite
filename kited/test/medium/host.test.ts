@@ -167,7 +167,7 @@ test('Claude 回合开头和插话带的图片附件都作为图片块交给模�
   })).status).toBe(200);
   const opTag = tag('创建空会话');
   const hold = tag('操作结果');
-  const operation = { id: 'operation-client-input', text: `${opTag}\nAGENT_START {"role":"kite.work","presentation":"background"}\nHOLD_RESULT ${hold}` };
+  const operation = { id: 'operation-client-input', text: `${opTag}\nAGENT_START {"role":"kite.work"}\nHOLD_RESULT ${hold}` };
   expect((await kk.call('POST', `/threads/${id}/messages`, operation)).status).toBe(200);
   const request = await api.waitRequest((entry) => entry.main && entry.lastUserText.includes(opTag));
   expect(JSON.stringify(request.body)).toContain(contextRule);

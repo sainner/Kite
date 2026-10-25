@@ -305,6 +305,16 @@ export function serve(kite: Kite, listen: Listen) {
         GET: bound((req) => kite.registry.constraints(req.params.id)),
         PUT: bound(async (req) => kite.registry.saveConstraints(req.params.id, await body(req))),
       },
+      '/project-registry/:id/layouts': { GET: bound((req) => ({ layouts: kite.registry.layouts(req.params.id) })) },
+      '/project-registry/:id/layouts/:layout': {
+        PUT: bound(async (req) => kite.registry.saveLayout(req.params.id, req.params.layout, await body(req))),
+        DELETE: bound((req) => {
+          const expectedRevision = new URL(req.url).searchParams.get('expectedRevision');
+          if (!expectedRevision) throw new KiteError('删除布局要带 expectedRevision');
+          kite.registry.removeLayout(req.params.id, req.params.layout, expectedRevision);
+          return { ok: true };
+        }),
+      },
       '/credentials': {
         GET: bound((req) => {
           const query = new URL(req.url).searchParams;
@@ -387,8 +397,8 @@ export function serve(kite: Kite, listen: Listen) {
         POST: long(bound(async (req) => {
           const b = await body(req);
           const prompt = b.prompt === undefined ? undefined : str(b.prompt, 'prompt');
-          const ids = z.object({ id: z.uuid().optional(), windowId: z.uuid().optional(), messageId: z.uuid().optional() })
-            .safeParse({ id: b.id, windowId: b.windowId, messageId: b.messageId });
+          const ids = z.object({ id: z.uuid().optional(), instanceId: z.uuid().optional(), messageId: z.uuid().optional() })
+            .safeParse({ id: b.id, instanceId: b.instanceId, messageId: b.messageId });
           if (!ids.success) throw new KiteError('工作区创建参数无效');
           const via = sourceOf(req);
           return kite.createWorkspace(str(b.project, 'project'), prompt, roleSelection(b.role), via, ids.data);
@@ -507,12 +517,7 @@ export function serve(kite: Kite, listen: Listen) {
           return kite.configurePluginGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
         }),
       },
-      '/workspaces/:id/plugin-instances': { POST: bound(async (req) => {
-        const parsed = z.object({ id: z.uuid(), definitionId: z.string().min(1), title: z.string().trim().min(1).optional() }).strict().safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('插件实例请求无效');
-        return kite.createPluginInstance(req.params.id, parsed.data.id, parsed.data.definitionId, parsed.data.title);
-      }) },
-      // 新建窗口里列出的预览目标与设备候选，每次打开都来取，工作区里新加的目标、刚配对的设备马上看得到。
+      // 新建预览时列出的预览目标与设备候选，每次打开都来取，工作区里新加的目标、刚配对的设备马上看得到。
       '/workspaces/:id/preview-targets': { GET: bound((req) => kite.previews.targets(req.params.id)) },
       '/instances/:id/plugin/tools': { GET: bound((req) => kite.plugins.tools(req.params.id)) },
       '/instances/:id/plugin/views/:view': { GET: bound((req) => kite.plugins.view(req.params.id, req.params.view)) },
@@ -633,24 +638,26 @@ export function serve(kite: Kite, listen: Listen) {
           const b = await body(req);
           const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
             approval: z.enum(approvalModes).optional(), mcp: roleSchema.shape.mcp,
-            windowId: z.uuid().optional(), messageId: z.uuid().optional(), attachments: z.array(z.string().min(1)).min(1).optional() })
-            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, mcp: b.mcp, windowId: b.windowId, messageId: b.messageId, attachments: b.attachments });
+            instanceId: z.uuid().optional(), messageId: z.uuid().optional(), attachments: z.array(z.string().min(1)).min(1).optional() })
+            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, mcp: b.mcp, instanceId: b.instanceId, messageId: b.messageId, attachments: b.attachments });
           if (!parsed.success) throw new KiteError('代理创建参数无效');
-          const { windowId, messageId, attachments, ...choice } = parsed.data;
-          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, windowId, messageId, attachments);
+          const { instanceId, messageId, attachments, ...choice } = parsed.data;
+          return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, instanceId, messageId, attachments);
         }),
       },
-      '/workspaces/:id/windows': { POST: bound(async (req) => {
+      '/workspaces/:id/instances': { POST: bound(async (req) => {
         const identity = z.string().trim().min(1);
-        const parsed = z.object({ id: z.uuid(), content: z.discriminatedUnion('kind', [
-          z.object({ kind: z.literal('create'), definitionId: identity, instanceId: z.uuid().optional(), title: identity.optional(), command: identity.optional(),
-            preview: previewSpecSchema.optional(), page: pageSchema.optional() }).strict(),
-          z.object({ kind: z.literal('open'), instanceId: identity, viewId: identity }).strict(),
-        ]) }).strict().safeParse(await body(req));
-        if (!parsed.success) throw new KiteError('窗口请求无效');
-        return kite.openWindow(req.params.id, parsed.data);
+        const parsed = z.object({ id: z.uuid(), definitionId: identity, title: identity.optional(), command: identity.optional(),
+          preview: previewSpecSchema.optional(), page: pageSchema.optional() }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('新建实例的请求无效');
+        return kite.createInstance(req.params.id, parsed.data);
       }) },
-      '/workspaces/:id/windows/:window': { DELETE: bound((req) => kite.closeWindow(req.params.id, req.params.window)) },
+      '/instances/:id/view': { PUT: bound(async (req) => {
+        const parsed = z.object({ viewId: z.string().trim().min(1) }).strict().safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('视图请求无效');
+        return kite.setInstanceView(req.params.id, parsed.data.viewId);
+      }) },
+      '/instances/:id': { DELETE: bound(async (req) => { await kite.closeInstance(req.params.id); return { ok: true }; }) },
       '/threads/:id/history': { GET: bound((req) => kite.history(req.params.id)) },
       '/threads/:id/raw': { GET: bound((req) => {
         const query = new URL(req.url).searchParams;

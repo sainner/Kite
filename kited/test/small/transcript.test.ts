@@ -121,9 +121,7 @@ test('后台代理跑完一回合，目录流先后收到运行中和带收尾�
   const registered = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '初始\n' }));
   const workspaceId = registered.workspace.id;
   const operationPath = (name: string) => `/workspaces/${workspaceId}/operations/${name}`;
-  const created = await kk.call('POST', operationPath('agent.start'), {
-    operationId: 'activity-agent', presentation: 'background',
-  });
+  const created = await kk.call('POST', operationPath('agent.start'), { operationId: 'activity-agent' });
   expect(created.status).toBe(200);
   const id = created.body.instanceId as string;
   const catalog = await connect(kk.url);

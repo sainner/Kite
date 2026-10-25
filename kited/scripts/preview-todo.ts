@@ -32,17 +32,17 @@ try {
   const project = await daemon.kite.addProject({ path });
   const { workspace } = await daemon.kite.createWorkspace(project.id);
   while (daemon.kite.workspace(workspace.id).workspace.status === 'preparing') await Bun.sleep(50);
-  const window = await daemon.kite.openWindow(workspace.id, { id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'custom.todo.v1' } });
-  for (const title of ['试着添加和完成待办', '关闭窗口，再从侧栏打开同一实例']) {
+  const todo = await daemon.kite.createInstance(workspace.id, { id: crypto.randomUUID(), definitionId: 'custom.todo.v1' });
+  for (const title of ['试着添加和完成待办', '缩小卡片，再从停靠栏打开同一实例']) {
     await daemon.kite.operations.invoke({ kind: 'ui' }, workspace.id, 'plugin.call', {
-      instanceId: window.target.instanceId, tool: 'todo_add', operationId: crypto.randomUUID(), arguments: { title },
+      instanceId: todo.id, tool: 'todo_add', operationId: crypto.randomUUID(), arguments: { title },
     });
   }
-  const agent = await daemon.kite.startAgent(workspace.id, { operationId: crypto.randomUUID(), title: '待办协作代理', presentation: 'background' });
+  const agent = await daemon.kite.startAgent(workspace.id, { operationId: crypto.randomUUID(), title: '待办协作代理' });
   const grants = daemon.kite.operations.grants(agent.instanceId);
   await daemon.kite.configureOperationGrants(agent.instanceId, grants.revision,
-    [...grants.grants, { operation: 'plugin.call', instanceId: window.target.instanceId, tools: ['todo_list', 'todo_add', 'todo_complete'] }]);
-  console.log(JSON.stringify({ url: daemon.url, root, workspaceId: workspace.id, instanceId: window.target.instanceId, agentId: agent.instanceId }));
+    [...grants.grants, { operation: 'plugin.call', instanceId: todo.id, tools: ['todo_list', 'todo_add', 'todo_complete'] }]);
+  console.log(JSON.stringify({ url: daemon.url, root, workspaceId: workspace.id, instanceId: todo.id, agentId: agent.instanceId }));
   console.log('待办预览已就绪；App 连接 http://127.0.0.1:5483。代理已授权但未启动，Ctrl-C 结束演示。');
 } catch (error) {
   await close();

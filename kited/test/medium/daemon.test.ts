@@ -167,7 +167,7 @@ test('Claude 常驻进程在 MCP 读取错误后继续工作，换模型后 resu
     id: 'custom.test', title: '测试', bundle: await bundle, lifetime: 'persistent',
   })).status).toBe(200);
   const pluginId = randomUUID();
-  expect((await kk.call('POST', `/workspaces/${s.workspace.id}/plugin-instances`, {
+  expect((await kk.call('POST', `/workspaces/${s.workspace.id}/instances`, {
     id: pluginId, definitionId: 'custom.test', title: '计数器',
   })).status).toBe(200);
   const grants = await kk.call('GET', `/instances/${s.id}/operation-grants`);
@@ -314,12 +314,10 @@ test('patch 的结果和快照先于下一模型请求，局部失败及服务�
     block: expect.objectContaining({ type: 'tool_use', id: patchId, name: 'patch', input: args }),
   }));
 
-  const openedFiles = await kk.call('POST', `/workspaces/${thread.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-  });
+  const openedFiles = await kk.call('POST', `/workspaces/${thread.workspace.id}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
   expect(openedFiles.status).toBe(200);
   const diffPath = `/workspaces/${thread.workspace.id}/operations/files.diff`;
-  const diffArgs = { instanceId: openedFiles.body.target.instanceId as string, diffId: payload.diff.id };
+  const diffArgs = { instanceId: openedFiles.body.id as string, diffId: payload.diff.id };
   const expectedDiff = { id: payload.diff.id, files: [
     { path: 'original.txt', before: '修改前\n', after: '修改后\n' },
     { path: 'created.txt', before: null, after: '新建正文\n' },

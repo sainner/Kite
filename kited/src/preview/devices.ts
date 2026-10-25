@@ -1,7 +1,7 @@
 /**
  * 预览目标装到哪台设备（docs/实例操作.md「目标」）：设备候选是工作机能建的模拟器型号，加上与工作机配对过的 iPhone、iPad（xcrun devicectl）。
  * 实例配置里的 device 是 {simulator: 型号} 或 {physical: 设备编号}；模拟器经 KITE_SIMULATOR、真机经 KITE_DEVICE 把编号交给目标脚本。
- * 真机拿不到实时画面，只装包。在 iPhone、iPad 上打开新建窗口时默认选中手上这台，App 按硬件型号（productType）对。
+ * 真机拿不到实时画面，只装包。在 iPhone、iPad 上新建预览时默认选中手上这台，App 按硬件型号（productType）对。
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, rmSync } from 'node:fs';

@@ -1,6 +1,6 @@
 # Bun 插件宿主
 
-本文面向 Bun 插件作者，规定包格式、MCP 接口、状态、授权与 Web 视图限制。定义、实例和窗口的共同边界见 [Agent 与插件契约](Agent与插件契约.md)。
+本文面向 Bun 插件作者，规定包格式、MCP 接口、状态、授权与 Web 视图限制。定义、实例与呈现的共同边界见 [Agent 与插件契约](Agent与插件契约.md)。
 
 ## 安装与创建
 
@@ -127,7 +127,7 @@ node_modules/.bin/bun run build:todo-plugin
 
 输出 `build/todo-plugin.json`，可在 App 导入，也可直接作为 `POST /plugin-definitions` 的请求体。创建待办实例，并向 agent 授予该实例的工具后，模型和界面使用同一份状态。停止插件进程后重新打开视图或调用工具会恢复该实例；并发更新检查状态版本，失败返回错误，不自动重放修改。
 
-`node_modules/.bin/bun run preview:todo` 在临时目录启动独立演示服务，使用本机 5483 端口，准备待办窗口和已授权但未运行的代理。它不调用模型、不读取用户的 kited 数据；Ctrl-C 后清理演示目录。已有服务占用端口时不会停止它。
+`node_modules/.bin/bun run preview:todo` 在临时目录启动独立演示服务，使用本机 5483 端口，准备待办实例和已授权但未运行的代理。它不调用模型、不读取用户的 kited 数据；Ctrl-C 后清理演示目录。已有服务占用端口时不会停止它。
 
 宿主页开发与构建入口见 [kited README](../kited/README.md#插件开发)，真实 WebKit 协议检查见 [手动验证入口](../kited/test/manual/README.md)。真机与远程多设备使用尚缺完整验收。
 

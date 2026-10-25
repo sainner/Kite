@@ -36,11 +36,9 @@ const effective = (workspace: 'read' | 'write', add: Partial<ExecutionScope> = {
 
 async function codingInstance(k: Kited) {
   const registered = await folderWorkspace(k, newDir(k.root, 'project', { 'base.txt': '原始内容\n' }));
-  const opened = await k.call('POST', `/workspaces/${registered.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
-  });
+  const opened = await k.call('POST', `/workspaces/${registered.workspace.id}/instances`, { id: randomUUID(), definitionId: 'kite.agent' });
   expect(opened.status).toBe(200);
-  return { id: opened.body.target.instanceId as string, cwd: registered.workspace.cwd };
+  return { id: opened.body.id as string, cwd: registered.workspace.cwd };
 }
 
 function calledItem(id: string, name: string, args: Json): ModelItem {
@@ -164,9 +162,7 @@ test('缓存实例采用新授权，额外目录不提升受管工具和子实�
     description: '验证撤权和额外目录',
     command: `printf denied > '${join(cwd, 'blocked-shell.txt')}' 2>/dev/null; printf allowed > '${join(outside, 'allowed.txt')}'`,
   }) });
-  await second.response.emit({ type: 'item', item: calledItem('create-child', 'agent_start', {
-    role: 'kite.work', presentation: 'background',
-  }) });
+  await second.response.emit({ type: 'item', item: calledItem('create-child', 'agent_start', { role: 'kite.work' }) });
   second.response.complete();
 
   const third = await model.call(3);

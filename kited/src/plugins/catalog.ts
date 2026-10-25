@@ -10,7 +10,7 @@ const name = z.string().regex(/^[a-z][a-z0-9._-]{0,79}$/);
 export const pluginPackageSchema = z.object({
   id: name.refine((id) => !id.startsWith('kite.'), 'kite.* 只供宿主登记'),
   title: z.string().trim().min(1).max(100),
-  lifetime: z.enum(['window', 'persistent']),
+  lifetime: z.enum(['closable', 'persistent']),
   bundle: z.string().min(1).max(4 * 1024 * 1024).refine((value) => Buffer.byteLength(value) <= 4 * 1024 * 1024, '包超过 4 MiB'),
   views: z.array(z.object({ id: name, title: z.string().trim().min(1).max(100),
     resourceUri: z.url().refine((uri) => uri.startsWith('ui://'), '视图资源须使用 ui:// URI'),
@@ -18,7 +18,7 @@ export const pluginPackageSchema = z.object({
   defaultView: name.optional(),
 }).strict().refine((value) => new Set(value.views.map((view) => view.id)).size === value.views.length
   && (value.defaultView === undefined || value.views.some((view) => view.id === value.defaultView)), '默认视图或视图 ID 无效')
-  .refine((value) => value.lifetime !== 'window' || value.views.length > 0, '随窗口回收的插件必须声明视图');
+  .refine((value) => value.lifetime !== 'closable' || value.views.length > 0, '关闭即回收的插件必须声明视图');
 export type PluginPackage = z.infer<typeof pluginPackageSchema>;
 export const packageRevision = (value: PluginPackage): string => revisionOf(value);
 

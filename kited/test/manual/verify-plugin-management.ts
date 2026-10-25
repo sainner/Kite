@@ -85,10 +85,8 @@ try {
     settle(daemon.kite.store.workspace(workspaceID)?.status);
   });
   const openBuiltin = async (definitionId: string) => {
-    const window = await request<{ target: { instanceId: string } }>('POST', `/workspaces/${workspaceID}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId },
-    });
-    return window.target.instanceId;
+    const instance = await request<{ id: string }>('POST', `/workspaces/${workspaceID}/instances`, { id: randomUUID(), definitionId });
+    return instance.id;
   };
   const callerID = await openBuiltin('kite.agent');
   await request('GET', `/threads/${callerID}/state`);
@@ -105,7 +103,7 @@ try {
   const targetID = randomUUID();
   const otherTargetID = randomUUID();
   for (const id of [targetID, otherTargetID]) {
-    await request('POST', `/workspaces/${workspaceID}/plugin-instances`, {
+    await request('POST', `/workspaces/${workspaceID}/instances`, {
       id, definitionId: 'custom.management-contract', title: '真实 MCP 目标',
     });
     await request('GET', `/instances/${id}/plugin/tools`);

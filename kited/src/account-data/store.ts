@@ -18,8 +18,8 @@ import { KiteError } from '../errors.ts';
  * 存储与同步不认种类，只有凭据要封装、目录摘要与发布记录不留冲突：旧版收到新版才有的种类照样存下、转给其他工作机，
  * 所以加种类不破坏旧版的同步。订阅变化的各模块只处理自己认识的种类，这一点要一直保持。
  */
-export type EntryKind = 'role' | 'template' | 'emblem' | 'plugin' | 'plugin-grants' | 'skill' | 'project' | 'constraints' | 'credential' | 'catalog' | 'release'
-  | 'conflict';
+export type EntryKind = 'role' | 'template' | 'emblem' | 'plugin' | 'plugin-grants' | 'skill' | 'project' | 'constraints' | 'layout' | 'credential' | 'catalog'
+  | 'release' | 'conflict';
 type Body = Record<string, unknown>;
 
 export interface Version { at: number; by: string }

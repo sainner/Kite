@@ -243,7 +243,7 @@ export class InstanceOperations {
   }
 
   /**
-   * 一次 list 的筛选与每项共有的字段，调用方与开着的窗口只查一次。
+   * 一次 list 的筛选与每项共有的字段，调用方只查一次。
    * 列出调用方够得着的实例：界面看这个工作区的全部，代理与插件按这项 list 授权的范围，含子工作区里的后代；workspaces 是要找的工作区。
    */
   private listing(caller: OperationCaller, workspaceId: string, name: 'agent.list' | 'monitor.list' | 'terminal.list') {
@@ -253,12 +253,11 @@ export class InstanceOperations {
     const self = this.kite.store.workspace(workspaceId)!;
     const workspaces = source ? [self, ...this.kite.store.descendantWorkspaces(workspaceId)] : [self];
     const names = new Map(workspaces.map((w) => [w.id, w.name]));
-    const windows = new Set(workspaces.flatMap((w) => this.kite.store.windows(w.id)).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
     return {
       workspaces: workspaces.map((w) => w.id),
       visible: (target: PluginInstance) => !source || !!range && this.reaches(source, target, range),
       item: (instance: PluginInstance) => ({ instanceId: instance.id, title: instance.title, createdBy: instance.origin?.instanceId ?? null,
-        createdAt: instance.createdAt, window: windows.has(instance.id),
+        createdAt: instance.createdAt,
         ...(instance.workspaceId !== workspaceId ? { workspace: { id: instance.workspaceId, name: names.get(instance.workspaceId) ?? '' } } : {}),
         operations: this.kite.catalog.get(instance.definitionId).operations.filter((operation) => {
           try { this.authorize(caller, workspaceId, operation, { instanceId: instance.id }); return true; } catch { return false; }
@@ -342,7 +341,7 @@ export class InstanceOperations {
           const role = instanceRole(instance);
           return { ...listing.item(instance), definitionId: instance.definitionId,
             role: role ? { id: role.id, title: instanceAgent(instance).context.title } : null,
-            presentation: instance.presentation, status: instance.status, phase: state.phase, busy: state.busy,
+            status: instance.status, phase: state.phase, busy: state.busy,
             waitingForResume: state.waitingForResume,
             state: state.waiting ? '等用户批准'
               : state.phase === 'stopping' ? '正在停止' : state.busy ? '运行中'
@@ -462,9 +461,8 @@ export class InstanceOperations {
         return this.kite.terminals.read(input.instanceId, input.offset, input.limit);
       }
       case 'preview.list': {
-        const windows = new Set(this.kite.store.windows(workspaceId).filter((window) => window.state === 'open').map((window) => window.target.instanceId));
         return { previews: this.kite.store.instances(workspaceId).filter((instance) => instance.definitionId === previewDefinitionId && instance.status === 'open')
-          .map((instance) => ({ ...this.kite.previews.describe(instance), createdBy: instance.origin?.instanceId ?? null, window: windows.has(instance.id) })) };
+          .map((instance) => ({ ...this.kite.previews.describe(instance), createdBy: instance.origin?.instanceId ?? null })) };
       }
       case 'preview.select': {
         check();
@@ -477,7 +475,7 @@ export class InstanceOperations {
         const target = this.kite.store.instance(args.instanceId as string)!;
         const owner = caller.kind !== 'ui' && target.origin?.instanceId === caller.instanceId;
         const what = name === 'preview.stop' ? '预览' : owner ? '命令' : '终端';
-        await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? `代理自己停下了这个${what}` : `另一个代理停下了这个${what}`, owner);
+        await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? `代理自己停下了这个${what}` : `另一个代理停下了这个${what}`, { quiet: owner });
         return { ok: true };
       }
       case 'monitor.list': {

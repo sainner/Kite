@@ -13,7 +13,7 @@ import type { RegisteredProject } from '../../src/account-data/registry.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { Envelope } from '../../src/events.ts';
 import type { Model } from '../../src/harness/types.ts';
-import type { Machine, Project, ThreadContext, WorkspaceModel, WorkspaceWindow } from '../../src/model.ts';
+import type { Machine, PluginInstance, Project, ThreadContext, WorkspaceModel } from '../../src/model.ts';
 import type { PluginDefinition } from '../../src/plugins/definitions.ts';
 import { bunPluginSource } from '../fixtures/bun-plugin-source.ts';
 import { newRepo, writeFiles } from '../util.ts';
@@ -232,20 +232,14 @@ async function main() {
     const history = await threadStream.next().finally(() => threadStream.close());
     if (history.type !== 'thread.history') throw new Error(`线程流未先返回历史快照：${history.type}`);
 
-    const mainPlugin = await call<WorkspaceWindow>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/windows`, {
-      id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
+    const mainPlugin = await call<PluginInstance>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/instances`, {
+      id: crypto.randomUUID(), definitionId: 'kite.files',
     }, machine.body.id);
-    if (mainPlugin.status !== 200 || mainPlugin.body.target.viewId !== 'files') {
-      throw new Error(`创建插件主视图失败：${mainPlugin.status} ${JSON.stringify(mainPlugin.body)}`);
-    }
-    const existingPlugin = await call<WorkspaceWindow>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/windows`, {
-      id: crypto.randomUUID(), content: { kind: 'open', ...mainPlugin.body.target },
-    }, machine.body.id);
-    if (existingPlugin.status !== 200 || existingPlugin.body.id !== mainPlugin.body.id) {
-      throw new Error(`重新打开插件主视图未去重：${existingPlugin.status} ${JSON.stringify(existingPlugin.body)}`);
+    if (mainPlugin.status !== 200 || mainPlugin.body.view !== 'files') {
+      throw new Error(`创建浏览实例失败：${mainPlugin.status} ${JSON.stringify(mainPlugin.body)}`);
     }
     const filesPath = `/workspaces/${workspace.body.workspace.id}/operations/`;
-    const fileTarget = { instanceId: mainPlugin.body.target.instanceId };
+    const fileTarget = { instanceId: mainPlugin.body.id };
     const directory = await call<unknown>(daemon.url, 'POST', filesPath + 'files.list', fileTarget, machine.body.id);
     const page = await call<unknown>(daemon.url, 'POST', filesPath + 'files.read', {
       ...fileTarget, path: 'base.txt',
@@ -274,7 +268,7 @@ async function main() {
       id: 'custom.decode-state', title: '状态解码合同', bundle: await built.outputs[0]!.text(), lifetime: 'persistent',
     }, machine.body.id);
     const pluginID = crypto.randomUUID();
-    const plugin = await call<unknown>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/plugin-instances`, {
+    const plugin = await call<unknown>(daemon.url, 'POST', `/workspaces/${workspace.body.workspace.id}/instances`, {
       id: pluginID, definitionId: 'custom.decode-state', title: '状态解码合同',
     }, machine.body.id);
     const incremented = await call<unknown>(daemon.url, 'POST', `/instances/${pluginID}/plugin/tools/state`, {

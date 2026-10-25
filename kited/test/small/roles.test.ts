@@ -309,11 +309,9 @@ test('只读审查的空代理改选为工作后拿到协作授权，再改选�
     });
     expect(started.status).toBe(200);
     const id = started.body.instanceId as string;
-    const files = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-    });
+    const files = await k.call('POST', `/workspaces/${workspaceId}/instances`, { id: crypto.randomUUID(), definitionId: 'kite.files' });
     expect(files.status).toBe(200);
-    const filesGrant: OperationGrant = { operation: 'files.read', targets: { kind: 'instances', instanceIds: [files.body.target.instanceId] } };
+    const filesGrant: OperationGrant = { operation: 'files.read', targets: { kind: 'instances', instanceIds: [files.body.id] } };
 
     const operationsPath = `/instances/${id}/operation-grants`;
     const grants = async () => {

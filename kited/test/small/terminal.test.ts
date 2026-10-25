@@ -93,18 +93,18 @@ async function workspaceOf(k: Kited): Promise<string> {
   return (await folderWorkspace(k, repo)).workspace.id;
 }
 
-/** 新建终端并开窗口，带 command 时 shell 起好后把它打进去。request 是发出的请求，原样再发一次就是重试。 */
-async function openTerminal(k: Kited, workspaceId: string, command?: string): Promise<{ windowId: string; instanceId: string; request: object }> {
-  const windowId = crypto.randomUUID();
-  const request = { id: windowId, content: { kind: 'create', definitionId: terminalDefinitionId, command } };
-  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, request);
+/** 新建终端实例，带 command 时 shell 起好后把它打进去。request 是发出的请求，原样再发一次就是重试。 */
+async function openTerminal(k: Kited, workspaceId: string, command?: string): Promise<{ instanceId: string; request: object }> {
+  const instanceId = crypto.randomUUID();
+  const request = { id: instanceId, definitionId: terminalDefinitionId, command };
+  const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, request);
   expect(opened.status).toBe(200);
-  expect(opened.body).toMatchObject({ id: windowId, target: { viewId: 'terminal' } });
-  return { windowId, instanceId: opened.body.target.instanceId as string, request };
+  expect(opened.body.id).toBe(instanceId);
+  return { instanceId, request };
 }
 
-async function closeWindow(k: Kited, workspaceId: string, windowId: string): Promise<void> {
-  const closed = await k.call('DELETE', `/workspaces/${workspaceId}/windows/${windowId}`);
+async function closeInstance(k: Kited, instanceId: string): Promise<void> {
+  const closed = await k.call('DELETE', `/instances/${instanceId}`);
   expect(closed.status).toBe(200);
 }
 
@@ -193,33 +193,12 @@ test('终端输入有回显并执行，后接入的设备画面里有之前的�
   }
 }, 5_000);
 
-// 配合：实例回收要等「进程结束」和「没有窗口」两件事都成立，两者先后都可能；进程退出回调与关窗口都在工作区控制队列里改实例。
-test('运行中关掉最后一个窗口实例照跑，之后进程退出就回收；窗口开着时退出记为 exited，关掉窗口才回收', async () => {
+// 配合：进程退出回调与关闭实例都在工作区控制队列里改实例；用户开的终端自己退出时留着、记下退出码。
+test('终端自己退出记为 exited 留着，关闭实例才回收', async () => {
   const { k, machineId } = await start();
   const devices: Device[] = [];
   try {
     const workspaceId = await workspaceOf(k);
-
-    // 后台：shell 停在读 fifo 上，关掉窗口后再往 fifo 写一行让它自己退出
-    const fifo = join(k.root, 'go');
-    expect(Bun.spawnSync(['mkfifo', fifo], { env: ENV() }).exitCode).toBe(0);
-    const background = await openTerminal(k, workspaceId);
-    const a = new Device(k.url, machineId, background.instanceId);
-    devices.push(a);
-    await a.snapshot();
-    a.type(`echo wait$((1+1)); read x < '${fifo}'; exit 3\n`);
-    await a.waitOutput('wait2');
-    a.close();
-    await closeWindow(k, workspaceId, background.windowId);
-    const kept = await aggregate(k, workspaceId);
-    expect(kept.windows.filter((w) => w.state === 'open' && w.target.instanceId === background.instanceId)).toEqual([]);
-    expect(stateIn(kept, background.instanceId)).toMatchObject({ phase: 'running' });
-
-    const writer = Bun.spawn(['sh', '-c', 'echo > "$1"', 'sh', fifo], { env: ENV() });
-    expect(await writer.exited).toBe(0);
-    await workspaceUntil(k, workspaceId, (model) => !instanceIn(model, background.instanceId), '没有窗口的终端退出后回收');
-
-    // 前台：窗口开着时退出，实例留着并记下退出码
     const foreground = await openTerminal(k, workspaceId);
     const b = new Device(k.url, machineId, foreground.instanceId);
     devices.push(b);
@@ -229,10 +208,10 @@ test('运行中关掉最后一个窗口实例照跑，之后进程退出就回�
     const exited = await workspaceUntil(k, workspaceId, (model) => {
       const state = stateIn(model, foreground.instanceId);
       return state?.phase === 'exited' && state;
-    }, '有窗口的终端退出后记为 exited');
+    }, '终端退出后记为 exited');
     expect(exited).toMatchObject({ phase: 'exited', exitCode: 5 });
     b.close();
-    await closeWindow(k, workspaceId, foreground.windowId);
+    await closeInstance(k, foreground.instanceId);
     expect(instanceIn(await aggregate(k, workspaceId), foreground.instanceId)).toBeUndefined();
   } finally {
     for (const device of devices) device.close();
@@ -256,25 +235,24 @@ async function screenOf(device: Device) {
  * 登录 shell 起来时常先输出几行、停一下才出提示符，这里用先打一行、停 50 毫秒再 exec 交互式 sh 的启动命令模拟（停的时间短于 kited 等输出停下的那段）；
  * 实测在停的期间打进去，第二行以后的命令都显示两遍。sh 是 bash 3.2，没开括号粘贴，命令的换行换成回车逐行打进去。
  * 这些要起真 shell 才看得出：命令在画面里只出现一次、每一行都执行了、跑完 shell 还在。
- * 配合：带命令新建经窗口请求的回执去重，同一请求重试返回原窗口，不另建实例。
+ * 配合：带命令新建经请求的回执去重，同一请求重试返回原实例，不另建实例。
  */
-test('带命令新建终端：等 shell 起来才把多行命令逐行打进去，每行执行一次、命令在画面里只显示一遍，跑完 shell 还在；同一请求重试返回原窗口、不另建实例', async () => {
+test('带命令新建终端：等 shell 起来才把多行命令逐行打进去，每行执行一次、命令在画面里只显示一遍，跑完 shell 还在；同一请求重试返回原实例、不另建实例', async () => {
   const { k, machineId } = await start(undefined, ['/bin/sh', '-c', 'echo 正在启动; sleep 0.05; exec /bin/sh']);
   let device: Device | undefined;
   try {
     const workspaceId = await workspaceOf(k);
-    const { windowId, instanceId, request } = await openTerminal(k, workspaceId, '# 先打个招呼\necho one-$((1+1))\n\necho two-$((2+3))');
+    const { instanceId, request } = await openTerminal(k, workspaceId, '# 先打个招呼\necho one-$((1+1))\n\necho two-$((2+3))');
 
     device = new Device(k.url, machineId, instanceId);
     const { shown, times } = await screenOf(device);
     await shown('two-5');
 
-    const retried = await k.call('POST', `/workspaces/${workspaceId}/windows`, request);
+    const retried = await k.call('POST', `/workspaces/${workspaceId}/instances`, request);
     expect(retried.status).toBe(200);
-    expect(retried.body).toMatchObject({ id: windowId, target: { instanceId, viewId: 'terminal' } });
+    expect(retried.body).toMatchObject({ id: instanceId });
     const model = await aggregate(k, workspaceId);
     expect(model.instances.filter((i) => i.definitionId === terminalDefinitionId).map((i) => i.id)).toEqual([instanceId]);
-    expect(model.windows.filter((w) => w.state === 'open').map((w) => w.id)).toEqual([windowId]);
 
     // 跑完 shell 还在：自己再打一行能执行；等到它的输出时，前面命令的回显早已到齐
     device.type('echo again-$((3*3))\n');
@@ -333,24 +311,20 @@ test.skipIf(!existsSync(zsh))('zsh 先输出一段、停顿超过 200 毫秒才�
 }, 5_000);
 
 // 配合：跨两次 kited 启动。关闭时停掉还在跑的终端，但不把它记为结束；重启时按结束状态认出哪些是随 kited 结束的，
-// 不论有没有窗口都连窗口一起回收、删掉会话目录。关闭前已经自己退出的终端早已记为 exited，有窗口就留着，接入拿到存下的画面。
-test('kited 正常关闭再启动后，关闭时还在跑的终端不论有没有窗口都连窗口一起回收、会话目录删掉；之前已自己退出、开着窗口的留着，接入看到最后的画面', async () => {
+// 回收、删掉会话目录。关闭前已经自己退出的终端早已记为 exited，留着，接入拿到存下的画面。
+test('kited 正常关闭再启动后，关闭时还在跑的终端回收、会话目录删掉；之前已自己退出的留着，接入看到最后的画面', async () => {
   const first = await start();
   let second: Awaited<ReturnType<typeof start>> | undefined;
   const devices: Device[] = [];
   try {
     const workspaceId = await workspaceOf(first.k);
-    const windowed = await openTerminal(first.k, workspaceId);
-    const a = new Device(first.k.url, first.machineId, windowed.instanceId);
+    const running = await openTerminal(first.k, workspaceId);
+    const a = new Device(first.k.url, first.machineId, running.instanceId);
     devices.push(a);
     await a.snapshot();
     a.type('echo before$((2+3))\n');
     await a.waitOutput('before5');
     a.close();
-
-    const background = await openTerminal(first.k, workspaceId);
-    await closeWindow(first.k, workspaceId, background.windowId);
-    expect(stateIn(await aggregate(first.k, workspaceId), background.instanceId)).toMatchObject({ phase: 'running' });
 
     const ended = await openTerminal(first.k, workspaceId);
     const c = new Device(first.k.url, first.machineId, ended.instanceId);
@@ -360,23 +334,18 @@ test('kited 正常关闭再启动后，关闭时还在跑的终端不论有没�
     await c.waitControl((control) => control.type === 'exit', '进程结束');
     c.close();
     await workspaceUntil(first.k, workspaceId, (model) => stateIn(model, ended.instanceId)?.phase === 'exited',
-      '开着窗口自己退出的终端记为 exited');
+      '自己退出的终端记为 exited');
 
     await first.k.halt();
-    const windowedDir = join(first.k.home, 'sessions', windowed.instanceId);
-    expect(existsSync(windowedDir)).toBe(true);
+    const runningDir = join(first.k.home, 'sessions', running.instanceId);
+    expect(existsSync(runningDir)).toBe(true);
     second = await start(first.k.root);
     const { k } = second;
-    const restored = await workspaceUntil(k, workspaceId,
-      (model) => !instanceIn(model, background.instanceId) && !instanceIn(model, windowed.instanceId) && model,
+    const restored = await workspaceUntil(k, workspaceId, (model) => !instanceIn(model, running.instanceId) && model,
       '关闭时还在跑的终端在重启后回收');
-    const windowsOf = (instanceId: string) => restored.windows.filter((w) => w.target.instanceId === instanceId);
-    expect(windowsOf(windowed.instanceId)).toEqual([]);
-    expect(windowsOf(background.instanceId)).toEqual([]);
-    expect(existsSync(windowedDir)).toBe(false);
+    expect(existsSync(runningDir)).toBe(false);
 
     expect(stateIn(restored, ended.instanceId)).toMatchObject({ phase: 'exited', exitCode: 6 });
-    expect(windowsOf(ended.instanceId)).toEqual([expect.objectContaining({ id: ended.windowId, state: 'open' })]);
     const b = new Device(k.url, second.machineId, ended.instanceId);
     devices.push(b);
     const snapshot = await b.snapshot();
@@ -482,11 +451,9 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
     const bun = process.execPath;
 
     const open = async () => {
-      const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-        id: crypto.randomUUID(), content: { kind: 'create', definitionId: terminalDefinitionId },
-      });
+      const instanceId = crypto.randomUUID();
+      const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, { id: instanceId, definitionId: terminalDefinitionId });
       expect(opened.status).toBe(200);
-      const instanceId = opened.body.target.instanceId as string;
       const device = new Device(k.url, machineId, instanceId);
       devices.push(device);
       await device.snapshot();
@@ -525,22 +492,15 @@ test('终端从进程树找出监听端口并认出 HTTP，本机端口整组转
     expect(forwards.values.some((ports) => ports.includes(ownPort))).toBe(false);
 
     // 一个终端停下只去掉它自己的端口，另一个的照常转发
-    // 运行时与配合：停止给进程组发 SIGHUP，交互式 sh 收到就退出；操作要等进程退出、状态记好才返回。
+    // 运行时与配合：停止给进程组发 SIGHUP，交互式 sh 收到就退出；操作要等进程退出才返回。
     let since = forwards.mark();
     await stop(second.instanceId);
-    expect(stateIn(await aggregate(k, workspaceId), second.instanceId)).toMatchObject({ phase: 'exited', reason: '已在界面上停止' });
     await forwards.exactly([rawPort, v4Port], since);
-    const secondEnded = stateIn(await aggregate(k, workspaceId), second.instanceId);
-    expect(secondEnded).toMatchObject({ phase: 'exited' });
-    expect(secondEnded).not.toHaveProperty('ports');
     expect(stateIn(await aggregate(k, workspaceId), first.instanceId)?.ports).toEqual(firstPorts);
 
     since = forwards.mark();
     await stop(first.instanceId);
     await forwards.exactly([], since);
-    const firstEnded = stateIn(await aggregate(k, workspaceId), first.instanceId);
-    expect(firstEnded).toMatchObject({ phase: 'exited' });
-    expect(firstEnded).not.toHaveProperty('ports');
   } finally {
     for (const device of devices) device.close();
     // 测试中途失败时终端可能没停，后台任务留着，按 pid 清掉。
@@ -583,7 +543,6 @@ test('停止终端时，shell 用作业控制放进别的进程组、忽略 SIGH
 
     const stopped = await k.call('POST', `/workspaces/${workspaceId}/operations/terminal.stop`, { operationId: crypto.randomUUID(), instanceId });
     expect(stopped.status).toBe(200);
-    expect(stateIn(await aggregate(k, workspaceId), instanceId)).toMatchObject({ phase: 'exited' });
     const left = processInfo(job);
     expect(left && !left.stat.includes('Z') ? `仍在运行，状态 ${left.stat}` : '已结束').toBe('已结束');
   } finally {
@@ -784,7 +743,6 @@ test('代理的 shell 运行中用户发来消息：命令转到没有窗口、o
   expect(terminalState(terminal)).toMatchObject({ phase: 'running' });
   const aggregate = (await k.call('GET', `/workspaces/${workspaceId}`)).body as WorkspaceModel;
   expect(aggregate.instances.map((instance) => instance.id)).toContain(terminal.id);
-  expect(aggregate.windows.filter((window) => window.state === 'open' && window.target.instanceId === terminal.id)).toEqual([]);
 
   // 输出经 kited 读管道再写日志，等日志里有了再读，免得和写入赛跑。
   const log = (terminal.config.terminal as { log: string }).log;

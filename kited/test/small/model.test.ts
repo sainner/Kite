@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import { type FakeGit, startFakeGit } from '../fake-git.ts';
 import {
-  addProject, after, call, chatgptLogin, connect, createWorkspace, folderWorkspace, machine, mark, openWorkspace, startKited, synced, type Kited,
+  addProject, after, call, chatgptLogin, connect, createWorkspace, folderWorkspace, machine, mark, startKited, synced, type Kited,
 } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
@@ -35,7 +35,7 @@ afterEach(async () => {
 type WorkspaceWireEvent = {
   type: string;
   workspaceId?: string;
-  model?: { workspace: { id: string }; instances?: unknown[]; windows?: unknown[] };
+  model?: { workspace: { id: string }; instances?: unknown[] };
 };
 
 /** 工作区 SSE 首帧是完整聚合；调用方显式关闭流，避免测试留下打开的 HTTP 连接。 */
@@ -73,7 +73,6 @@ test('添加项目后首线程工作时即可并行创建同工作区线程，�
     definitionId: 'kite.agent',
     title: '首线程',
     status: 'open',
-    presentation: 'window',
   });
   const context = await kk.call('GET', `/threads/${firstThreadId}`);
   expect(context.status).toBe(200);
@@ -209,7 +208,6 @@ test('重启后保留项目到线程的 SQLite 关系，归档工作区删除工
       workspaceId: workspace.workspace.id,
       definitionId: 'kite.agent',
       status: 'open',
-      presentation: 'window',
     })],
   });
   const checkouts = await call(restarted.url, 'GET', `/checkouts?project=${context.project.id}`);
@@ -277,10 +275,10 @@ test('两台工作机登记同一远程得到同一项目 ID，并发登记遇�
 
 /*
  * 依赖 HTTP 命令收据、SQLite 事务、工作区 SSE 首帧和服务重启的配合：同一命令重试
- * 不能重复建实例或窗口；随窗口实例回收后，关闭记录和请求收据在重启后仍不能复活旧目标。
+ * 不能重复建实例；关闭即回收的实例回收后，请求收据在重启后仍不能复活旧实例。
  */
-test('插件窗口命令去重，重连保留打开目标且回收后的关窗收据跨重启不复活实例', async () => {
-  const root = makeTemp('window-model-');
+test('新建实例命令去重，重连保留实例且回收后的收据跨重启不复活实例', async () => {
+  const root = makeTemp('instance-model-');
   roots.push(root);
   const home = join(root, 'kite');
   const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
@@ -295,58 +293,33 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
     firstClient = await connectWorkspace(daemon.url, machineId, workspace.workspace.id);
     await firstClient.events.wait((event) => event.type === 'workspace.model' && event.workspaceId === workspace.workspace.id);
     const requestId = randomUUID();
-    const main = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: requestId, content: { kind: 'create', definitionId: 'kite.files' },
+    const main = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/instances`, {
+      id: requestId, definitionId: 'kite.files',
     }, machineId);
     expect(main.status).toBe(200);
-    // Bun 的 objectContaining 可能会改写嵌套对象；先复制原始 HTTP JSON，再用于后续重试和目标断言。
-    const mainWindow = structuredClone(main.body);
-    const target = mainWindow.target as { instanceId?: string; viewId?: string } | undefined;
-    if (typeof target?.instanceId !== 'string' || typeof target.viewId !== 'string') {
-      throw new Error(`新插件窗口没有返回完整目标：${JSON.stringify(mainWindow)}`);
-    }
-    expect(structuredClone(mainWindow)).toMatchObject({
-      workspaceId: workspace.workspace.id,
-      target: { instanceId: target.instanceId, viewId: 'files' },
-      state: 'open',
-    });
+    // Bun 的 objectContaining 可能会改写嵌套对象；先复制原始 HTTP JSON，再用于后续重试断言。
+    const mainInstance = structuredClone(main.body);
+    expect(mainInstance.id).toBe(requestId);
     await firstClient.events.wait((event) => event.type === 'workspace.changed' && event.workspaceId === workspace.workspace.id);
     const mainModel = await call(daemon.url, 'GET', '/workspaces', undefined, machineId);
     const mainAggregate = mainModel.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
     expect(mainAggregate.instances).toEqual([expect.objectContaining({
-      id: target.instanceId,
+      id: requestId,
       workspaceId: workspace.workspace.id,
       definitionId: 'kite.files',
       status: 'open',
-      presentation: 'window',
     })]);
     expect(mainAggregate.threads).toEqual([]);
 
-    const retried = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: requestId, content: { kind: 'create', definitionId: 'kite.files' },
+    const retried = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/instances`, {
+      id: requestId, definitionId: 'kite.files',
     }, machineId);
     expect(retried.status).toBe(200);
-    expect(retried.body).toEqual(mainWindow);
-    const changedContent = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: requestId, content: { kind: 'create', definitionId: 'kite.terminal' },
+    expect(retried.body).toEqual(mainInstance);
+    const changedContent = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/instances`, {
+      id: requestId, definitionId: 'kite.terminal',
     }, machineId);
     expect(changedContent.status).toBe(409);
-
-    const existingRequestId = randomUUID();
-    const existing = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: existingRequestId, content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
-    }, machineId);
-    if (existing.status !== 200) throw new Error(`重新打开插件目标失败：${existing.status} ${JSON.stringify({ target, response: existing.body })}`);
-    expect(existing.body.id).toBe(mainWindow.id);
-    const undeclaredView = await call(daemon.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: 'secondary' },
-    }, machineId);
-    expect(undeclaredView.status).toBe(400);
-    const otherWorkspace = await openWorkspace(daemon, workspace.project.id);
-    expect((await call(daemon.url, 'POST', `/workspaces/${otherWorkspace.workspace.id}/windows`, {
-      id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
-    }, machineId)).status).toBe(404);
-    expect((await call(daemon.url, 'DELETE', `/workspaces/${otherWorkspace.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(404);
 
     await firstClient.close();
     firstClient = undefined;
@@ -355,9 +328,8 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
       && event.workspaceId === workspace.workspace.id);
     const model = snapshot.model! as any;
     expect(model.instances).toEqual([
-      expect.objectContaining({ id: target.instanceId, workspaceId: workspace.workspace.id, definitionId: 'kite.files' }),
+      expect.objectContaining({ id: requestId, workspaceId: workspace.workspace.id, definitionId: 'kite.files' }),
     ]);
-    expect(model.windows.map((window: any) => window.id)).toEqual([mainWindow.id]);
 
     await reconnected.close();
     reconnected = undefined;
@@ -369,39 +341,27 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
     expect(restored.status).toBe(200);
     const persisted = restored.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
     expect(persisted.instances).toEqual([
-      expect.objectContaining({ id: target.instanceId, workspaceId: workspace.workspace.id, definitionId: 'kite.files' }),
+      expect.objectContaining({ id: requestId, workspaceId: workspace.workspace.id, definitionId: 'kite.files' }),
     ]);
-    expect(persisted.windows.map((window: any) => window.id)).toEqual([mainWindow.id]);
 
-    expect((await call(restarted.url, 'DELETE', `/workspaces/${workspace.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(200);
-    expect((await call(restarted.url, 'DELETE', `/workspaces/${workspace.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(200);
-    expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: existingRequestId, content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
-    }, machineId)).status).toBe(409);
-    const closedId = await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: requestId, content: { kind: 'create', definitionId: 'kite.files' },
+    expect((await call(restarted.url, 'DELETE', `/instances/${requestId}`, undefined, machineId)).status).toBe(200);
+    const closedId = await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/instances`, {
+      id: requestId, definitionId: 'kite.files',
     }, machineId);
     expect(closedId.status).toBe(409);
-    const reopened = await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: randomUUID(), content: { kind: 'open', instanceId: target.instanceId, viewId: target.viewId },
-    }, machineId);
-    expect(reopened.status).toBe(404);
     const openOnly = await call(restarted.url, 'GET', '/workspaces', undefined, machineId);
     const afterClose = openOnly.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
     expect(afterClose.instances).toEqual([]);
-    expect(afterClose.windows).toEqual([]);
     await restarted.stop();
     restarted = startDaemon({ home, port: 0, lightTasks: false });
-    expect((await call(restarted.url, 'DELETE', `/workspaces/${workspace.workspace.id}/windows/${mainWindow.id}`, undefined, machineId)).status).toBe(200);
-    expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: requestId, content: { kind: 'create', definitionId: 'kite.files' },
+    expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/instances`, {
+      id: requestId, definitionId: 'kite.files',
     }, machineId)).status).toBe(409);
     const afterRestart = await call(restarted.url, 'GET', '/workspaces', undefined, machineId);
-    expect(afterRestart.body.find((entry: any) => entry.workspace.id === workspace.workspace.id))
-      .toMatchObject({ instances: [], windows: [] });
+    expect(afterRestart.body.find((entry: any) => entry.workspace.id === workspace.workspace.id)).toMatchObject({ instances: [] });
     expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/archive`, { force: true }, machineId)).status).toBe(200);
-    expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
+    expect((await call(restarted.url, 'POST', `/workspaces/${workspace.workspace.id}/instances`, {
+      id: randomUUID(), definitionId: 'kite.files',
     }, machineId)).status).toBe(409);
   } finally {
     const closed = await Promise.allSettled([firstClient?.close(), reconnected?.close()]);
@@ -410,27 +370,17 @@ test('插件窗口命令去重，重连保留打开目标且回收后的关窗�
 }, 1000);
 
 /*
- * 依赖窗口关闭、运行中 harness、agent 实例投影和工作区聚合筛选的配合：创建 agent
- * 窗口本身不能启动模型；关闭它也不能打断已经开始的回合，归档实例会收起关联窗口。
+ * 依赖运行中 harness、agent 实例投影和工作区聚合筛选的配合：新建空 agent 实例本身不能启动模型；归档停下执行、实例记为 archived。
  */
-test('运行中的线程关闭窗口后继续执行，重新打开目标且归档线程会收起窗口', async () => {
+test('新建空代理不启动模型，归档后实例记为 archived', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
   const workspace = await folderWorkspace(kk, newDir(kk.root, 'project', { 'base.txt': '原始\n' }));
 
-  const opened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
-  });
+  const threadId = randomUUID();
+  const opened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/instances`, { id: threadId, definitionId: 'kite.agent' });
   expect(opened.status).toBe(200);
-  const openedWindow = structuredClone(opened.body);
-  const threadId = openedWindow.target.instanceId as string;
-  if (typeof threadId !== 'string') throw new Error(`新 agent 窗口没有返回实例 ID：${JSON.stringify(openedWindow)}`);
-  expect(structuredClone(openedWindow)).toMatchObject({
-    workspaceId: workspace.workspace.id,
-    target: { instanceId: expect.any(String), viewId: 'conversation' },
-    state: 'open',
-  });
   expect(model.calls.values).toHaveLength(0);
   const createdAggregate = (await kk.call('GET', '/workspaces')).body
     .find((entry: any) => entry.workspace.id === workspace.workspace.id);
@@ -440,28 +390,11 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
     workspaceId: workspace.workspace.id,
     definitionId: 'kite.agent',
     status: 'open',
-    presentation: 'window',
   })]);
   expect((await kk.call('POST', `/threads/${threadId}/messages`, { text: '保持执行' })).status).toBe(200);
   const running = await model.call(1);
-
-  expect((await kk.call('DELETE', `/workspaces/${workspace.workspace.id}/windows/${openedWindow.id}`)).status).toBe(200);
-  expect((await kk.call('DELETE', `/workspaces/${workspace.workspace.id}/windows/${openedWindow.id}`)).status).toBe(200);
-  expect(running.signal.aborted).toBe(false);
   const activeThread = await kk.call('GET', `/threads/${threadId}`);
   expect(activeThread.body).toMatchObject({ id: threadId, workspace: { id: workspace.workspace.id }, status: 'open', busy: true });
-
-  const reopened = await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'open', instanceId: threadId, viewId: 'conversation' },
-  });
-  expect(reopened.status).toBe(200);
-  const aggregation = await kk.call('GET', '/workspaces');
-  const visible = aggregation.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
-  expect(visible.windows).toEqual([expect.objectContaining({
-    id: reopened.body.id,
-    target: { instanceId: threadId, viewId: 'conversation' },
-  })]);
-  expect(running.signal.aborted).toBe(false);
 
   running.response.complete();
   await kk.waitEvent((event) => event.type === 'idle' && event.threadId === threadId);
@@ -469,10 +402,6 @@ test('运行中的线程关闭窗口后继续执行，重新打开目标且归�
   await kk.waitEvent((event) => event.type === 'thread.changed' && event.threadId === threadId && event.status === 'archived');
   const archived = await kk.call('GET', '/workspaces');
   const afterArchive = archived.body.find((entry: any) => entry.workspace.id === workspace.workspace.id);
-  expect(afterArchive.windows).toEqual([]);
   expect(afterArchive.threads).toEqual([expect.objectContaining({ instanceId: threadId, runtime: 'harness', nativeId: expect.any(String) })]);
   expect(afterArchive.instances).toEqual([expect.objectContaining({ id: threadId, status: 'archived' })]);
-  expect((await kk.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: randomUUID(), content: { kind: 'open', instanceId: threadId, viewId: 'conversation' },
-  })).status).toBe(409);
 }, 1000);

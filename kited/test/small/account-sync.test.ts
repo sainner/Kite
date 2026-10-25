@@ -225,15 +225,13 @@ test('A 建、改的角色同步到 B 后是同一版本，B 用同步前的版�
   expect(b.daemon.kite.catalog.installed(pack.id)).toBe(false);
 
   const workspace = await folderWorkspace(b, newDir(b.root, 'project', { 'base.txt': '原始\n' }));
-  const opened = await b.call('POST', `/workspaces/${workspace.workspace.id}/windows`, {
-    id: crypto.randomUUID(), content: { kind: 'create', definitionId: pack.id },
-  });
+  const opened = await b.call('POST', `/workspaces/${workspace.workspace.id}/instances`, { id: crypto.randomUUID(), definitionId: pack.id });
   expect(opened.status).toBe(200);
   expect(b.daemon.kite.catalog.installed(pack.id)).toBe(true);
   expect(b.daemon.kite.catalog.package(pack.id).bundle).toBe(pack.bundle);
   expect(b.daemon.kite.catalog.get(pack.id).revision).toBe(installed.body.revision);
   const instance = (await b.call('GET', `/workspaces/${workspace.workspace.id}`)).body.instances
-    .find((entry: { id: string }) => entry.id === opened.body.target.instanceId);
+    .find((entry: { id: string }) => entry.id === opened.body.id);
   expect(instance.config.packageRevision).toBe(installed.body.revision);
 }, 1000);
 
@@ -270,7 +268,7 @@ test('A 改的插件定义级授权同步到 B 后两边都推 plugin 目录变�
 
   const workspace = await folderWorkspace(b, newDir(b.root, 'project', { 'a.txt': 'A\n' }));
   const instanceId = crypto.randomUUID();
-  expect((await b.call('POST', `/workspaces/${workspace.workspace.id}/plugin-instances`, {
+  expect((await b.call('POST', `/workspaces/${workspace.workspace.id}/instances`, {
     id: instanceId, definitionId: pack.id,
   })).status).toBe(200);
   const instanceGrants = async () => (await b.call('GET', `/instances/${instanceId}/operation-grants`)).body.grants;

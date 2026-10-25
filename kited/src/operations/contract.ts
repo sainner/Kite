@@ -32,10 +32,10 @@ const target = z.object({ operationId: id, instanceId: id }).strict();
 const ok = z.object({ ok: z.literal(true) }).strict();
 const fileEntry = z.object({ name: id, path: id, kind: z.enum(['file', 'directory', 'symlink', 'other']) }).strict();
 /**
- * 三种 list 共有的字段：谁建的（没有时是用户在界面上开的）、什么时候、有没有窗口、调用方获准的操作；
+ * 三种 list 共有的字段：谁建的（没有时是用户在界面上开的）、什么时候、调用方获准的操作；
  * 在子工作区里的另带所在的工作区。
  */
-const listed = { instanceId: id, title: z.string(), createdBy: id.nullable(), createdAt: z.number(), window: z.boolean(), operations: z.array(id),
+const listed = { instanceId: id, title: z.string(), createdBy: id.nullable(), createdAt: z.number(), operations: z.array(id),
   workspace: z.object({ id, name: z.string() }).strict().optional() };
 /**
  * 预览的一项：目标、设备、画面种类，网页另带主端口和在哪看（device 是用户设备上的网页视图），App 窗口另带 App；分给目标的端口段与进程状态同终端。
@@ -51,7 +51,7 @@ const previewFrame = z.object({ ...preview, ...frame }).strict();
 const cell = { browser: z.enum(workstationBrowsers).optional(), width: viewportEdge.optional(), height: viewportEdge.optional() };
 const coordinate = z.array(z.number().min(0)).length(2);
 const summary = z.object({
-  ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(), presentation: z.enum(['window', 'inline', 'background']),
+  ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(),
   status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
   busy: z.boolean(), waitingForResume: z.boolean(),
   /** 一行状态：空闲、运行中、等用户批准或上一回合失败。 */
@@ -73,13 +73,13 @@ export const operationContracts = {
   },
   'agent.start': {
     title: '创建 agent', description: [
-      '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；带 prompt 的回合结束时把结果回报给你。只在用户要求在界面上看着它时传 presentation: window。',
+      '在当前工作区按角色创建 agent 实例。role 是角色 ID，省略时用默认角色 kite.work（工作）；内置的还有 kite.review（只读审查）。省略 prompt 只创建空会话；带 prompt 的回合结束时把结果回报给你。只在用户要求在界面上看着它时传 show: true。',
       'isolation: workspace 把它放进一个子工作区：从当前工作区最近的快照开出（含还没集成的改动），构建、测试和改动都与这里隔开。适合要改很多文件、会和别的代理互相干扰的任务；做完用 agent_merge 合回，不要的停着即可，由用户放弃。',
     ].join(''),
     tool: 'agent_start', effect: 'create', retry: 'receipt',
     input: z.object({ operationId: id, role: id.optional(), title: text.optional(), prompt: text.optional(),
-      presentation: z.enum(['window', 'inline', 'background']).default('background'), isolation: z.enum(['workspace']).optional() }).strict(),
-    output: z.object({ instanceId: id, windowId: id.optional(), workspaceId: id.optional() }).strict(),
+      show: z.boolean().optional(), isolation: z.enum(['workspace']).optional() }).strict(),
+    output: z.object({ instanceId: id, workspaceId: id.optional() }).strict(),
   },
   'agent.list': {
     title: '查询 agent', description: '查询你协作范围内的 agent 实例：谁建的、一行状态及你获准的操作。',
@@ -226,7 +226,7 @@ export const operationContracts = {
   'preview.list': {
     title: '列出预览', description: '列出本工作区的预览：目标、设备、画面种类（web、simulator、app，没有画面是 none）与网页端口、在哪看（device 是用户设备上的网页视图），进程状态，谁起的（createdBy 为空是用户）、有没有窗口。',
     tool: 'preview_list', effect: 'read', retry: 'read', input: z.object({}).strict(),
-    output: z.object({ previews: z.array(z.object({ ...preview, createdBy: id.nullable(), window: z.boolean() }).strict()) }).strict(),
+    output: z.object({ previews: z.array(z.object({ ...preview, createdBy: id.nullable() }).strict()) }).strict(),
   },
   'preview.stop': {
     title: '停止预览', description: '停下预览的进程（整个进程树），等到结束才返回；没有窗口的预览随之回收。你自己停下的不再发结束通知。',
