@@ -108,8 +108,9 @@ struct AddLayoutButton: View {
         }
         .buttonStyle(.pointingPlain)
         .fixedSize()
-        .help("把台面存成布局")
-        .accessibilityLabel("把台面存成布局")
+        .accessibilityLabel(DockBandItem.addLayoutTitle)
+        // 名字同格子一样由停靠栏浮出来
+        .modifier(DockHoverReport(id: DockBandItem.addLayout.id))
     }
 }
 

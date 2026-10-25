@@ -734,8 +734,9 @@ struct AddWindowButton: View {
         }
         .buttonStyle(.pointingPlain)
         .fixedSize()
-        .help("新建实例")
-        .accessibilityLabel("新建实例")
+        .accessibilityLabel(DockBandItem.addInstanceTitle)
+        // 名字同格子一样由停靠栏浮出来
+        .modifier(DockHoverReport(id: DockBandItem.addInstance.id))
         .modifier(WindowErrorAlert())
     }
 }

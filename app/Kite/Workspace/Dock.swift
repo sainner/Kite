@@ -274,6 +274,10 @@ extension WorkArea {
             text = dockLabel(found)
         } else if let layout = layouts.first(where: { DockBandItem.layout($0).id == hover.id }) {
             text = layout.name
+        } else if hover.id == DockBandItem.addLayout.id {
+            text = DockBandItem.addLayoutTitle
+        } else if hover.id == DockBandItem.addInstance.id {
+            text = DockBandItem.addInstanceTitle
         } else {
             return nil
         }

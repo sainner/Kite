@@ -23,6 +23,10 @@ enum DockBandItem: Identifiable {
         if case .entry(let entry) = self { entry.expands } else { false }
     }
 
+    /// 两个添加入口的名字：悬停浮出的标签（见 WorkArea.dockHoverTips）和读屏都用它。
+    static let addLayoutTitle = "把台面存成布局"
+    static let addInstanceTitle = "新建实例"
+
     /// 这一项盖住的范围，堆叠时挡住后面的格子用（见 DockStackFade）；分割线不挡。
     var outline: DockItemOutline? {
         switch self {
