@@ -301,6 +301,11 @@ private struct DockPreviewScenes {
             b.families.append(DockPreviewTool(title: "\(count) 个子代理", entry: .family(DockFamily(
                 parent: parent, pane: Pane(parent.id), onStage: false, children: kids.map(DockEntry.instance)))))
         }
+        // 收着时子代理不发脉冲，在跑的由父代理那一格替它发
+        let idle = b.agent("父代理空闲", role: 2)
+        let busy = [b.agent("子代理", role: 3, parent: idle.id), b.agent("子代理", role: 4, state: .running, parent: idle.id)]
+        b.families.append(DockPreviewTool(title: "父代理空闲、子代理在跑", entry: .family(DockFamily(
+            parent: idle, pane: Pane(idle.id), onStage: false, children: busy.map(DockEntry.instance)))))
 
         let files = b.tool("文件", .previewFiles), terminal = b.tool("终端", .previewTerminal)
         let web = b.tool("预览", .previewWeb), plugin = b.tool("插件", .previewPlugin)

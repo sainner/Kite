@@ -82,6 +82,9 @@ struct DockEntryFace: View {
     var pulse = true
     /// 见 DockFace.ring。
     var ring = true
+    /// 家族格里的父代理：家族收着到哪（1 收着、0 展开）。收着时子代理的脉冲不发（见 DockGroup），家族里有别的成员在跑，
+    /// 父代理这一格替它发；展开途中跟着淡出，换成各自的脉冲。
+    var familyFold: Double = 0
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.dockCurrentPane) private var current
@@ -92,9 +95,22 @@ struct DockEntryFace: View {
     var body: some View {
         let id = instanceID, arrow = self.arrow, hidden = hiddenInstances.contains(id)
         DockFace(look: look, running: area.isRunning(id), tint: area.attention(of: id)?.color, arrow: arrow, ring: ring)
-            .overlay { if pulse, pulseOpacity > 0, arrow == nil { DockPulse(instance: id).opacity(pulseOpacity) } }
+            .overlay {
+                if pulse, pulseOpacity > 0 {
+                    if arrow == nil, area.isRunning(id) { DockPulse(instance: id).opacity(pulseOpacity) }
+                    else if familyFold > 0, let member = runningMember { DockPulse(instance: member).opacity(pulseOpacity * familyFold) }
+                }
+            }
             .opacity(hidden ? 0 : 1)
             .animation(arrow != nil && !hidden ? .easeOut(duration: 0.2) : nil, value: hidden)
+    }
+
+    /// 家族里在跑、此刻又看不到的子代理（各层都算，按家族里的先后取第一个）：脉冲的颜色和节奏按它。
+    /// 父代理自己在跑时发它自己的；正看得到的（台面上、紧凑布局的当前窗口）不替它发，同头像「看得到」时不显示状态。
+    private var runningMember: String? {
+        guard case .parent(let family) = subject else { return nil }
+        let shown = current.map(area.dockInstanceID)
+        return DockEntry.family(family).instanceIDs.dropFirst().first { area.isRunning($0) && !onStage.contains($0) && $0 != shown }
     }
 
     private var arrow: String? {
@@ -426,9 +442,9 @@ struct DockGroup: View, Animatable {
         ZStack(alignment: alignment) {
             ForEach(Array(entry.members.enumerated()), id: \.element.id) { index, member in
                 let slot = slots[index], unfolded = member.expands && path.first == member.id
-                self.member(member, at: index, unfolded: unfolded)
+                self.member(member, at: index, unfolded: unfolded, fold: 1 - fill)
                     .frame(width: slot.box.width, height: slot.box.height, alignment: alignment)
-                    // 收着时同格子：家族里只有父代理发脉冲，自己也带着子代理的只露头像，都不发
+                    // 收着时同格子：家族里只有父代理发脉冲（子代理在跑也由它发），自己也带着子代理的只露头像，都不发
                     .transformEnvironment(\.dockPulseOpacity) { $0 *= isFamily && index == 0 ? 1 : fill }
                     .environment(\.dockFaceDetail, isFamily ? fill : 1)
                     .modifier(DockSlotScale(scale: slot.scale, anchor: anchor))
@@ -487,10 +503,11 @@ struct DockGroup: View, Animatable {
         area.collapseDockAfterShowing()
     }
 
+    /// fold 是收着到哪（1 收着、0 展开），父代理替收着的子代理发脉冲，见 DockEntryFace.familyFold。
     @ViewBuilder
-    private func member(_ member: DockEntry, at index: Int, unfolded: Bool) -> some View {
+    private func member(_ member: DockEntry, at index: Int, unfolded: Bool, fold: Double) -> some View {
         if index == 0, case .family(let family) = entry {
-            parentRow(family)
+            parentRow(family, fold: fold)
         } else if member.expands {
             DockGroup(entry: member, depth: depth + 1, expanded: unfolded, openness: unfolded ? 1 : 0, showPane: showPane)
                 .modifier(DockItemHover(id: member.id, enabled: !unfolded))
@@ -560,9 +577,9 @@ struct DockGroup: View, Animatable {
         return (Self.foldedSize(entry, width: width, axis: axis), slots)
     }
 
-    private func parentRow(_ family: DockFamily) -> some View {
+    private func parentRow(_ family: DockFamily, fold: Double) -> some View {
         Button { openParent(family) } label: {
-            DockEntryFace(subject: .parent(family))
+            DockEntryFace(subject: .parent(family), familyFold: fold)
                 .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
                 .contentShape(Circle())
         }
