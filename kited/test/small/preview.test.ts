@@ -125,11 +125,11 @@ test('工作机 Chromium 里的网页：逐帧点按等画面稳定后发带 set
     chmodSync(join(project, '.kite/preview/web'), 0o755);
     const workspaceId = (await folderWorkspace(k, project)).workspace.id;
 
-    const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id: crypto.randomUUID(), content: { kind: 'create', definitionId: previewDefinitionId, preview: { target: 'web' } },
+    const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, {
+      id: crypto.randomUUID(), definitionId: previewDefinitionId, preview: { target: 'web' },
     });
     expect(opened.status).toBe(200);
-    const previewId = opened.body.target.instanceId as string;
+    const previewId = opened.body.id as string;
     await operation(k, workspaceId, 'preview.select', { operationId: 'chromium', instanceId: previewId, browser: 'chromium' });
 
     // 设备接入才开页面：进程的网页端口认出来之前接入的，认出来后开

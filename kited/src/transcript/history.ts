@@ -99,6 +99,7 @@ export class TranscriptHistory {
         case 'line.inbox':
         case 'line.notification':
         case 'monitor.changed':
+        case 'instance.show':
         case 'update.changed':
         case 'mcp.changed':
         case 'workspace.setup':

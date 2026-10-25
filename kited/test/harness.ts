@@ -240,15 +240,13 @@ export async function claudeRole(request: Request): Promise<{ id: string; revisi
 }
 
 /**
- * 打开一个新代理窗口，返回实例 ID。窗口请求只带插件定义，新代理按默认角色建在自研后端；
+ * 新建一个空代理实例，返回实例 ID。请求只带插件定义，新代理按默认角色建在自研后端；
  * 给出 model 时随即改配置换模型，后端随模型换（传 claudeModel 得到空的 Claude 线程）。
  */
 export async function openAgent(request: Request, workspaceId: string, model?: AgentDefinition['model']): Promise<string> {
-  const opened = await request('POST', `/workspaces/${workspaceId}/windows`, {
-    id: crypto.randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
-  });
-  if (opened.status !== 200) throw new Error(`开代理窗口失败：${opened.status} ${JSON.stringify(opened.body)}`);
-  const id = opened.body.target.instanceId as string;
+  const id = crypto.randomUUID();
+  const opened = await request('POST', `/workspaces/${workspaceId}/instances`, { id, definitionId: 'kite.agent' });
+  if (opened.status !== 200) throw new Error(`新建代理失败：${opened.status} ${JSON.stringify(opened.body)}`);
   if (model) {
     const config = await request('GET', `/instances/${id}/agent-config`);
     const changed = await request('PUT', `/instances/${id}/agent-config`, {

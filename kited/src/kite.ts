@@ -11,7 +11,7 @@ import { advanceMainline, behindCount, fetchMainline, hasUnmerged, mainline, mai
 import { CheckoutManagement, type EnvFile, type ProjectSource } from './workspace/checkout-management.ts';
 import { AccountData, revisionOf } from './account-data/store.ts';
 import { Credentials } from './account-data/credentials.ts';
-import { ProjectRegistry } from './account-data/registry.ts';
+import { layoutProject, ProjectRegistry } from './account-data/registry.ts';
 import { Directory, type Candidate } from './account-data/directory.ts';
 import { Replication } from './account-data/replication.ts';
 import { Updates } from './update/updates.ts';
@@ -30,7 +30,7 @@ import { childChanged, commitParent, mergeChild, mergeParent } from './workspace
 import { compactTemplate } from './harness/compaction.ts';
 import { RUNNING_MARKER } from './harness/thread-host.ts';
 import type { Store } from './store.ts';
-import { holds, type AgentInstance, type Checkout, type Machine, type OpenWindowRequest, type PluginInstance, type Project, type ThreadContext, type Workspace, type WorkspaceModel, type WorkspaceStatus, type WorkspaceWindow } from './model.ts';
+import { holds, type AgentInstance, type Checkout, type CreateInstanceRequest, type Machine, type PluginInstance, type Project, type ThreadContext, type Workspace, type WorkspaceModel, type WorkspaceStatus } from './model.ts';
 import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { McpServers } from './mcp/servers.ts';
@@ -128,7 +128,7 @@ function singleLine(text: string, what: string): string {
 const UNNAMED_WORKSPACE = '新工作区';
 
 /** 新建工作区时 App 定的几个 ID，见 Kite.createWorkspace。 */
-export interface NewWorkspaceIds { id?: string; windowId?: string; messageId?: string }
+export interface NewWorkspaceIds { id?: string; instanceId?: string; messageId?: string }
 
 const PUSH_ATTEMPTS = 3;
 /** 有预告的离开时被打断、换到另一台工作机后补的说明。 */
@@ -298,6 +298,10 @@ export class Kite {
     bus.subscribe((event) => event.type === 'checkout.changed' || event.type === 'workspace.changed'
       || event.type === 'thread.changed' && lineThread(event.threadId), () => this.directory.schedule());
     this.accountData.subscribe((changed) => {
+      // 布局是项目的配方，本机改的或同步来的都让读过的客户端重读这个项目的布局
+      for (const projectId of new Set(changed.filter((entry) => entry.kind === 'layout').map((entry) => layoutProject(entry.id)))) {
+        bus.emit({ type: 'library.changed', kind: 'layout', projectId });
+      }
       if (!changed.some((entry) => entry.kind === 'project')) return;
       this.registry.reconcile();
       // 登记表变了只对一遍本机记录，不拉取主线：拉取留给定时的项目同步。
@@ -320,6 +324,8 @@ export class Kite {
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: () => this.credentials.apiKeys() }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
+    // 旧库刚补上 view 列时，已有实例按定义的默认视图补上；定义不在本机（没装的 Bun 插件）的留空
+    store.fillMissingViews((id) => { try { return this.catalog.get(id).defaultView; } catch { return undefined; } });
     // 用户层的 skill 落在数据目录；机器层是这台工作机用户主目录里 Codex 与 Claude Code 的个人 skill。清单与沙箱放行都按这里的位置。
     const userSkills = join(home, 'skills');
     this.skillSources = { system: systemSkillsDirectory, user: userSkills, machine: [join(userHome(), '.agents/skills'), join(userHome(), '.claude/skills')] };
@@ -428,9 +434,8 @@ export class Kite {
     this.terminals = new Terminals({ store, home, env: process.env,
       apps: (pids) => listApps(pids, toolEnv),
       processChanged: (id) => this.previews.processChanged(id),
-      // 预览的进程也由终端插件托管；kited 重启后还开着窗口的预览留着，窗口里能重新起
+      // 预览的进程也由终端插件托管
       hosts: (instance) => instance.definitionId === previewDefinitionId,
-      keepAfterRestart: (instance) => instance.definitionId === previewDefinitionId,
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       collect: (instance) => this.instances.collect(instance),
@@ -1055,8 +1060,9 @@ export class Kite {
   private controlThread<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return this.control(this.context(id).workspaceId, fn);
   }
-  private newThread(workspaceId: string, prompt: string, choice: AgentChoice, projectId?: string): AgentInstance {
-    const instance = this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), choice, projectId);
+  /** id 是客户端给的实例 ID，省略时生成。 */
+  private newThread(workspaceId: string, prompt: string, choice: AgentChoice, projectId?: string, id?: string): AgentInstance {
+    const instance = { ...this.instances.newInstance(workspaceId, agentDefinitionId, titleOf(prompt), choice, projectId), ...(id ? { id } : {}) };
     return { ...instance, instanceId: instance.id, runtime: instanceAgent(instance).runtime, nativeId: randomUUID() };
   }
 
@@ -1070,14 +1076,14 @@ export class Kite {
   /**
    * 在这台工作机上为项目建工作区：先检查环境，不满足就不建；本机没有检出时先 clone，检出保留。先拉取主线，从最新的主线开出工作树。
    * 可以先建空工作区；带首条消息时，准备完成才启动首个线程。via 是经 Line 创建：首条消息是 Line 的说明。
-   * ids 由 App 生成：App 先按工作区、首个代理窗口和首条消息的 ID 在本机建好，目录和线程事件到了认得出是同一个。
+   * ids 由 App 生成：App 先按工作区、首个代理实例和首条消息的 ID 在本机建好，目录和线程事件到了认得出是同一个。
    */
   async createWorkspace(projectId: string, prompt?: string, role?: RoleSelection, via?: InputVia,
     ids: NewWorkspaceIds = {}): Promise<WorkspaceModel> {
     this.assertRunning();
     if (prompt !== undefined && !prompt.trim()) throw new KiteError('第一条消息不能为空');
     if (ids.id && this.store.workspace(ids.id)) throw new KiteError('工作区 ID 已使用', 409);
-    if (ids.windowId && this.store.window(ids.windowId)) throw new KiteError('窗口 ID 已使用', 409);
+    if (ids.instanceId && this.store.instance(ids.instanceId)) throw new KiteError('实例 ID 已使用', 409);
     this.assertCanRun(await this.environment(projectId), role);
     // 刚 clone 的检出已是最新的主线，不再拉一次。
     const { checkout: c, cloned } = await this.ensureCheckout(projectId);
@@ -1088,8 +1094,8 @@ export class Kite {
     this.assertRunning();
     const id = ids.id ?? randomUUID();
     const w = this.newWorkspace(c, id, prompt ? titleOf(prompt) : UNNAMED_WORKSPACE, base, null);
-    const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId);
-    this.store.addWorkspace(w, t ? { agent: t, window: this.instances.newWindow(t, ids.windowId) } : undefined);
+    const t = prompt === undefined ? undefined : this.newThread(id, prompt, { role }, c.projectId, ids.instanceId);
+    this.store.addWorkspace(w, t);
     this.prepare(w, c, t && { thread: t, input: { id: ids.messageId ?? randomUUID(), text: prompt!,
       ...(via ? { source: 'agent' as const, from: via } : { source: 'human' as const }) } });
     this.changed(id);
@@ -1306,31 +1312,31 @@ export class Kite {
     }).finally(() => this.preparations.delete(id));
   }
 
-  /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例、会话和窗口。
-   * windowId 与 messageId 由 App 生成：窗口经事件先到时 App 认得出是草稿变成的那个，第一条消息也和草稿里显示的是同一条。 */
-  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, windowId?: string, messageId?: string,
+  /** 新会话的草稿只在 App 本地；第一条消息连同草稿里选好的参数一次创建实例与会话。
+   * instanceId 与 messageId 由 App 生成：实例经事件先到时 App 认得出是草稿变成的那个，第一条消息也和草稿里显示的是同一条。 */
+  createThread(workspaceId: string, prompt: string, choice: AgentChoice = {}, instanceId?: string, messageId?: string,
     attachments: string[] = []): Promise<ThreadView> {
     return this.control(workspaceId, async () => {
       const { workspace } = this.workspace(workspaceId);
       if (workspace.status !== 'open') throw new KiteError('工作区尚未打开', 409);
       if (!prompt.trim() && !attachments.length) throw new KiteError('第一条消息不能为空');
-      if (windowId && this.store.window(windowId)) throw new KiteError('窗口 ID 已使用', 409);
+      if (instanceId && this.store.instance(instanceId)) throw new KiteError('实例 ID 已使用', 409);
       this.assertNotResolving(workspaceId);
       const { input, skill } = this.withSkill(this.withAttachments({ id: messageId ?? randomUUID(), text: prompt, source: 'human' }, workspaceId, attachments),
         workspace.cwd);
       await this.snapshot(workspace, [], '线程开始');
-      const t = this.newThread(workspaceId, promptText(input), choice);
-      this.store.addAgent(t, this.instances.newWindow(t, windowId));
+      const t = this.newThread(workspaceId, promptText(input), choice, undefined, instanceId);
+      this.store.addAgent(t);
       this.threadChanged(t);
       await this.sendInput(this.context(t.id), input, undefined, skill);
       return this.thread(t.id);
     });
   }
 
-  /** 操作层只登记实例；有首条消息时才打开执行资源，窗口由 presentation 决定。 */
+  /** 操作层只登记实例；有首条消息时才打开执行资源。带 show 时推 instance.show，正在看这个工作区的设备把它放上台面。 */
   /** sender 是首条消息的来源，与 agent.send 的规则相同，由操作层按调用方给出。 */
   startAgent(workspaceId: string, input: OperationInput<'agent.start'>, origin?: PluginInstance['origin'],
-    sender: InputOrigin = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; windowId?: string; workspaceId?: string }> {
+    sender: InputOrigin = { source: 'human' }, check: () => void = () => {}): Promise<{ instanceId: string; workspaceId?: string }> {
     if (input.isolation === 'workspace') return this.startIsolated(workspaceId, input, origin, sender, check);
     return this.control(workspaceId, async () => {
       check();
@@ -1342,15 +1348,20 @@ export class Kite {
       }
       check();
       const agent = this.delegatedAgent(workspaceId, workspaceId, input, origin);
-      const window = agent.presentation === 'window' ? this.instances.newWindow(agent) : undefined;
-      this.store.addAgent(agent, window);
+      this.store.addAgent(agent);
       this.titled(agent, input);
       this.changed(workspaceId);
+      this.show(agent, input);
       if (input.prompt !== undefined) {
         await this.sendInput(this.context(agent.id), { id: input.operationId, text: input.prompt, ...sender });
       }
-      return { instanceId: agent.id, ...(window ? { windowId: window.id } : {}) };
+      return { instanceId: agent.id };
     });
+  }
+
+  /** agent.start 带 show：实例已入库、工作区事件也推过之后，请正在看这个工作区的设备把它放上台面。 */
+  private show(agent: AgentInstance, input: OperationInput<'agent.start'>): void {
+    if (input.show) this.bus.emit({ type: 'instance.show', workspaceId: agent.workspaceId, instanceId: agent.id });
   }
 
   /**
@@ -1358,7 +1369,7 @@ export class Kite {
    * 环境检查与准备同新建工作区，不要用户批准，见 docs/项目与远程仓库.md「子工作区」。
    */
   private async startIsolated(parentId: string, input: OperationInput<'agent.start'>, origin: PluginInstance['origin'], sender: InputOrigin,
-    check: () => void): Promise<{ instanceId: string; windowId?: string; workspaceId: string }> {
+    check: () => void): Promise<{ instanceId: string; workspaceId: string }> {
     const { checkout: c } = this.workspace(parentId);
     this.assertCanRun(await this.environment(c.projectId), { id: input.role ?? defaultRoleId });
     return this.control(parentId, async () => {
@@ -1371,25 +1382,24 @@ export class Kite {
       const id = randomUUID();
       const agent = this.delegatedAgent(id, parentId, input, origin, c.projectId);
       const w = this.newWorkspace(c, id, input.title ?? (input.prompt ? titleOf(input.prompt) : UNNAMED_WORKSPACE), base, parentId);
-      const window = agent.presentation === 'window' ? this.instances.newWindow(agent) : undefined;
-      this.store.addWorkspace(w, { agent, window });
+      this.store.addWorkspace(w, agent);
       this.titled(agent, input);
       this.prepare(w, c, { thread: agent, opener: origin?.instanceId,
         ...(input.prompt === undefined ? {} : { input: { id: input.operationId, text: input.prompt, ...sender } }) });
       this.changed(id);
-      return { instanceId: agent.id, ...(window ? { windowId: window.id } : {}), workspaceId: id };
+      this.show(agent, input);
+      return { instanceId: agent.id, workspaceId: id };
     });
   }
 
   /**
-   * agent_start 建的代理，放在 workspaceId 里：角色、展示方式与创建来源照参数；调用方只能读工作区时它也只能读。
+   * agent_start 建的代理，放在 workspaceId 里：角色与创建来源照参数；调用方只能读工作区时它也只能读。
    * 执行约束按 constraintsOf 那个工作区的项目取（子工作区这时还没入库，取父工作区的）。
    */
   private delegatedAgent(workspaceId: string, constraintsOf: string, input: OperationInput<'agent.start'>, origin: PluginInstance['origin'],
     projectId?: string): AgentInstance {
     const instance = this.instances.newInstance(workspaceId, agentDefinitionId, input.title ?? (input.prompt ? titleOf(input.prompt) : '新代理'),
       { role: { id: input.role ?? defaultRoleId } }, projectId);
-    instance.presentation = input.presentation;
     instance.origin = origin;
     const project = this.store.workspaceConstraints(constraintsOf)?.execution;
     if (origin && effectiveExecution(instanceExecutionChanges(this.store.instance(origin.instanceId)!), project).grants.workspace === 'read') {
@@ -1485,18 +1495,18 @@ export class Kite {
     return this.configuration.configureExecutionGrants(id, expectedRevision, value);
   }
 
-  async openWindow(workspaceId: string, request: OpenWindowRequest): Promise<WorkspaceWindow> {
-    if (request.content.kind === 'create') this.library.ensurePlugin(request.content.definitionId);
-    return this.instances.openWindow(workspaceId, request);
+  /** 新建实例；Bun 插件本机还没装时先从账号级数据装上。 */
+  createInstance(workspaceId: string, request: CreateInstanceRequest): Promise<PluginInstance> {
+    this.library.ensurePlugin(request.definitionId);
+    return this.instances.create(workspaceId, request);
   }
 
-  async createPluginInstance(workspaceId: string, id: string, definitionId: string, title?: string) {
-    this.library.ensurePlugin(definitionId);
-    return this.instances.createPluginInstance(workspaceId, id, definitionId, title);
+  setInstanceView(id: string, viewId: string): Promise<PluginInstance> {
+    return this.instances.setView(id, viewId);
   }
 
-  closeWindow(workspaceId: string, id: string): Promise<void> {
-    return this.instances.closeWindow(workspaceId, id);
+  closeInstance(id: string): Promise<void> {
+    return this.instances.close(id);
   }
 
   agentConfig(id: string) { return this.configuration.agentConfig(id); }
@@ -2189,15 +2199,14 @@ export class Kite {
     if (r) { await r.shutdown(); this.runners.delete(t.id); }
     this.turnLabels.delete(t.id);
   }
-  /** 归档保留会话与业务数据，停止执行并关闭它的窗口；随窗口回收的实例关闭窗口即可。 */
+  /** 归档保留会话与业务数据，停止执行；关闭即回收的实例与进程实例用关闭（closeInstance）。 */
   archiveInstance(id: string): Promise<void> {
     const instance = this.store.instance(id);
     if (!instance) throw new KiteError(`没有这个实例：${id}`, 404);
     const definition = this.catalog.get(instance.definitionId);
     if (definition.agent) return this.archiveThread(id);
     if (definition.id === monitorDefinitionId && 'system' in monitorConfig(instance)) throw new KiteError('Line 的收件箱随 Line 存在，不能单独归档', 409);
-    if (definition.lifetime === 'window') throw new KiteError('此实例随窗口回收，关闭窗口即可');
-    if (definition.lifetime === 'process') throw new KiteError('此实例随进程结束回收，停止进程即可');
+    if (definition.lifetime !== 'persistent') throw new KiteError('此实例不归档，关闭即可', 409);
     return this.control(instance.workspaceId, async () => {
       if (this.store.instance(id)!.status === 'archived') return;
       const release = await this.plugins.closeInstance(id);
@@ -2310,7 +2319,7 @@ export class Kite {
     return this.store.threads().find((thread) => thread.status === 'open' && instanceRole(thread)?.id === lineRoleId
       && this.store.workspace(thread.workspaceId)?.status === 'open');
   }
-  /** Line 的 monitor 实例（收件箱）；ensure 时没有就补建一个，带窗口。 */
+  /** Line 的 monitor 实例（收件箱）；ensure 时没有就补建一个。 */
   lineInbox(ensure = false): PluginInstance | undefined {
     const line = this.lineInstance();
     if (!line) return undefined;
@@ -2321,11 +2330,11 @@ export class Kite {
     this.changed(line.workspaceId);
     return inbox;
   }
-  /** 给 Line 建收件箱，连同窗口入库。 */
+  /** 给 Line 建收件箱。 */
   private addLineInbox(line: Pick<AgentInstance, 'id' | 'workspaceId'>): PluginInstance {
     const inbox: PluginInstance = { id: randomUUID(), workspaceId: line.workspaceId, definitionId: monitorDefinitionId, title: '收件箱',
-      config: { monitor: { target: line.id, system: 'line' } }, state: {}, presentation: 'window', status: 'open', createdAt: Date.now() };
-    this.store.addPluginInstance(inbox, this.instances.newWindow(inbox));
+      config: { monitor: { target: line.id, system: 'line' } }, state: {}, view: 'timeline', status: 'open', createdAt: Date.now() };
+    this.store.addPluginInstance(inbox);
     return inbox;
   }
   /** 工作区交接、冻结或归档前停下终端、插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始，终端不再拉起。 */
@@ -2369,7 +2378,7 @@ export class Kite {
     return this.control(model.workspace.id, async () => {
       const agent = this.newThread(model.workspace.id, 'Line', { role: { id: lineRoleId } }, project.id);
       agent.config.grants = [...(agent.config.grants as OperationGrant[]), lineGrant];
-      this.store.addAgent(agent, this.instances.newWindow(agent));
+      this.store.addAgent(agent);
       this.addLineInbox(agent);
       this.store.saveThreadTitle(agent.id, 'initial', { title: 'Line', mode: 'manual', generatedAt: null, through: null });
       this.threadChanged(agent);

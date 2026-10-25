@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
-import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus, WorkspaceWindow } from './model.ts';
+import type { AgentInstance, Checkout, Machine, PluginInstance, Project, Thread, ThreadContext, Workspace, WorkspaceModel, WorkspaceStatus } from './model.ts';
 import type { ThreadNotification } from './harness/types.ts';
 import type { Ask } from './waiting.ts';
 import { defaultContextDefinition } from './harness/context/project.ts';
@@ -47,9 +47,10 @@ ${projectsTable('projects')}
 ${checkoutsTable('checkouts')}
 ${WORKSPACES}
 create unique index if not exists workspace_cwd on workspaces(cwd) where status != 'transferred';
+-- view 是当前显示的视图，没有视图的实例为空。
 create table if not exists plugin_instances (
   id text primary key, workspace_id text not null references workspaces(id), definition_id text not null, title text not null,
-  config text not null, state text not null, presentation text not null check (presentation in ('window', 'inline', 'background')),
+  config text not null, state text not null, view text,
   status text not null check (status in ('open', 'archived')), created_at integer not null, origin text
 );
 create table if not exists threads (
@@ -61,17 +62,9 @@ create table if not exists thread_titles (
   mode text not null check (mode in ('auto', 'manual')), revision text not null,
   generated_at integer, through_record text
 );
-create table if not exists workspace_windows (
-  id text primary key, workspace_id text not null references workspaces(id),
-  -- 关闭记录和收据比业务实例活得更久，目标 ID 不设置级联外键。
-  instance_id text not null, view_id text not null,
-  state text not null check (state in ('open', 'closed')), created_at integer not null
-);
--- 一个实例只对应一个打开的窗口，窗口在实例的几个视图之间切换。
-create unique index if not exists instance_window on workspace_windows(instance_id) where state = 'open';
-create table if not exists window_requests (
-  id text primary key, workspace_id text not null references workspaces(id),
-  window_id text not null references workspace_windows(id), content text not null
+-- 新建实例请求的收据：同一请求重试返回同一实例。收据比实例活得更久，实例回收后迟到的重试据此拒绝、不复活实例，所以不设级联外键。
+create table if not exists instance_requests (
+  id text primary key, workspace_id text not null references workspaces(id), instance_id text not null, content text not null
 );
 create table if not exists instance_notifications (
   seq integer primary key autoincrement, id text not null unique,
@@ -127,16 +120,12 @@ const workspaceOf = (r: any): Workspace => ({
 const threadOf = (r: any): Thread => ({ instanceId: r.instance_id, runtime: r.runtime, nativeId: r.native_id });
 const instanceOf = (r: any): PluginInstance => ({
   id: r.id, workspaceId: r.workspace_id, definitionId: r.definition_id, title: r.title,
-  config: JSON.parse(r.config), state: JSON.parse(r.state), presentation: r.presentation, status: r.status, createdAt: r.created_at,
+  config: JSON.parse(r.config), state: JSON.parse(r.state), ...(r.view ? { view: r.view } : {}), status: r.status, createdAt: r.created_at,
   ...(r.origin ? { origin: JSON.parse(r.origin) } : {}),
 });
 const agentOf = (r: any): AgentInstance => ({ ...instanceOf(r), ...threadOf(r) });
-const windowOf = (r: any): WorkspaceWindow => ({
-  id: r.id, workspaceId: r.workspace_id, target: { instanceId: r.instance_id, viewId: r.view_id },
-  state: r.state, createdAt: r.created_at,
-});
 /** 随工作区流转的表，按外键依赖的先后排列。 */
-const workspaceTables = ['workspaces', 'plugin_instances', 'threads', 'thread_titles', 'workspace_windows', 'window_requests',
+const workspaceTables = ['workspaces', 'plugin_instances', 'threads', 'thread_titles', 'instance_requests',
   'instance_notifications', 'thread_asks', 'operation_receipts'] as const;
 export type WorkspaceRows = Record<(typeof workspaceTables)[number], Array<Record<string, unknown>>>;
 
@@ -152,10 +141,11 @@ export class Store implements UsageStore {
     this.dropUnpricedUsage();
     this.dropBareContextTemplates();
     this.relaxRemotes();
-    this.oneWindowPerInstance();
+    this.dropWindows();
     this.dropScriptPorts();
     this.keySimulatorsByModel();
     this.db.exec(SCHEMA);
+    this.reshapeInstances();
     this.addWorkspaceNameMode();
     this.addWorkspaceParent();
     this.mergeAgentDefinitions();
@@ -224,15 +214,37 @@ export class Store implements UsageStore {
       drop table checkouts; alter table checkouts_next rename to checkouts;`);
   }
 
+  /** 共享窗口对象去掉之前的两张表。在研期间不迁移：直接删掉，在不在台面上由各设备自己记。 */
+  private dropWindows(): void {
+    this.db.exec('drop table if exists window_requests; drop table if exists workspace_windows;');
+  }
+
   /**
-   * 一个实例只对应一个窗口之前，同一实例的几个视图各开各的窗口。在研期间不迁移：每个实例只留最早打开的那个窗口，换掉按视图的唯一索引。
+   * 实例去掉展示方式、带上当前视图之前的表。在研期间不迁移：删掉 presentation 列、补上 view 列。已有实例的视图这里不知道（默认视图在插件定义里），
+   * 由 Kite 建好插件目录后按定义补一次，见 fillMissingViews。
    */
-  private oneWindowPerInstance(): void {
-    if (!this.db.query("select 1 from sqlite_master where type = 'index' and name = 'plugin_view_window'").get()) return;
-    this.db.exec(`drop index plugin_view_window;
-      update workspace_windows set state = 'closed' where state = 'open' and exists (select 1 from workspace_windows earlier
-        where earlier.instance_id = workspace_windows.instance_id and earlier.state = 'open'
-          and (earlier.created_at, earlier.id) < (workspace_windows.created_at, workspace_windows.id));`);
+  private reshapeInstances(): void {
+    const columns = this.db.query("select name from pragma_table_info('plugin_instances')").all() as Array<{ name: string }>;
+    if (columns.some((c) => c.name === 'presentation')) this.db.exec('alter table plugin_instances drop column presentation');
+    if (!columns.some((c) => c.name === 'view')) {
+      this.db.exec('alter table plugin_instances add column view text');
+      this.viewColumnAdded = true;
+    }
+  }
+
+  /** 这次打开时刚补上 view 列：已有实例的视图要按定义补。 */
+  private viewColumnAdded = false;
+
+  /** 补上 view 列那一次，给还没有视图的实例填定义的默认视图；没有默认视图的（无视图的插件）留空。只在补列的那次做。 */
+  fillMissingViews(defaultView: (definitionId: string) => string | undefined): void {
+    if (!this.viewColumnAdded) return;
+    const rows = this.db.query('select id, definition_id from plugin_instances where view is null').all() as Array<{ id: string; definition_id: string }>;
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const view = defaultView(row.definition_id);
+        if (view) this.setInstanceView(row.id, view);
+      }
+    })();
   }
 
   /** 工作区能手动命名之前没有 name_mode 列：补上，已有的工作区都按自动命名。 */
@@ -483,13 +495,13 @@ export class Store implements UsageStore {
       join plugin_instances o on o.id = json_extract(i.origin, '$.instanceId') where i.workspace_id = ? and o.workspace_id = w.parent_id
       order by i.created_at limit 1`).get(workspaceId) as { id: string } | null)?.id;
   }
-  addWorkspace(w: Workspace, firstAgent?: { agent: AgentInstance; window?: WorkspaceWindow }): void {
+  addWorkspace(w: Workspace, firstAgent?: AgentInstance): void {
     this.db.transaction(() => {
       this.db.query(`insert into workspaces (id, checkout_id, name, name_mode, cwd, branch, base, status, created_at, epoch, behind, pull_request, parent_id)
         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(w.id, w.checkoutId, w.name, w.nameMode, w.cwd, w.branch, w.base, w.status, w.createdAt, w.epoch, w.behind,
           w.pullRequest ? JSON.stringify(w.pullRequest) : null, w.parentId);
-      if (firstAgent) this.addAgent(firstAgent.agent, firstAgent.window);
+      if (firstAgent) this.addAgent(firstAgent);
     })();
   }
   /** 执行权流转走：本地记录改为 transferred。receiver 是交给的那台（没有远程的项目）。 */
@@ -529,9 +541,10 @@ export class Store implements UsageStore {
     return row ? agentOf(row) : null;
   }
   addInstance(instance: PluginInstance): void {
-    this.db.query('insert into plugin_instances values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    this.db.query(`insert into plugin_instances (id, workspace_id, definition_id, title, config, state, view, status, created_at, origin)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(instance.id, instance.workspaceId, instance.definitionId, instance.title, JSON.stringify(instance.config),
-        JSON.stringify(instance.state), instance.presentation, instance.status, instance.createdAt, instance.origin ? JSON.stringify(instance.origin) : null);
+        JSON.stringify(instance.state), instance.view ?? null, instance.status, instance.createdAt, instance.origin ? JSON.stringify(instance.origin) : null);
   }
   private addThread(thread: Thread): void {
     this.db.query('insert into threads values (?, ?, ?)').run(thread.instanceId, thread.runtime, thread.nativeId);
@@ -539,26 +552,18 @@ export class Store implements UsageStore {
   setThreadRuntime(id: string, runtime: Thread['runtime']): void {
     this.db.query('update threads set runtime = ? where instance_id = ?').run(runtime, id);
   }
-  /** 非代理实例与可选的首窗口原子创建。 */
-  addPluginInstance(instance: PluginInstance, window?: WorkspaceWindow): void {
-    this.db.transaction(() => {
-      this.addInstance(instance);
-      if (window) this.addWindow(window);
-    })();
+  addPluginInstance(instance: PluginInstance): void {
+    this.addInstance(instance);
   }
-  /** 实例身份、会话专有记录与可选窗口原子创建。 */
-  addAgent(agent: AgentInstance, window?: WorkspaceWindow): void {
+  /** 实例身份与会话专有记录原子创建。 */
+  addAgent(agent: AgentInstance): void {
     this.db.transaction(() => {
       this.addInstance(agent);
       this.addThread(agent);
-      if (window) this.addWindow(window);
     })();
   }
   archiveInstance(id: string): void {
-    this.db.transaction(() => {
-      this.db.query("update plugin_instances set status = 'archived' where id = ?").run(id);
-      this.db.query("update workspace_windows set state = 'closed' where instance_id = ?").run(id);
-    })();
+    this.db.query("update plugin_instances set status = 'archived' where id = ?").run(id);
   }
   renameInstance(id: string, title: string): void {
     const current = this.threadTitle(id);
@@ -630,7 +635,7 @@ export class Store implements UsageStore {
     this.db.query('update operation_receipts set result = ? where caller = ? and id = ?').run(JSON.stringify(result), caller, id);
   }
   /**
-   * 工作区流转的原始行：工作区及其实例、线程、标题、窗口、窗口请求、通知、没回应的请求与操作收据。
+   * 工作区流转的原始行：工作区及其实例、线程、标题、新建实例的收据、通知、没回应的请求与操作收据。
    * 操作收据按请求里的工作区或调用方实例归属。
    */
   exportWorkspaceRows(id: string): WorkspaceRows {
@@ -641,8 +646,7 @@ export class Store implements UsageStore {
       plugin_instances: all('select * from plugin_instances where workspace_id = ? order by created_at, id', id),
       threads: all(`select * from threads where instance_id in (${instances})`, id),
       thread_titles: all(`select * from thread_titles where instance_id in (${instances})`, id),
-      workspace_windows: all('select * from workspace_windows where workspace_id = ?', id),
-      window_requests: all('select * from window_requests where workspace_id = ?', id),
+      instance_requests: all('select * from instance_requests where workspace_id = ?', id),
       instance_notifications: all(`select * from instance_notifications where instance_id in (${instances}) order by seq`, id),
       thread_asks: all(`select * from thread_asks where instance_id in (${instances}) order by created_at, rowid`, id),
       operation_receipts: all(`select * from operation_receipts where json_extract(request, '$.workspaceId') = ?
@@ -692,8 +696,7 @@ export class Store implements UsageStore {
       this.db.query(`delete from thread_asks where instance_id in (${instances})`).run(id);
       this.db.query(`delete from thread_titles where instance_id in (${instances})`).run(id);
       this.db.query(`delete from threads where instance_id in (${instances})`).run(id);
-      this.db.query('delete from window_requests where workspace_id = ?').run(id);
-      this.db.query('delete from workspace_windows where workspace_id = ?').run(id);
+      this.db.query('delete from instance_requests where workspace_id = ?').run(id);
       this.db.query('delete from plugin_instances where workspace_id = ?').run(id);
       this.db.query('delete from target_ports where workspace_id = ?').run(id);
       this.db.query('delete from workspaces where id = ?').run(id);
@@ -703,7 +706,6 @@ export class Store implements UsageStore {
     this.db.transaction(() => {
       this.setWorkspaceStatus(id, 'archived');
       this.db.query("update plugin_instances set status = 'archived' where workspace_id = ?").run(id);
-      this.db.query("update workspace_windows set state = 'closed' where workspace_id = ?").run(id);
       this.db.query('delete from target_ports where workspace_id = ?').run(id);
     })();
   }
@@ -742,45 +744,30 @@ export class Store implements UsageStore {
     const row = this.db.query('select * from plugin_instances where id = ?').get(id);
     return row ? instanceOf(row) : null;
   }
-  hasInstanceWindows(id: string): boolean {
-    return this.db.query('select 1 from workspace_windows where instance_id = ? limit 1').get(id) !== null;
+  /** 新建实例请求的收据；实例回收后仍在。 */
+  instanceRequest(id: string): { workspaceId: string; instanceId: string; content: string } | null {
+    const row = this.db.query('select * from instance_requests where id = ?').get(id) as any;
+    return row ? { workspaceId: row.workspace_id, instanceId: row.instance_id, content: row.content } : null;
   }
-  windows(workspaceId: string): WorkspaceWindow[] {
-    return this.db.query("select * from workspace_windows where workspace_id = ? and state = 'open' order by created_at, id")
-      .all(workspaceId).map(windowOf);
-  }
-  window(id: string): WorkspaceWindow | null {
-    const row = this.db.query('select * from workspace_windows where id = ?').get(id);
-    return row ? windowOf(row) : null;
-  }
-  windowRequest(id: string): { workspaceId: string; windowId: string; content: string } | null {
-    const row = this.db.query('select * from window_requests where id = ?').get(id) as any;
-    return row ? { workspaceId: row.workspace_id, windowId: row.window_id, content: row.content } : null;
-  }
-  private addWindow(w: WorkspaceWindow): void {
-    this.db.query('insert into workspace_windows values (?, ?, ?, ?, ?, ?)')
-      .run(w.id, w.workspaceId, w.target.instanceId, w.target.viewId, w.state, w.createdAt);
-  }
-  /** 即使打开的是已有窗口，也保存操作收据，已有窗口换到 w 的视图；迟到重试不能复活已关闭的窗口。 */
-  openWindow(w: WorkspaceWindow, request: { id: string; content: string }, instance?: PluginInstance, thread?: Thread): void {
+  /** 新实例（与代理的会话记录）和请求收据原子登记；返回已有实例（预览）时只记收据。 */
+  createInstance(request: { id: string; workspaceId: string; instanceId: string; content: string }, instance?: PluginInstance, thread?: Thread): void {
     this.db.transaction(() => {
       if (instance) this.addInstance(instance);
       if (thread) this.addThread(thread);
-      if (this.window(w.id)) this.db.query('update workspace_windows set view_id = ? where id = ?').run(w.target.viewId, w.id);
-      else this.addWindow(w);
-      this.db.query('insert into window_requests values (?, ?, ?, ?)').run(request.id, w.workspaceId, w.id, request.content);
+      this.db.query('insert into instance_requests (id, workspace_id, instance_id, content) values (?, ?, ?, ?)')
+        .run(request.id, request.workspaceId, request.instanceId, request.content);
     })();
   }
-  closeWindow(id: string): void {
-    this.db.query("update workspace_windows set state = 'closed' where id = ?").run(id);
+  setInstanceView(id: string, view: string): void {
+    this.db.query('update plugin_instances set view = ? where id = ?').run(view, id);
   }
-  /** 关闭窗口及请求收据保留原目标 ID；业务实例、配置和状态不再保留。 */
+  /** 新建请求的收据保留原实例 ID；业务实例、配置和状态不再保留。 */
   deleteInstance(id: string): void {
     this.db.query('delete from instance_notifications where instance_id = ?').run(id);
     this.db.query('delete from thread_asks where instance_id = ?').run(id);
     this.db.query('delete from plugin_instances where id = ?').run(id);
   }
-  /** 执行上下文只需要父级关系，不读取同级线程和插件窗口。 */
+  /** 执行上下文只需要父级关系，不读取同级线程和其他实例。 */
   private contextOf(workspace: Workspace) {
     const checkout = this.checkout(workspace.checkoutId)!;
     const project = this.project(checkout.projectId)!;
@@ -790,7 +777,7 @@ export class Store implements UsageStore {
     return { ...this.contextOf(workspace),
       threads: this.db.query(`select t.* from threads t join plugin_instances i on i.id = t.instance_id
         where i.workspace_id = ? order by i.created_at, i.id`).all(workspace.id).map(threadOf),
-      instances: this.instances(workspace.id), windows: this.windows(workspace.id) };
+      instances: this.instances(workspace.id) };
   }
   workspaceModel(id: string): WorkspaceModel | null {
     const workspace = this.workspace(id);
@@ -810,18 +797,13 @@ export class Store implements UsageStore {
       join workspaces w on w.id = p.workspace_id join checkouts c on c.id = w.checkout_id
       where (? is null or c.project_id = ?) order by p.created_at, p.id`)
       .all(projectId ?? null, projectId ?? null).map(instanceOf);
-    const windows = this.db.query(`select p.* from workspace_windows p
-      join workspaces w on w.id = p.workspace_id join checkouts c on c.id = w.checkout_id
-      where p.state = 'open' and (? is null or c.project_id = ?) order by p.created_at, p.id`)
-      .all(projectId ?? null, projectId ?? null).map(windowOf);
     const threadsByWorkspace = Map.groupBy(threads, (t) => t.workspaceId);
     const instancesByWorkspace = Map.groupBy(instances, (p) => p.workspaceId);
-    const windowsByWorkspace = Map.groupBy(windows, (p) => p.workspaceId);
     return workspaces.map((workspace) => {
       const checkout = checkouts.get(workspace.checkoutId)!;
       return { machine: this.machine, project: projects.get(checkout.projectId)!, checkout, workspace,
         threads: (threadsByWorkspace.get(workspace.id) ?? []).map(({ thread }) => thread),
-        instances: instancesByWorkspace.get(workspace.id) ?? [], windows: windowsByWorkspace.get(workspace.id) ?? [] };
+        instances: instancesByWorkspace.get(workspace.id) ?? [] };
     });
   }
   threadContext(id: string): ThreadContext | null {

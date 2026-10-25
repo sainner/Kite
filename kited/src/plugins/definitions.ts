@@ -14,8 +14,11 @@ export interface PluginDefinition {
   title: string;
   /** 一句话的用途，创建实例时显示；只有内置定义有。 */
   description?: string;
-  /** window 随窗口回收；persistent 独立存续，不用时归档；process 进程运行中独立存续，结束后没有窗口就回收。 */
-  lifetime: 'window' | 'persistent' | 'process';
+  /**
+   * closable 用户关闭即回收，须有视图；persistent 独立存续，不用时归档；process 进程在跑时一直在，自己结束后留到用户关闭，
+   * 用户停止进程等于关闭。见 docs/台面与停靠栏.md「实例与消失」。
+   */
+  lifetime: 'closable' | 'persistent' | 'process';
   views: { id: string; title: string; renderer: string; resourceUri?: string }[];
   defaultView: string;
   agent?: AgentDefinition;
@@ -67,9 +70,9 @@ const agent: AgentDefinition = {
 
 const definitions: PluginDefinition[] = [
   { id: agentDefinitionId, title: '代理', description: '与 agent 协作', lifetime: 'persistent', defaultView: 'conversation',
-    agent, operations: ['agent.send', 'agent.resume', 'agent.stop', 'agent.merge'], views: [{ id: 'conversation', title: '代理窗口', renderer: 'conversation' }] },
+    agent, operations: ['agent.send', 'agent.resume', 'agent.stop', 'agent.merge'], views: [{ id: 'conversation', title: '对话', renderer: 'conversation' }] },
   /** 看工作区的文件、本工作区运行中的网页和互联网，见 workspace/files.ts 的 pageSchema。 */
-  { id: filesDefinitionId, title: '浏览', description: '查看文件、运行中的网页和互联网', lifetime: 'window', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.write', 'files.history', 'files.diff', 'files.state', 'files.select'], views: [
+  { id: filesDefinitionId, title: '浏览', description: '查看文件、运行中的网页和互联网', lifetime: 'closable', defaultView: 'files', operations: ['files.list', 'files.search', 'files.read', 'files.write', 'files.history', 'files.diff', 'files.state', 'files.select'], views: [
     { id: 'files', title: '浏览', renderer: 'files' },
   ] },
   /** 一个实例一个 PTY 会话，见 terminal/terminals.ts。 */

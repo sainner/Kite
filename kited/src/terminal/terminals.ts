@@ -96,8 +96,6 @@ export interface TerminalsHost {
   processChanged?(id: string): void;
   /** 终端之外，进程也由这里托管的实例（预览）：WebSocket 输出视图、按行读与启动时的核对都认它。 */
   hosts?(instance: Pick<PluginInstance, 'definitionId'>): boolean;
-  /** kited 重启后进程没了、还开着窗口的，留下记成结束，不连窗口一起回收（预览能在窗口里重新起）。 */
-  keepAfterRestart?(instance: PluginInstance): boolean;
   /** 起 shell 的命令，测试换成 /bin/sh；默认是用户的登录 shell。 */
   shell?: string[];
   /** 探测监听端口的间隔，测试里缩短；默认 PORT_SCAN_MS。 */
@@ -150,6 +148,8 @@ class Session {
   ended?: TerminalState;
   /** 停止时记下原因，退出后写进状态。 */
   reason?: string;
+  /** 被停下就是关闭：结束后回收实例。工作区交接、归档与预览重起时停下的不算，留着实例。 */
+  collect = false;
   /** 结束时要不要通知启动它的代理：代理自己停下的不通知。 */
   notify = true;
   /** 结束时通知谁：起这一轮进程的代理；没有时是实例的创建来源（预览重新起时实例还是原来那个）。 */
@@ -440,7 +440,7 @@ export class Terminals {
   }
 
   /**
-   * 接管代理 shell 工具转到后台的命令：建一个没有窗口的终端实例，来源记为这次工具调用，返回告诉模型的说明。
+   * 接管代理 shell 工具转到后台的命令：建一个终端实例，来源记为这次工具调用，进程结束即回收；返回告诉模型的说明。
    * 工作区不再打开（正在交接或归档）时不接管，停下命令。
    */
   adopt(ownerId: string, command: BackgroundCommand, info: { command: string; turnId?: string; callId?: string }): string {
@@ -450,11 +450,11 @@ export class Terminals {
       command.stop('工作区不再在这台工作机上打开');
       return '但工作区已不在这台工作机上打开，命令已停下。';
     }
-    // 名字只用来在停靠栏和窗口上认出是哪个，同用户开的「终端 N」编号；不用 shell 的 description，它常写成申请出沙箱的理由，太长
+    // 名字只用来在停靠栏和卡片上认出是哪个，同用户开的「终端 N」编号；不用 shell 的 description，它常写成申请出沙箱的理由，太长
     const title = numberedTitle('进程', this.host.store.instances(owner.workspaceId).map((instance) => instance.title));
     const instance: PluginInstance = { id: randomUUID(), workspaceId: owner.workspaceId, definitionId: terminalDefinitionId,
       title, config: { terminal: { command: info.command, log: command.log } },
-      state: { terminal: { phase: 'running' } }, presentation: 'background', status: 'open', createdAt: Date.now(),
+      state: { terminal: { phase: 'running' } }, view: 'terminal', status: 'open', createdAt: Date.now(),
       origin: { instanceId: ownerId, operationId: `${info.turnId ?? ''}:${info.callId ?? randomUUID()}`,
         ...(info.turnId ? { turnId: info.turnId } : {}), ...(info.callId ? { callId: info.callId } : {}) } };
     const session = new Session(owner.workspaceId);
@@ -487,7 +487,7 @@ export class Terminals {
     this.forwardAll();
     const instance = this.host.store.instance(id);
     if (!instance) { this.sessions.delete(id); return; }
-    // 工作机关闭时停下的不记结束：下次启动按还在运行认出是被重启结束的，连窗口一起回收（见 recover）
+    // 工作机关闭时停下的不记结束：下次启动按还在运行认出是被重启结束的，回收实例（见 recover）
     if (!this.closed) this.save(id, state);
     // 有来源的是代理转到后台的命令或起的预览；用户开的没有。
     const target = session.notifyTarget ?? instance.origin?.instanceId;
@@ -497,7 +497,9 @@ export class Terminals {
       try { this.notify(instance, target, state, output, session.child!.pid); }
       catch (error) { console.error(`[终端] ${id} 的结束通知没有发出：${(error as Error).message}`); }
     }
-    if (!this.closed) await this.collectIfWindowless(instance.workspaceId, id);
+    // 代理转到后台的命令结束即回收；别的进程留着给用户看结果，被停下的（关闭）才回收
+    const collect = session.collect || (instance.definitionId === terminalDefinitionId && !!instance.origin);
+    if (!this.closed && collect) await this.collectEnded(instance.workspaceId, id);
   }
 
   /**
@@ -521,11 +523,11 @@ export class Terminals {
     void send(1);
   }
 
-  /** 进程结束且没有窗口的实例回收；在控制队列里核对，和关窗口的回收不会重复。 */
-  private collectIfWindowless(workspaceId: string, id: string): Promise<void> {
+  /** 进程结束后回收实例；在控制队列里核对，和关闭实例时的回收不会重复。 */
+  private collectEnded(workspaceId: string, id: string): Promise<void> {
     return this.host.run(workspaceId, async () => {
       const instance = this.host.store.instance(id);
-      if (!instance || this.running(id) || this.host.store.windows(workspaceId).some((w) => w.target.instanceId === id)) return;
+      if (!instance || this.running(id)) return;
       this.host.collect(instance);
       this.host.changed(workspaceId);
     }).catch((error) => { console.error(`[终端] 回收 ${id} 失败：${(error as Error).message}`); });
@@ -542,10 +544,15 @@ export class Terminals {
    * 停下终端：先挂断，等不到退出再停整个进程组；等到退出记进状态才返回。
    * quiet 是启动它的代理自己停的，结束时不再通知它。
    */
-  stop(id: string, reason: string, quiet = false): Promise<void> {
+  /**
+   * 停下进程，确认结束才返回。停下就是关闭：结束后回收实例；keep 是工作区交接、归档与预览重起时停下，实例留着。
+   * quiet 是代理自己停的，不再通知它。
+   */
+  stop(id: string, reason: string, options: { quiet?: boolean; keep?: boolean } = {}): Promise<void> {
     const session = this.sessions.get(id);
     if (!session?.child || session.ended) return Promise.resolve();
-    if (quiet) session.notify = false;
+    if (options.quiet) session.notify = false;
+    if (!options.keep) session.collect = true;
     const existing = this.stopping.get(id);
     if (existing) return existing;
     session.reason = reason;
@@ -654,43 +661,31 @@ export class Terminals {
 
   /** 代理归档时停下它转到后台的命令，没人接收结束通知了；它起的预览照跑。 */
   async stopOwned(agentId: string, reason: string): Promise<void> {
-    await Promise.all(this.owned(agentId).map((id) => this.stop(id, reason, true)));
+    await Promise.all(this.owned(agentId).map((id) => this.stop(id, reason, { quiet: true })));
   }
 
   /** 工作区交接、冻结或归档前停下它的终端。 */
   async closeWorkspace(workspaceId: string, reason: string): Promise<void> {
     const ids = [...this.sessions.keys()].filter((id) => this.host.store.instance(id)?.workspaceId === workspaceId);
-    await Promise.all(ids.map((id) => this.stop(id, reason)));
+    await Promise.all(ids.map((id) => this.stop(id, reason, { keep: true })));
   }
 
   async close(): Promise<void> {
     this.closed = true;
     clearInterval(this.scanTimer);
-    await Promise.all([...this.sessions.keys()].map((id) => this.stop(id, '工作机已关闭，终端已结束')));
+    await Promise.all([...this.sessions.keys()].map((id) => this.stop(id, '工作机已关闭，终端已结束', { keep: true })));
   }
 
   /**
-   * 启动时核对：上次还在跑的终端已经随 kited 结束（正常关闭时停下的也按还在跑记着，见 exited），留下的进程组停掉，
-   * 连窗口一起回收，进程没了，窗口留着也接不回来。预览不同：有窗口的记成结束留着，窗口里能重新起。
-   * 之前就自己结束了的照旧：没有窗口的回收，有窗口的留着看最后的画面。调用时控制队列里还没有别的工作，直接回收。
+   * 启动时核对：上次还在跑的终端与预览已经随 kited 结束（正常关闭时停下的也按还在跑记着，见 exited），留下的进程组停掉、实例回收，
+   * 进程没了，留着也接不回来。之前就自己结束了的照旧留着，显示最后的画面。调用时控制队列里还没有别的工作，直接回收。
    */
   recover(): void {
     for (const workspace of this.host.store.workspaces()) {
-      const windows = this.host.store.windows(workspace.id);
       for (const instance of this.host.store.instances(workspace.id)) {
-        if (!this.hosted(instance)) continue;
-        const killed = terminalState(instance)?.phase !== 'exited';
-        if (killed) this.killLeftover(instance.id);
-        const window = windows.find((w) => w.target.instanceId === instance.id);
-        if (window && !killed) continue;
-        if (window && this.host.keepAfterRestart?.(instance)) {
-          this.save(instance.id, { phase: 'exited', exitCode: null, reason: '工作机重启，进程已结束', endedAt: Date.now() });
-          continue;
-        }
-        this.host.store.transaction(() => {
-          if (window) this.host.store.closeWindow(window.id);
-          this.host.collect(instance);
-        });
+        if (!this.hosted(instance) || terminalState(instance)?.phase === 'exited') continue;
+        this.killLeftover(instance.id);
+        this.host.collect(instance);
       }
     }
   }

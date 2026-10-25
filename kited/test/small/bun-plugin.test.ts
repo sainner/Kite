@@ -30,7 +30,7 @@ async function workspace(k: Kited, repo: string) {
   return (await folderWorkspace(k, repo)).workspace;
 }
 
-async function install(k: Kited, views?: { id: string; title: string; resourceUri: string }[], lifetime: 'window' | 'persistent' = 'persistent') {
+async function install(k: Kited, views?: { id: string; title: string; resourceUri: string }[], lifetime: 'closable' | 'persistent' = 'persistent') {
   const pack = { id: 'custom.test', title: '测试', bundle: await bundle, views, lifetime };
   const installed = await k.call('POST', '/plugin-definitions', pack);
   expect(installed.status).toBe(200);
@@ -38,9 +38,7 @@ async function install(k: Kited, views?: { id: string; title: string; resourceUr
 
 async function createInstance(k: Kited, workspaceId: string) {
   const id = randomUUID();
-  const created = await k.call('POST', `/workspaces/${workspaceId}/plugin-instances`, {
-    id, definitionId: 'custom.test', title: '测试实例',
-  });
+  const created = await k.call('POST', `/workspaces/${workspaceId}/instances`, { id, definitionId: 'custom.test', title: '测试实例' });
   expect(created.status).toBe(200);
   return id;
 }
@@ -56,19 +54,15 @@ function output(response: { status: number; body: any }) {
 }
 
 async function filesTarget(k: Kited, workspaceId: string) {
-  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.files' },
-  });
+  const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
   expect(opened.status).toBe(200);
-  return opened.body.target.instanceId as string;
+  return opened.body.id as string;
 }
 
 async function codingInstance(k: Kited, workspaceId: string) {
-  const opened = await k.call('POST', `/workspaces/${workspaceId}/windows`, {
-    id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
-  });
+  const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.agent' });
   expect(opened.status).toBe(200);
-  return opened.body.target.instanceId as string;
+  return opened.body.id as string;
 }
 
 function modelItem(id: string, name: string, args: Json): ModelItem {
@@ -92,10 +86,10 @@ function waitFile(path: string) {
   });
 }
 
-// 真实 MCP SDK 的资源内容和 _meta 经 stdio 到 HTTP；关窗与运行进程的生命周期必须在一起验证。
+// 真实 MCP SDK 的资源内容和 _meta 经 stdio 到 HTTP。
 // 插件子进程停止与宿主拒绝重启跨进程交接：归档返回前插件进程须已退出；宿主撤下停止期间的启动阻止后，
-// UI 调用、工具发现和视图读取都不能把已归档实例的进程重新拉起。随窗口实例没有独立存续，不能归档。
-test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，关窗后实例继续运行；归档先停掉插件进程并收起窗口，之后的调用被拒绝且不再拉起进程，随窗口实例拒绝归档', async () => {
+// UI 调用、工具发现和视图读取都不能把已归档实例的进程重新拉起。
+test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容；归档先停掉插件进程，之后的调用被拒绝且不再拉起进程', async () => {
   const k = startKited();
   try {
     const { id: workspaceId } = await workspace(k, newDir(k.root, 'project', { 'note.txt': '原始\n' }));
@@ -117,26 +111,14 @@ test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，�
       expect(rejected.status, `${id} 不应成为可加载视图`).not.toBe(200);
     }
 
-    const openView = () => k.call('POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'open', instanceId, viewId: 'state' },
-    });
-    const opened = await openView();
-    expect(opened.status).toBe(200);
-    expect(opened.body.target.instanceId).toBe(instanceId);
-    const beforeClose = output(await tool(k, instanceId, 'state', 'view-opened', { action: 'read' }));
-    expect((await k.call('DELETE', `/workspaces/${workspaceId}/windows/${opened.body.id}`)).status).toBe(200);
-    const running = output(await tool(k, instanceId, 'state', 'view-closed', { action: 'read' }));
-    expect(running).toMatchObject({ pid: beforeClose.pid, value: { count: 1 } });
+    const running = output(await tool(k, instanceId, 'state', 'view-opened', { action: 'read' }));
+    expect(running).toMatchObject({ value: { count: 1 } });
 
-    // 再开一个窗口后归档：进程先停、窗口收起。
-    expect((await openView()).status).toBe(200);
+    // 归档：进程先停。
     expect((await k.call('GET', `/instances/${instanceId}/plugin/process`)).body.phase).toBe('running');
     expect((await k.call('POST', `/instances/${instanceId}/archive`)).status).toBe(200);
     expect(() => process.kill(running.pid, 0)).toThrow();
     expect(k.daemon.kite.store.instance(instanceId)?.status).toBe('archived');
-    const archived = await k.call('GET', `/workspaces/${workspaceId}`);
-    expect(archived.body.windows.filter((value: { target: { instanceId: string } }) =>
-      value.target.instanceId === instanceId)).toEqual([]);
 
     expect((await tool(k, instanceId, 'state', 'archive-after', { action: 'read' })).status).not.toBe(200);
     expect((await k.call('GET', `/instances/${instanceId}/plugin/tools`)).status).not.toBe(200);
@@ -144,9 +126,6 @@ test('声明的 MCP App 视图读取本实例资源，拒绝不安全内容，�
     const afterCalls = await k.call('GET', `/instances/${instanceId}/plugin/process`);
     expect(afterCalls.body.phase ?? 'stopped').toBe('stopped');
     expect(k.daemon.kite.store.instance(instanceId)?.status).toBe('archived');
-
-    const filesId = await filesTarget(k, workspaceId);
-    expect((await k.call('POST', `/instances/${filesId}/archive`)).status).toBe(400);
   } finally {
     await k.stop();
   }
@@ -369,14 +348,11 @@ test('撤权拒绝旧模型调用，工具通知按生成时模板冻结且目�
       id: 'custom.test', title: '测试', bundle: await bundle, lifetime: 'persistent',
     })).status).toBe(200);
     const targetId = randomUUID();
-    expect((await apiCall('POST', `/workspaces/${workspaceId}/plugin-instances`, {
+    expect((await apiCall('POST', `/workspaces/${workspaceId}/instances`, {
       id: targetId, definitionId: 'custom.test', title: '目标',
     })).status).toBe(200);
-    const opened = await apiCall('POST', `/workspaces/${workspaceId}/windows`, {
-      id: randomUUID(), content: { kind: 'create', definitionId: 'kite.agent' },
-    });
-    expect(opened.status).toBe(200);
-    const agentId = opened.body.target.instanceId as string;
+    const agentId = randomUUID();
+    expect((await apiCall('POST', `/workspaces/${workspaceId}/instances`, { id: agentId, definitionId: 'kite.agent' })).status).toBe(200);
     const oldToolsTemplate = await editNotificationTemplate(apiCall,
       'kite.plugin-tools', '插件通知旧模板', 'plugin.tools');
     const grants = await apiCall('GET', `/instances/${agentId}/operation-grants`);

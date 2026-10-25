@@ -84,7 +84,8 @@ export interface PluginInstance {
   title: string;
   config: Record<string, unknown>;
   state: Record<string, unknown>;
-  presentation: 'window' | 'inline' | 'background';
+  /** 当前显示的视图，须是定义声明的；没有视图的实例没有。切换同步到各端，在不在台面上由各设备自己记。 */
+  view?: string;
   status: 'open' | 'archived';
   createdAt: number;
   /** 由宿主记录创建来源，不构成级联删除关系，也不由模型参数指定。 */
@@ -102,29 +103,18 @@ export function numberedTitle(name: string, titles: Iterable<string>): string {
   return `${name} ${number}`;
 }
 
-export interface WindowTarget {
-  instanceId: string;
-  viewId: string;
-}
-
-/** 共享窗口集合由工作机保存，一个实例最多一个打开的窗口，target.viewId 是它当前的视图；分栏、停靠和焦点不进入这个对象。 */
-export interface WorkspaceWindow {
+/**
+ * 新建实例的请求（POST /workspaces/:id/instances）：id 是客户端给的实例 ID，App 据此在工作机确认前先把它放上本机台面；
+ * title 省略时按插件名编号（预览用目标名）。command 只用于终端，等 shell 起好后打进去执行。preview 只用于预览，必带：目标与可选的设备，
+ * 同一目标与设备已经在跑时返回那个实例。page 只用于浏览，打开到一个网页（本工作区的端口或互联网网址）。
+ */
+export interface CreateInstanceRequest {
   id: string;
-  workspaceId: string;
-  target: WindowTarget;
-  state: 'open' | 'closed';
-  createdAt: number;
-}
-
-export interface OpenWindowRequest {
-  id: string;
-  /**
-   * create 的 instanceId 是新实例的 ID，App 给的话按它建（App 先按它在本机打开窗口）；title 省略时按插件名编号（预览用目标名）。
-   * command 只用于终端，等 shell 起好后打进去执行。preview 只用于预览，必带：目标与可选的设备，同一目标与设备已经在跑时打开那个实例。
-   * page 只用于浏览，打开到一个网页（本工作区的端口或互联网网址）。
-   */
-  content: ({ kind: 'open' } & WindowTarget) | { kind: 'create'; definitionId: string; instanceId?: string; title?: string; command?: string;
-    preview?: PreviewSpec; page?: Page };
+  definitionId: string;
+  title?: string;
+  command?: string;
+  preview?: PreviewSpec;
+  page?: Page;
 }
 
 export interface WorkspaceModel {
@@ -134,7 +124,6 @@ export interface WorkspaceModel {
   workspace: Workspace;
   threads: Thread[];
   instances: PluginInstance[];
-  windows: WorkspaceWindow[];
 }
 
 /** 执行时装配的上下文；路径只来自工作区，主目录只来自检出。 */

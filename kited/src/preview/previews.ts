@@ -1,6 +1,6 @@
 /**
  * 预览插件 kite.preview（docs/实例操作.md「预览」）：一个实例是一种目标（.kite/preview/ 下的脚本，见 targets.ts）跑起来的全部进程加画面。
- * 进程由终端插件托管（terminal/terminals.ts），实例随进程存续：进程结束且没有窗口时回收，关窗口不停进程。同一工作区的同一目标与设备只跑一份。
+ * 进程由终端插件托管（terminal/terminals.ts），实例随进程存续：进程自己结束后标为已结束、留到用户关闭，用户或 agent 停下即关闭、随之回收。同一工作区的同一目标与设备只跑一份。
  * 画面的种类由进程产生什么决定（state.preview.screen）：进程树里开着窗口的 Mac App、目标用的模拟器、能用 HTTP 打开的端口，都没有就只有输出。
  * 网页在设备自己的网页视图里看时（browser 为 device，默认）工作机不参与，设备经端口转发打开；agent 操作这样的预览时，宿主在工作机的 WebKit 里另开同一个地址，
  * 与设备上的页面不共享状态。在工作机上的浏览器里看时，人和 agent 操作同一个页面。模拟器和 App 窗口人和 agent 看的是同一块屏幕。
@@ -91,7 +91,7 @@ const IDLE_MS = 10 * 60_000;
 const OPEN_WAIT_MS = 30_000;
 /** 等模拟器里的 App 到前台时多久问一次。 */
 const LAUNCH_POLL_MS = 1000;
-/** 新建窗口列的配对过的真机多久重新问一次 devicectl。 */
+/** 新建预览时列的配对过的真机多久重新问一次 devicectl。 */
 const PAIRED_TTL_MS = 15_000;
 
 /** 一个画面：画面视图，或并排视图的一格。 */
@@ -476,13 +476,13 @@ export class Previews {
       const running = existing && this.host.terminals.running(existing.id);
       if (existing && running && !options.restart) return { instance: existing, reused: true };
       if (!options.checked) throw new KiteError(`目标「${resolved.target.name}」刚刚结束了，再调用一次 preview_open 起它`, 409);
-      if (existing && running) await this.host.terminals.stop(existing.id, '预览重新运行', true);
+      if (existing && running) await this.host.terminals.stop(existing.id, '预览重新运行', { quiet: true, keep: true });
       const launch = await this.prepare(workspaceId, resolved);
       if (findTarget(this.workspace(workspaceId).cwd, resolved.target.name).content !== resolved.target.content) {
         throw new KiteError(`目标「${resolved.target.name}」刚刚又改了，重新起一次`, 409);
       }
       const instance: PluginInstance = existing ?? { id: randomUUID(), workspaceId, definitionId: previewDefinitionId, title: launch.title,
-        config: { preview: launch.spec }, state: {}, presentation: 'background', status: 'open', createdAt: Date.now(), origin };
+        config: { preview: launch.spec }, state: {}, view: 'screen', status: 'open', createdAt: Date.now(), origin };
       if (!existing) this.host.store.addPluginInstance(instance);
       launched = launch.env.KITE_SIMULATOR;
       if (launched) this.launchedBefore.set(instance.id, new Set(await this.host.simulators.launchedApps(launched)));
@@ -490,7 +490,7 @@ export class Previews {
       this.host.changed(workspaceId);
       return { instance, reused: false };
     });
-    // 没有窗口的进程结束后随即回收，状态与输出取等待时拿着的会话里的
+    // 等待期间用户可能关掉了实例，状态与输出取等待时拿着的会话里的
     const waited = reused ? { state: this.host.terminals.processState(instance.id), text: await this.host.terminals.tail(instance.id) }
       : await this.host.terminals.waitUntil(instance.id, () => this.ready(instance.id), { ms: OPEN_WAIT_MS, ...(launched ? { pollMs: LAUNCH_POLL_MS } : {}), signal });
     this.launchedBefore.delete(instance.id);

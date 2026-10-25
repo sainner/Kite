@@ -121,8 +121,8 @@ test('并发收据共享一次执行，重开保留结果与错误，落盘失�
   }
 }, 1000);
 
-// HTTP、SQLite 收据和窗口目录跨重启交接：同一创建操作只生成一个实例和窗口，查询不能唤醒线程。
-test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗口且 list 只读', async () => {
+// HTTP 与 SQLite 收据跨重启交接：同一创建操作只生成一个实例，查询不能唤醒线程。
+test('agent.start 跨重启重试复用实例，list 只读', async () => {
   const root = makeTemp();
   const home = join(root, 'kite');
   const repo = newDir(root, 'project', { 'base.txt': '原始\n' });
@@ -132,16 +132,14 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     daemon = startDaemon({ home, port: 0, lightTasks: false, model: () => model });
     const workspaceId = (await folderWorkspace(daemon, repo)).workspace.id;
 
-    const windowRequest = { operationId: 'create-window', title: '编码线程', presentation: 'window' };
-    const backgroundRequest = { operationId: 'create-background', role: 'kite.review', presentation: 'background' };
+    const windowRequest = { operationId: 'create-window', title: '编码线程' };
+    const backgroundRequest = { operationId: 'create-background', role: 'kite.review' };
     const window = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), windowRequest);
     const background = await call(daemon.url, 'POST', operationPath(workspaceId, 'agent.start'), backgroundRequest);
     expect(window.status).toBe(200);
     expect(background.status).toBe(200);
-    const windowId = window.body.windowId as string;
     const codingId = window.body.instanceId as string;
     const reviewId = background.body.instanceId as string;
-    expect(background.body.windowId).toBeUndefined();
     const codingExecution = await call(daemon.url, 'GET', `/instances/${codingId}/execution-grants`);
     const reviewExecution = await call(daemon.url, 'GET', `/instances/${reviewId}/execution-grants`);
     const revisedExecution = await call(daemon.url, 'PUT', `/instances/${codingId}/execution-grants`, {
@@ -174,8 +172,6 @@ test('agent.start 跨重启重试复用实例与窗口，后台实例不建窗�
     const aggregate = await call(daemon.url, 'GET', '/workspaces');
     const workspace = aggregate.body.find((entry: { workspace: { id: string } }) => entry.workspace.id === workspaceId);
     expect(workspace.instances.filter((instance: { id: string }) => [codingId, reviewId].includes(instance.id))).toHaveLength(2);
-    expect(workspace.windows.filter((entry: { target: { instanceId: string } }) => [codingId, reviewId].includes(entry.target.instanceId)))
-      .toEqual([expect.objectContaining({ id: windowId, target: { instanceId: codingId, viewId: 'conversation' } })]);
     expect(model.calls.values).toHaveLength(0);
   } finally {
     await daemon?.stop();
@@ -200,9 +196,7 @@ test('模型创建记录来源，协作操作受工作区与角色工具约束',
   })).status).toBe(200);
   const first = await model.call(1);
   expect(first.request.allowedTools).toContain('agent_start');
-  await first.response.emit({ type: 'item', item: calledItem('create-review', 'agent_start', {
-    role: 'kite.review', presentation: 'background',
-  }) });
+  await first.response.emit({ type: 'item', item: calledItem('create-review', 'agent_start', { role: 'kite.review' }) });
   first.response.complete();
   const second = await model.call(2);
   const aggregate = await kk.call('GET', '/workspaces');

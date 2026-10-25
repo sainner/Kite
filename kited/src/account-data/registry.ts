@@ -1,5 +1,5 @@
 /**
- * 项目登记表与项目约束，随账号级数据在工作机之间同步。有远程的项目以远程为身份：同一远程总是同一个项目，ID 由先登记它的工作机生成。
+ * 项目登记表、项目约束与项目的布局，随账号级数据在工作机之间同步。有远程的项目以远程为身份：同一远程总是同一个项目，ID 由先登记它的工作机生成。
  * 两台工作机没同步上时各自登记了同一远程，会出现两个项目；之后按归一化的远程合并，最早登记的（createdAt、ID 依次比较）保留，
  * 其余记为并入它，各机把本机的检出改挂过去。
  * 没有远程的项目以 ID 为身份，各工作机上的检出互为远程（workspace/peer-git.ts）；之后可以再设远程，ID 不变。见 docs/项目与远程仓库.md。
@@ -11,6 +11,8 @@ import { httpsRemote, normalizeRemote, remoteName } from '../remote-url.ts';
 import { revisionOf, type AccountData } from './store.ts';
 import { parseProjectExecution, stricterExecution, type ProjectExecution } from '../execution/grants.ts';
 import { serverNamesSchema } from '../mcp/names.ts';
+import { pageSchema } from '../workspace/files.ts';
+import { deviceSchema } from '../preview/devices.ts';
 
 /** 集成方式：直接合入主线并推送，或推分支提交 PR，见 docs/项目与远程仓库.md「工作区与集成」。 */
 export const INTEGRATIONS = ['merge', 'pullRequest'] as const;
@@ -43,6 +45,48 @@ export interface ProjectConstraints {
 }
 
 type Stored = Omit<RegisteredProject, 'id'> | { mergedInto: string };
+
+/**
+ * 布局是项目的一张配方（docs/台面与停靠栏.md「布局」）：成员按种类记下找现成实例或新建要用的信息，arrangement 是成员的摆法树，
+ * 每个成员下标在树里恰好出现一次。kited 只校验与保存，不解释摆法。
+ */
+export type LayoutMember = { kind: 'agent'; role: string } | { kind: 'files'; page?: z.infer<typeof pageSchema> } | { kind: 'terminal' }
+  | { kind: 'preview'; target: string; device?: z.infer<typeof deviceSchema> } | { kind: 'plugin'; definition: string };
+export type LayoutArrangement = { kind: 'member'; index: number }
+  | { kind: 'split'; axis: 'horizontal' | 'vertical'; ratio: number; first: LayoutArrangement; second: LayoutArrangement };
+export interface Layout { name: string; members: LayoutMember[]; arrangement: LayoutArrangement }
+export interface ProjectLayout extends Layout { id: string; revision: string }
+
+const identifier = z.string().trim().min(1).max(200);
+/** 布局 ID 由客户端给，与其他客户端生成的 ID 一样是 UUID 这类单段字符。 */
+export const layoutIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,80}$/);
+const layoutMember = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('agent'), role: identifier }).strict(),
+  z.object({ kind: z.literal('files'), page: pageSchema.optional() }).strict(),
+  z.object({ kind: z.literal('terminal') }).strict(),
+  z.object({ kind: z.literal('preview'), target: identifier, device: deviceSchema.optional() }).strict(),
+  z.object({ kind: z.literal('plugin'), definition: identifier }).strict(),
+]);
+const layoutArrangement: z.ZodType<LayoutArrangement> = z.lazy(() => z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('member'), index: z.number().int().min(0) }).strict(),
+  z.object({ kind: z.literal('split'), axis: z.enum(['horizontal', 'vertical']), ratio: z.number().gt(0).lt(1),
+    first: layoutArrangement, second: layoutArrangement }).strict(),
+]));
+const MAX_LAYOUT_MEMBERS = 32;
+/** 摆法树里出现的成员下标，按出现顺序；同一下标出现两次时记两次。 */
+const arranged = (node: LayoutArrangement): number[] => node.kind === 'member' ? [node.index] : [...arranged(node.first), ...arranged(node.second)];
+export const layoutSchema = z.object({
+  name: z.string().trim().min(1).max(80).refine((name) => !/[\r\n]/.test(name), '名称只能是一行'),
+  members: z.array(layoutMember).min(1).max(MAX_LAYOUT_MEMBERS),
+  arrangement: layoutArrangement,
+}).strict().refine((layout) => {
+  const indexes = arranged(layout.arrangement);
+  return indexes.length === layout.members.length && new Set(indexes).size === indexes.length && indexes.every((index) => index < layout.members.length);
+}, '摆法里每个成员要恰好出现一次');
+const layoutWrite = z.object({ expectedRevision: z.string().min(1).optional(), layout: layoutSchema }).strict();
+/** 账号级数据里布局的条目 ID：项目在前，删除条目时也能从 ID 认出是哪个项目的。 */
+const layoutKey = (projectId: string, layoutId: string) => `${projectId}:${layoutId}`;
+export const layoutProject = (key: string): string => key.slice(0, key.indexOf(':'));
 
 const appearance = z.object({
   icon: z.string().min(1).max(100).regex(/^[a-zA-Z0-9.]+$/).optional(),
@@ -114,11 +158,37 @@ export class ProjectRegistry {
     return undefined;
   }
 
-  /** 删除项目：登记与约束一起删，各工作机看到后移除本机的检出。之后再添加同一远程或文件夹是新项目。 */
+  /** 删除项目：登记、约束与布局一起删，各工作机看到后移除本机的检出。之后再添加同一远程或文件夹是新项目。 */
   remove(id: string): void {
-    this.require(id);
+    const layouts = this.layouts(id);
     this.data.remove('project', id);
     this.data.remove('constraints', id);
+    for (const layout of layouts) this.data.remove('layout', layoutKey(id, layout.id));
+  }
+
+  /** 项目的布局，按名字排。 */
+  layouts(projectId: string): ProjectLayout[] {
+    this.require(projectId);
+    const prefix = layoutKey(projectId, '');
+    return this.data.list('layout').filter((item) => item.id.startsWith(prefix))
+      .map((item) => ({ id: item.id.slice(prefix.length), revision: item.revision, ...(item.body as unknown as Layout) }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh') || a.id.localeCompare(b.id));
+  }
+
+  /** 新建（不带 expectedRevision）或整体替换一个布局；版本不符、或新建的 ID 已有别的内容时 409。 */
+  saveLayout(projectId: string, layoutId: string, raw: unknown): ProjectLayout {
+    this.require(projectId);
+    if (!layoutIdSchema.safeParse(layoutId).success) throw new KiteError('布局 ID 无效');
+    const parsed = layoutWrite.safeParse(raw);
+    if (!parsed.success) throw new KiteError(`布局无效：${parsed.error.issues[0]?.message ?? ''}`);
+    const { expectedRevision, layout } = parsed.data;
+    const item = this.data.put('layout', layoutKey(projectId, layoutId), layout as unknown as Record<string, unknown>, expectedRevision ?? null);
+    return { id: layoutId, revision: item.revision, ...layout };
+  }
+
+  removeLayout(projectId: string, layoutId: string, expectedRevision: string): void {
+    this.require(projectId);
+    this.data.remove('layout', layoutKey(projectId, layoutId), expectedRevision);
   }
 
   byRemote(remote: string): RegisteredProject | undefined {
@@ -223,6 +293,12 @@ export class ProjectRegistry {
           this.data.put('constraints', kept!.id, { tools: stricter(keptRule.tools, rule.tools), ...(execution ? { execution } : {}),
             ...(deny.length ? { mcp: { deny } } : {}) });
           this.data.remove('constraints', project.id);
+        }
+        // 并入的项目的布局挂到保留的项目下，同 ID 的留保留项目那份
+        for (const layout of this.layouts(project.id)) {
+          const { id, revision: _, ...body } = layout;
+          if (!this.data.get('layout', layoutKey(kept!.id, id))) this.data.put('layout', layoutKey(kept!.id, id), body as unknown as Record<string, unknown>);
+          this.data.remove('layout', layoutKey(project.id, id));
         }
         this.data.put('project', project.id, { mergedInto: kept!.id });
       }

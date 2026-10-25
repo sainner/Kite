@@ -62,7 +62,7 @@ bun run harness --resume <会话id>
 
 自研 harness 与 Claude 各自负责完整 agent 循环，Kite 宿主负责工作区、共享工具、授权、快照与显示协议。执行进程关闭后会话仍可继续，两种后端保留各自的原生恢复记录。
 
-后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例、窗口和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队的输入，否则返回 409。
+后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队的输入，否则返回 409。
 
 自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
 
@@ -331,7 +331,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/network/channel/key` | 仅本机：通道公钥 `{publicKey}`，没有私钥时先生成；kite-net 读钥匙串可能要等用户允许 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
 | GET | `/project-registry/:id/layouts` | 这个项目的布局 `{layouts: [{id, name, members, arrangement, revision}]}`，配方的含义见 [台面与停靠栏](台面与停靠栏.md#布局) |
-| PUT / DELETE | `/project-registry/:id/layouts/:layout` | PUT `{expectedRevision?, layout: {name, members, arrangement}}` 新建（不带 `expectedRevision`）或整体替换一个布局，版本不符 409；DELETE `?expectedRevision=` 删除。布局是账号级数据，随项目登记同步，变化推 `kind` 为 `layout` 的 `library.changed`（另带 `projectId`） |
+| PUT / DELETE | `/project-registry/:id/layouts/:layout` | PUT `{expectedRevision?, layout: {name, members, arrangement}}` 新建（不带 `expectedRevision`）或整体替换一个布局，返回保存后的布局 `{id, name, members, arrangement, revision}`，版本不符 409；DELETE `?expectedRevision=` 删除，返回 `{ok: true}`。`:layout` 是客户端生成的 ID（1～80 个字母、数字、`.`、`_`、`-`）。布局是账号级数据，随项目登记同步，变化推 `kind` 为 `layout` 的 `library.changed`（另带 `projectId`） |
 | GET | `/checkouts` | 列出本机检出（`?project=`） |
 | GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本，打开的工作区带 `workspace.rootNames`（工作区目录顶层的名字，App 据此识别消息里的路径，顶层在快照后有增减时发 `workspace.changed`）；创建 `{project, prompt?, role?, id?, instanceId?, messageId?}`（先检查环境，没有检出时先 clone，clone 时远程要账号的错误体带 `gitLogin`），`role` 为 `{id, revision}`，准备过程看事件；`id`、`instanceId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理实例和第一条消息的 ID，工作区或实例 ID 已用过返回 409，省略时由 kited 生成 |
 | GET | `/environment?project=&needs=` | 这台工作机为该项目建工作区前的环境，只读；`needs` 是逗号分隔的换机环境需求，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
@@ -344,7 +344,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/line` | 在这台工作机启用个人 agent Line，同时建它的收件箱（Line 的 monitor 实例）；收件箱的读取、代处理与托管走实例操作，见 [实例操作](实例操作.md#monitor)。其他工作机的目录摘要里已有 Line 时返回 409。约定见 [Line](Line与工作区流转.md#line) |
 | GET / PUT | `/attention` | 关注设备：`PUT {device, focused}` 声明这台设备是否在关注 Kite，须同时连着带 `device` 的事件流才生效；`GET` 返回 `{focusedDevices, awaySince?}` |
 | GET | `/threads/:id/reply` | 线程最后一回合的回复（最后一条输入之后的正文）与执行状态，供 Line 读取 |
-| GET | `/workspaces/:id` | 工作区上下文及 instances、threads、windows 的完整聚合 |
+| GET | `/workspaces/:id` | 工作区上下文及 instances、threads 的完整聚合；每个实例带当前视图 `view`（没有视图的实例没有） |
 | GET / POST | `/plugin-definitions` | 读取定义（含账号资源库里尚未装到本机的包）或登记自定义包；包格式见 Bun 插件契约 |
 | GET / PUT | `/plugins/:definitionId/grants` | Bun 插件定义级的协作授权 `{grants, revision}`，新建实例时拷进实例；PUT `{expectedRevision, grants}` 整体替换，版本不符 409、有定义级不收的项 400、不是 Bun 插件定义 404，见 [实例操作](实例操作.md#bun-插件的定义级授权) |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
