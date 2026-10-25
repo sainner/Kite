@@ -35,7 +35,7 @@ import { PluginCatalog } from './plugins/catalog.ts';
 import { PluginHost } from './plugins/host.ts';
 import { McpServers } from './mcp/servers.ts';
 import { instanceMcp } from './mcp/tools.ts';
-import { InstanceConfiguration } from './instance-configuration.ts';
+import { InstanceConfiguration, trustedScripts } from './instance-configuration.ts';
 import { handOff } from './handoff/handoff.ts';
 import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
@@ -46,12 +46,13 @@ import { LibrarySync, type LibraryChanges } from './library-sync.ts';
 import { agentDefinitionId, agentToolCatalog, agentTools } from './plugins/definitions.ts';
 import { addWorktree, excludeAttachments, excludeSecretFiles, removeSecretFile, removeWorktree, runSetup, writeSecretFiles } from './workspace/worktrees.ts';
 import { Attachments, attachmentStore } from './workspace/attachments.ts';
+import { checkLogs } from './check.ts';
 import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
   pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
 import { defaultApprovalMode, effectiveExecution, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
-import { agentPolicy, harnessPolicy, withSkillReads } from './execution/policy.ts';
+import { agentPolicy, harnessPolicy, withReads } from './execution/policy.ts';
 import { commandEnvironment } from './execution/sandbox.ts';
 import { monitorConfig, monitorDefinitionId, monitorEventsContextDefinition, Monitors } from './monitor/monitors.ts';
 import { InstanceOperations } from './operations/operations.ts';
@@ -89,7 +90,6 @@ import { listApps } from './preview/app-windows.ts';
 import { Previews } from './preview/previews.ts';
 import { Simulators } from './preview/simulators.ts';
 import { previewDefinitionId } from './preview/state.ts';
-import { trustedTargets } from './preview/targets.ts';
 import { contentHash, projectSkills, SkillCatalog } from './harness/context/project.ts';
 import { loadSkill, systemSkillsDirectory, type SkillSources } from './harness/context/skills.ts';
 import { Skills, type SkillSummary } from './skills.ts';
@@ -368,7 +368,7 @@ export class Kite {
       policy: async (target) => {
         const { workspace, checkout } = this.workspace(target.workspaceId);
         // monitor 的命令与代理共用沙箱，同样读得到 skill 的文件夹；每次启动命令时按此刻的清单。
-        const base = withSkillReads(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }),
+        const base = withReads(await harnessPolicy({ cwd: workspace.cwd, env: process.env, home, repository: checkout.path }),
           new SkillCatalog(workspace.cwd, this.skillSources).readable);
         return agentPolicy(base, workspace.cwd,
           instanceExecutionChanges(target), store.workspaceConstraints(target.workspaceId)?.execution, this.secretFiles(checkout.projectId));
@@ -659,7 +659,7 @@ export class Kite {
             this.store.deleteWorkspaceRows(w.id);
           } finally { release(); }
           for (const path of [...threads.map((t) => join(this.home, 'sessions', t.id)), join(this.home, 'diffs', w.id), attachmentStore(this.home, w.id),
-            join(this.home, 'workspaces', w.id)]) {
+            join(this.home, 'workspaces', w.id), checkLogs(this.home, w.id)]) {
             rmSync(path, { recursive: true, force: true });
           }
           this.transcripts.forget(threads.map((t) => t.id));
@@ -1688,6 +1688,7 @@ export class Kite {
       secretFiles: () => this.secretFiles(t.project.id),
       requestSecret: (request) => this.requestSecret(id, request),
       withdrawSecret: (ask) => this.asks.withdraw(id, ask, 'secret'),
+      approveCheck: (script, reason, signal) => this.approveScript(id, { tool: 'check', name: '.kite/check', content: script, reason }, signal),
       constraints: () => this.store.projectConstraints(t.project.id),
       mcp: this.mcp,
       askNetwork: ({ host, port }, signal) => {
@@ -1732,12 +1733,15 @@ export class Kite {
     }
     return decision === 'once' || decision === 'remember';
   }
-  /** 代理用 preview_open 起与主线不一致的目标：这份内容记住过就放行，否则同其他越界请求按审批模式处理，见 askApproval。 */
-  approveTarget(id: string, target: { name: string; content: string; reason: string }, signal: AbortSignal): Promise<boolean> {
-    const digest = contentHash(target.content);
-    if (trustedTargets(this.context(id)).includes(digest)) return Promise.resolve(true);
-    return this.askApproval(id, { tool: 'preview_open', target: target.name, reason: target.reason, mustAsk: false, script: target.content },
-      { what: '目标', save: () => this.configuration.rememberTarget(id, digest) }, signal);
+  /**
+   * 代理起与主线不一致的预置脚本（preview_open 的目标、check 的 .kite/check）：这份内容记住过就放行，否则同其他越界请求按审批模式处理，
+   * 见 askApproval。
+   */
+  approveScript(id: string, script: { tool: 'preview_open' | 'check'; name: string; content: string; reason: string }, signal: AbortSignal): Promise<boolean> {
+    const digest = contentHash(script.content);
+    if (trustedScripts(this.context(id)).includes(digest)) return Promise.resolve(true);
+    return this.askApproval(id, { tool: script.tool, target: script.name, reason: script.reason, mustAsk: false, script: script.content },
+      { what: '脚本', save: () => this.configuration.rememberScript(id, digest) }, signal);
   }
   /** 代理用 preview_open 装到真机：会覆盖设备上正在用的版本，每次都在线程上问人，与审批模式无关，不记住。 */
   async approveDevice(id: string, request: { target: string; device: string }, signal: AbortSignal): Promise<boolean> {

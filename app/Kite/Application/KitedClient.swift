@@ -51,7 +51,7 @@ nonisolated struct RemoteWaiting: Decodable, Equatable, Sendable {
     var outside: Bool?
     /// 出沙箱的命令绑定的密钥引用，如 {project.ssh_pw}。
     var secretReferences: [String]?
-    /// 代理起与主线不一致的预览目标（tool 为 preview_open，target 是目标名）：脚本的内容。
+    /// 代理起与主线不一致的预置脚本（tool 为 preview_open 时 target 是目标名，为 check 时是 .kite/check）：脚本的内容。
     var script: String?
     /// 密钥请求一次要的几项，用户在同一张卡片里填，填了几项存几项。
     var secrets: [Secret]?

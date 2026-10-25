@@ -1,7 +1,6 @@
 /** 面向客户端的会话协议。原生 journal 负责恢复，显示投影只负责历史和实时事件。 */
 import type { DiffReference } from '../workspace/file-diffs.ts';
 import type { DomainEvent, Stamped } from '../events.ts';
-import type { CheckResult } from '../check.ts';
 import type { AttachmentRef, Input, InputNotice, Json, Phase, Outcome } from '../harness/types.ts';
 import { senderName } from '../harness/input.ts';
 import type { WorkspaceStatus } from '../model.ts';
@@ -64,7 +63,6 @@ export type ThreadDisplayEvent =
   | { type: 'thread.pending'; pending: PendingInput[] }
   | { type: 'thread.state'; state: DisplayState }
   | { type: 'thread.idle' }
-  | { type: 'thread.check'; result: CheckResult }
   | { type: 'thread.error'; message: string };
 /**
  * 代理活动摘要，供停靠栏这类概览使用；完整状态以线程流的 thread.state 为准。只有载入过显示投影的线程才有摘要。

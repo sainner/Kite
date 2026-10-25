@@ -183,7 +183,6 @@ export class TranscriptProjection {
       case 'waiting': this.waiting = event.waiting; this.emit({ type: 'thread.state', state: this.state() }); break;
       case 'asks': this.setAsks(event.asks); break;
       case 'error': this.error = event.message; this.emit({ type: 'thread.state', state: this.state() }); this.emit({ type: 'thread.error', message: event.message }); break;
-      case 'check': this.emit({ type: 'thread.check', result: event.result }); break;
     }
   }
 

@@ -1,4 +1,4 @@
-/** 文件工具限定在工作目录内，read 另可读 skill 文件夹；shell 通过工作机共用的操作系统沙箱执行。 */
+/** 文件工具限定在工作目录内，read 另可读 skill 文件夹与检查日志；shell 通过工作机共用的操作系统沙箱执行，check 在哪跑见 check.ts。 */
 import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -11,7 +11,8 @@ import { loadSkill, systemSkillSources } from '../harness/context/skills.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
-import { withSkillReads } from './policy.ts';
+import { withReads } from './policy.ts';
+import { runCheck, type CheckHost } from '../check.ts';
 import { assertFileAccess, canonicalPath, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
 import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
 import { secretBindings, secretRequest, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
@@ -37,6 +38,9 @@ const shellArgs = z.object({
 }).strict();
 /** shell 的默认时限，超过就转后台（带密钥的到时限就停）。 */
 const SHELL_TIMEOUT_MS = 120_000;
+const checkArgs = z.object({
+  all: z.boolean().optional().describe('跑全量，不只是受改动影响的部分。'),
+}).strict();
 const backgroundArg = z.boolean().optional().describe('true 时命令一开始就在后台终端里运行，立刻返回；用于开发服务器、监听构建这类不会自己结束或要跑很久的命令。');
 const outsideArg = z.boolean().optional().describe('true 时申请这条命令在沙箱外运行；description 写清为什么沙箱里跑不了。');
 
@@ -64,6 +68,11 @@ diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File
 提供足够上下文定位目标；必要时用 @@ 函数名等原文行作为定位锚点。
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
 
+const checkDescription = '跑项目的检查（.kite/check），判断这个项目改坏了没有；代码项目通常是类型检查加受改动影响的测试。'
+  + '改完用它确认，通过才算完成；不要在 shell 里直接跑 .kite/check。受影响的范围按这个工作区相对主线的全部改动算，提交过的也算。'
+  + '.kite/check 与主线上的一致时在沙箱外运行，改过的要先经用户批准，没获准就在沙箱里运行；这台工作机上一次只跑一个检查，别的在跑时排队。'
+  + '没通过时结果里有失败项和日志路径，日志用 read 或 shell 查看。';
+
 const skillDescription = '加载一个 skill：按名字取它的 SKILL.md 正文（去掉头部元数据），连同文件夹位置和里面的文件清单，之后按正文做；'
   + '上下文里已经有这个 skill 的完整正文时不用再加载。文件夹里的其他文件用 read 按绝对路径读，脚本用 shell 跑。可用的 skill 见基础上下文里的清单。';
 
@@ -74,23 +83,26 @@ PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数�
 
 /**
  * skills 是宿主的 skill 清单（每次请求前刷新，见 SkillCatalog）：skill 工具、read 认的 skill 文件夹和沙箱的只读放行都按它；
- * 不给时只有系统层与项目层，按建工具时扫的那一份。
+ * 不给时只有系统层与项目层，按建工具时扫的那一份。check 给出时才有 check 工具，见 check.ts。
  */
 export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials' | 'background'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy);
-  secrets?: SecretProvider; background?: ShellBackground; outside?: ShellOutside; skills?: SkillCatalog }): Tool[] {
+  secrets?: SecretProvider; background?: ShellBackground; outside?: ShellOutside; skills?: SkillCatalog; check?: CheckHost }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
   const skills = options.skills ?? new SkillCatalog(root, systemSkillSources);
-  /** read 的范围：工作目录，或这个工作目录能加载的某个 skill 的文件夹（绝对路径落在里面时），按那个文件夹的边界解析。 */
+  const { check } = options;
+  /** read 的范围：工作目录，或这个工作目录能加载的某个 skill 的文件夹、检查日志（绝对路径落在里面时），按那个文件夹的边界解析。 */
   const readScope = (path: string): { files: WorkspaceFiles; path: string } => {
     const target = resolve(root, path);
     if (within(target, root)) return { files, path };
     // skill 的文件夹是真实路径；经软链接写的路径（如 ~/.claude/skills 本身链到别处）按真实位置认。
     const real = canonicalPath(target);
-    const skill = skills.skills.find((entry) => within(real, entry.directory));
-    return skill ? { files: new WorkspaceFiles(skill.directory), path: relative(skill.directory, real) } : { files, path };
+    const directory = skills.skills.find((entry) => within(real, entry.directory))?.directory
+      ?? (check && within(real, canonicalPath(check.logs)) ? canonicalPath(check.logs) : undefined);
+    return directory ? { files: new WorkspaceFiles(directory), path: relative(directory, real) } : { files, path };
   };
-  const policy = () => withSkillReads(typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env), skills.readable);
+  const policy = () => withReads(typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(root, options.env),
+    [...skills.readable, ...(check ? [check.logs] : [])]);
   const diffs = new FileDiffStore(options.diffDir ?? join(options.logDir, 'diffs'));
   const limit = options.outputLimit ?? 20_000;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('工具输出限制必须为正整数');
@@ -254,6 +266,11 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
               adopt: (adopted) => background.adopt(adopted, { command, turnId: context.turnId, callId: context.callId }) } });
         } finally { unsubscribe?.(); }
       }),
+    ...(check ? [make('check', checkDescription, checkArgs, ({ all = false }, { signal, output }) => runCheck(all, signal, {
+      ...check, command: { cwd: root, env: options.env, policy: policy(), onOutput: output ?? options.onOutput,
+        ...(options.outputLimit ? { outputLimit: options.outputLimit } : {}), ...(options.onProcess ? { onProcess: options.onProcess } : {}),
+        ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}) },
+    }))] : []),
     make('credentials', [
       '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用。',
       '缺密钥时用 request 向用户要，同时缺几个就一起要：',

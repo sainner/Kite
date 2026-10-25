@@ -8,6 +8,7 @@ import { claudeToolServer } from './tools.ts';
 import { claudeState, readClaudeControl, saveClaudeControl } from './control.ts';
 import { claudeInputTokens } from './usage.ts';
 import type { SecretProvider } from '../secrets.ts';
+import type { CheckHost } from '../check.ts';
 import { KiteError } from '../errors.ts';
 import { localTools, type ShellBackground, type ShellOutside } from '../execution/local-tools.ts';
 import { commandEnvironment, type ExecutionPolicy } from '../execution/sandbox.ts';
@@ -38,6 +39,8 @@ export async function openClaudeHost(options: {
   background?: ShellBackground;
   /** 沙箱外运行的判断与申请，见 ShellOutside。 */
   outside?: ShellOutside;
+  /** check 工具要的检出、日志目录与出沙箱的判断，见 CheckHost。 */
+  check?: CheckHost;
   prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>;
     notificationText: string; through: number };
   events: RuntimeEvents;
@@ -126,6 +129,7 @@ export async function openClaudeHost(options: {
     ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
     ...(options.background ? { background: options.background } : {}),
     ...(options.outside ? { outside: options.outside } : {}),
+    ...(options.check ? { check: options.check } : {}),
     onProcess(pid, active, started) {
       data.processes = [...data.processes.filter((group) => group.pid !== pid), ...(active ? [{ pid, started }] : [])];
       save();

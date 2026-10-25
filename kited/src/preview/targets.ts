@@ -6,12 +6,8 @@
 import { accessSync, constants, readdirSync, readFileSync, statSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
-import { z } from 'zod';
 import { KiteError } from '../errors.ts';
-import type { Checkout, PluginInstance } from '../model.ts';
 import type { Store } from '../store.ts';
-import { gitTry } from '../workspace/git.ts';
-import { mainBranch } from '../workspace/mainline.ts';
 
 export const TARGETS_DIR = '.kite/preview';
 /** 一段端口的个数。分配范围避开常见的开发端口（3000、5173、8080 这类）和 macOS 的临时端口（49152 起）。 */
@@ -41,18 +37,6 @@ export function findTarget(cwd: string, name: string): Target {
   catch { throw new KiteError(`目标「${name}」不可执行，先 chmod +x ${TARGETS_DIR}/${name}`, 409); }
   return { name, path, content: readFileSync(path, 'utf8') };
 }
-
-/** 这台工作机检出主线上的同名目标；主线上没有（或检出不在分支上）时为 null。 */
-export async function mainlineTarget(checkout: Pick<Checkout, 'path'>, name: string): Promise<string | null> {
-  try {
-    const result = await gitTry(checkout.path, ['show', `refs/heads/${await mainBranch(checkout)}:${TARGETS_DIR}/${name}`]);
-    return result.code === 0 ? result.stdout : null;
-  } catch { return null; }
-}
-
-/** 代理实例上「允许并记住」过的目标内容的摘要（contentHash）。 */
-export const trustedTargets = (instance: Pick<PluginInstance, 'config'>): string[] =>
-  z.array(z.string()).catch([]).parse(instance.config.trustedTargets);
 
 /** 端口上有没有程序在监听：连得上本机回环（127.0.0.1 或 ::1）就算占着。 */
 function occupied(port: number): Promise<boolean> {

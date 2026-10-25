@@ -1,6 +1,5 @@
 /** 原生运行事件只在宿主内部流转；业务事件按实际归属标识工作区或线程。 */
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { CheckResult } from './check.ts';
 import type { RunnerState } from './claude/runner.ts';
 import type { PluginInstance, WorkspaceStatus } from './model.ts';
 import type { HarnessEvent } from './harness/types.ts';
@@ -23,7 +22,6 @@ export type RuntimeEvent =
   | { type: 'waiting'; waiting?: Waiting }
   /** 线程没回应的提问与密钥请求变了，带上整份；由宿主的 Asks 持有。 */
   | { type: 'asks'; asks: Ask[] }
-  | { type: 'check'; result: CheckResult }
   | { type: 'error'; message: string };
 export type ThreadEvent = RuntimeEvent & { threadId: string };
 export type DomainEvent =

@@ -10,7 +10,8 @@ import { callerDenied, definitionGrantDenied, grantTools, operationContracts, op
   type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
-import { mainlineTarget } from '../preview/targets.ts';
+import { TARGETS_DIR } from '../preview/targets.ts';
+import { mainlineFile } from '../workspace/mainline.ts';
 import { deviceLabel } from '../preview/devices.ts';
 import type { InputOrigin, JsonObject, Tool, ToolImage, ToolResult } from '../harness/types.ts';
 import type { Previews } from '../preview/previews.ts';
@@ -24,7 +25,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile' | 'writeFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveTarget' | 'approveDevice' | 'previews'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveScript' | 'approveDevice' | 'previews'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -426,10 +427,10 @@ export class InstanceOperations {
         // 没核对就交下去的，到了控制队列里发现已经结束、要起的，不起（见 previews.open 的 checked）。
         const checked = !running || !this.kite.terminals.running(running.id) || !!input.restart;
         if (checked) {
-          const main = await mainlineTarget(checkout, resolved.target.name);
+          const main = await mainlineFile(checkout, `${TARGETS_DIR}/${resolved.target.name}`);
           if (main !== resolved.target.content) {
             if (caller.kind !== 'model') throw new OperationError('插件只能起与主线一致的目标', 'denied', 403);
-            const approved = await this.kite.approveTarget(caller.instanceId, { name: resolved.target.name, content: resolved.target.content,
+            const approved = await this.kite.approveScript(caller.instanceId, { tool: 'preview_open', name: resolved.target.name, content: resolved.target.content,
               reason: main === null ? '主线上没有这个目标，批准后在沙箱外运行' : '目标与主线上的不一致，批准后在沙箱外运行' }, signal ?? new AbortController().signal);
             if (!approved) throw new OperationError('没有获准运行这个目标', 'denied', 403);
           }

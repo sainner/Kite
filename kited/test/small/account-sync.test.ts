@@ -498,6 +498,8 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   const readerNotices = notices(readerId).length;
   const tools = (await k.call('GET', `/instances/${id}/agent-config`)).body.instance.config.agent.tools as string[];
   expect(tools).toContain('shell');
+  // 工作树里没有 .kite/check，请求和通知里都不算 check
+  const offered = tools.filter((name) => name !== 'check');
 
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'run', text: '跑一个命令' })).status).toBe(200);
   const first = await model.call(1);
@@ -518,11 +520,11 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   expect(result.result.status).toBe('not_executed');
   expect(existsSync(join(workspace.workspace.cwd, 'blocked-shell.txt'))).toBe(false);
   expect(second.request.allowedTools).not.toContain('shell');
-  expect(second.request.allowedTools).toEqual([...tools.filter((name) => name !== 'shell'), TOOL_SEARCH]);
+  expect(second.request.allowedTools).toEqual([...offered.filter((name) => name !== 'shell'), TOOL_SEARCH]);
   const delivered = second.request.history.filter((entry) => entry.type === 'notification'
     && entry.notification.kind === 'agent.configuration.changed');
   expect(delivered).toHaveLength(1);
-  expect(delivered[0]!.type === 'notification' && delivered[0]!.text).toContain(tools.filter((name) => name !== 'shell').join('、'));
+  expect(delivered[0]!.type === 'notification' && delivered[0]!.text).toContain(offered.filter((name) => name !== 'shell').join('、'));
   second.response.complete();
   await k.waitEvent((event) => event.type === 'idle' && event.threadId === id);
 
@@ -533,7 +535,7 @@ test('项目约束禁用 shell 后在跑的回合里已发出的 shell 调用不
   const since = mark(k);
   expect((await k.call('POST', `/threads/${id}/messages`, { id: 'again', text: '再跑一次' })).status).toBe(200);
   const third = await model.call(3);
-  expect(third.request.allowedTools).toEqual([...tools, TOOL_SEARCH]);
+  expect(third.request.allowedTools).toEqual([...offered, TOOL_SEARCH]);
   third.response.complete();
   await k.waitEvent((event) => event.type === 'idle' && event.threadId === id && after(k, since)(event));
 }, 1000);

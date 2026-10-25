@@ -238,6 +238,7 @@ struct WaitingResponseCard: View {
         switch waiting.tool {
         case "shell": return "命令要连 \(target)"
         case "preview_open": return waiting.mustAsk == true ? "装到真机 \(target)" : "运行预览目标 \(target)"
+        case "check": return "在沙箱外运行检查"
         default: return target
         }
     }

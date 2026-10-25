@@ -7,10 +7,21 @@
 - 功能以 Kite 原生 harness 与宿主为主，能不依赖 Claude 就不依赖。Kite 已负责的能力，应显式关闭 Claude 中重复的功能；接入新功能先确认职责归属，再选实现路径。
 - 在已确定的职责内，机制优先复用上游，只做薄层。加机制之前先问：上游有没有？一个约定能不能解决？几行指令能不能解决？确需由 Claude 承担的能力，先查其原生入口，不绕路重复实现。
 - 写界面先认这是哪种界面场景：已有那种场景的视图就用它、各处只给数据，没有就先建出来，不在调用处各拼一套；怎么判断见 [界面设计原则](docs/视觉风格.md)。
-- kited 怎么工作见 kited/README.md，App 的工程见 app/README.md；被 Kite 管理的项目该长什么样见 kite-onboard skill（.claude/skills/kite-onboard/），Kite 仓库自己也按它来。
-- spikes/ 是验证实验，保持原样，用来复现当时的结论，不当产品代码维护。
+- 被 Kite 管理的项目该长什么样见 kite-onboard skill（.claude/skills/kite-onboard/），Kite 仓库自己也按它来。
 - kited 里起子进程一律显式传 env。`Bun.spawn` 不传 env 时用的是进程启动时的环境，不是改过的 `process.env`，测试里换掉的隔离环境会失效。
 - Codex 开发环境的记忆、子 agent 和 skill 入口见 `docs/Codex-开发环境.md`。
+
+## 项目入口
+
+| 目录 | 职责 | 入口 |
+|---|---|---|
+| `app/` | Mac、iPhone、iPad 共用的 App | [编译、预览与代码地图](app/README.md) |
+| `kited/` | 工作机服务、命令行、自研 harness 与 Claude 适配 | [启动、终端试用、检查与代码地图](kited/README.md) |
+| `shared/` | 工作机与验证脚本共用的数据，目前是模型清单 | [agent-models.json](shared/agent-models.json) |
+| `docs/` | 产品设计原则、对外契约与开发入口 | [文档索引](docs/README.md) |
+| `spikes/` | 验证实验，用来复现当时的结论 | 保持原样，不当产品代码维护 |
+
+macOS 安装用 `./install.command`，只生成安装包用 `./package-mac.command`，两者加 `--service-only` 只处理工作机服务；前提、安装位置、升级和卸载见 [macOS 安装与打包](docs/macOS安装与打包.md)。需要 Swift 编译、原生运行时、WebKit 或真实订阅的验证见 [手动验证入口](kited/test/manual/README.md)。
 
 ## 项目阶段
 

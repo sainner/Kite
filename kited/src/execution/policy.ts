@@ -23,10 +23,10 @@ export async function harnessPolicy(options: {
 }
 
 /**
- * 再放行 skill 的只读位置（SkillCatalog 的 readable）：工作目录以外的 skill，代理要能读里面的文件、跑里面的脚本。
- * 路径里带通配字符的沙箱不收，跳过：那个 skill 的文件读不到，别的工具照常能用。
+ * 再放行工作目录以外的只读位置：skill 的文件夹（SkillCatalog 的 readable），代理要能读里面的文件、跑里面的脚本；检查日志（见 check.ts）。
+ * 路径里带通配字符的沙箱不收，跳过：那个位置读不到，别的工具照常能用。
  */
-export function withSkillReads(policy: ExecutionPolicy, readable: string[]): ExecutionPolicy {
+export function withReads(policy: ExecutionPolicy, readable: string[]): ExecutionPolicy {
   return { ...policy, read: [...policy.read, ...readable.filter(exactPath)] };
 }
 

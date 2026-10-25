@@ -34,6 +34,7 @@ import type { ProjectToolRule } from './roles.ts';
 import { permittedTools } from './agents/tool-policy.ts';
 import { searchTool } from './harness/tool-search.ts';
 import { Attachments } from './workspace/attachments.ts';
+import { checkLogs, type CheckHost } from './check.ts';
 import type { NetworkAsk } from './execution/command.ts';
 
 export interface Runtime {
@@ -126,6 +127,8 @@ export interface RuntimeHost {
   /** credentials 的请求动作：向用户要密钥，发出请求后返回交给模型的说明；收回见 withdrawSecret。 */
   requestSecret(request: SecretRequest, signal: AbortSignal): Promise<string>;
   withdrawSecret(id: string): string;
+  /** check 要在沙箱外跑与主线不一致的 .kite/check 时问：按审批模式放行、拒绝或问人；不给时这样的检查在沙箱里跑。 */
+  approveCheck?(script: string, reason: string, signal: AbortSignal): Promise<boolean>;
 }
 
 /** 两个后端共用的工具筛选：agent 配置声明、经项目约束过滤后的有效工具，协作与 Line 的工具还须获得授权；插件工具只看授权。 */
@@ -133,7 +136,7 @@ function selectTools(current: ThreadContext, operations: RuntimeHost['operations
   const agent = instanceAgent(current);
   const selection = operations.prepare(current);
   const operationNames = new Set<string>([...operationToolNames, ...lineToolNames]);
-  const effective = new Set(effectiveTools(agent, constraint));
+  const effective = new Set(effectiveTools(agent, constraint, current.workspace.cwd));
   const permitted = (name: string) => effective.has(name) && (!operationNames.has(name) || selection.allowed.has(name));
   return { agent, selection, permitted, plugins: selection.plugins };
 }
@@ -157,10 +160,14 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     withdraw: (id: string) => host.withdrawSecret(id),
   } : undefined;
   const diffDir = join(home, 'diffs', workspaceId);
+  const check: CheckHost = { main: host.repository, logs: checkLogs(home, workspaceId), outside: {
+    readOnly: () => effectiveExecution(instanceExecutionChanges(host.current()), host.constraints()?.execution).grants.workspace === 'read',
+    approve: (script, reason, signal) => host.approveCheck?.(script, reason, signal) ?? Promise.resolve(false),
+  } };
   const attachments = new Attachments(home);
   const images = (input: Input) => input.source === 'human' && input.attachments ? attachments.images(workspaceId, input.attachments) : [];
   if (runtime === 'claude') {
-    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork, images, skills,
+    return openClaudeHost({ cwd, nativeId, title, directory: join(home, 'sessions', id), diffDir, policy, secrets, askNetwork: host.askNetwork, images, skills, check,
       ...(host.background ? { background: host.background } : {}),
       ...(host.outside ? { outside: host.outside } : {}),
       prepare(afterNotification) {
@@ -185,7 +192,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   /** 刚结束的回合被 kited 关闭停下：下次启动接着做，不算回合结束，不回报。 */
   let cut = false;
   const thread = await openThreadHost({
-    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, policy, secrets, askNetwork: host.askNetwork, skills,
+    cwd, threadDir: join(home, 'sessions', id), diffDir, env: { ...process.env }, policy, secrets, askNetwork: host.askNetwork, skills, check,
     ...(host.background ? { background: host.background } : {}),
     ...(host.outside ? { outside: host.outside } : {}),
     prepareRequest(tools, { afterNotification }) {

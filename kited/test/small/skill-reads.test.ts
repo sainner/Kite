@@ -76,7 +76,7 @@ test('项目层 skill 根目录软链接到 / 或主目录时不放行链接目�
 
 // 真实出过的 bug：skill 文件夹名带通配字符（软链接到工作目录外的 foo[1]）时，旧实现把它的真实路径原样加进 policy.read，
 // read 校验整份读列表时抛「沙箱路径必须是无通配符的绝对路径」，读工作区里的普通文件也报错，patch 和每条 shell 同样全坏。
-// 几部分的配合：collectSkills 跟着软链接认出这个 skill、放行位置为没被盖住的 skill 文件夹另加一条、withSkillReads 过滤、
+// 几部分的配合：collectSkills 跟着软链接认出这个 skill、放行位置为没被盖住的 skill 文件夹另加一条、withReads 过滤、
 // read 的 assertFileAccess 校验整份列表，合起来才出错；跳过带通配字符的条目时不能连别的 skill 一起丢掉。
 test('skill 文件夹名带通配字符时 read 照常读工作区文件，别的工作目录外的 skill 文件也读得到', async () => {
   const cwd = temp();

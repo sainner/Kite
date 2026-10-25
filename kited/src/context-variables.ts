@@ -18,9 +18,11 @@ import { instanceMcp } from './mcp/tools.ts';
 import { pluginToolBindings } from './plugins/tools.ts';
 import type { ProjectToolRule } from './roles.ts';
 import type { Store } from './store.ts';
+import { hasCheck } from './check.ts';
 
-/** 代理配置里的工具经项目约束实时过滤后的有效集。 */
-export const effectiveTools = (agent: AgentDefinition, project: ProjectToolRule | undefined) => permittedTools(agent.tools, project ? [project] : []);
+/** 代理配置里的工具经项目约束实时过滤后的有效集；给了工作树时，工作树里没有 .kite/check 就不算 check。 */
+export const effectiveTools = (agent: AgentDefinition, project: ProjectToolRule | undefined, worktree?: string) =>
+  permittedTools(agent.tools, project ? [project] : []).filter((name) => name !== 'check' || worktree === undefined || hasCheck(worktree));
 
 /** 环境层：所有场景都取得到。 */
 export function environmentVariables(machine: Machine) {
@@ -72,7 +74,7 @@ export function threadVariables(thread: ThreadContext, constraints: VariableCons
     'agent.role': text(() => agent().context.title),
     'agent.model': text(() => agent().model.model),
     'agent.reasoning': text(() => agent().model.reasoning),
-    'agent.tools': text(() => effectiveTools(agent(), constraints?.tools).join('、') || '无'),
+    'agent.tools': text(() => effectiveTools(agent(), constraints?.tools, thread.workspace.cwd).join('、') || '无'),
     'execution.grants': text(() => JSON.stringify(effectiveExecution(instanceExecutionChanges(thread), constraints?.execution).grants)),
     // 按实例列出获准的插件工具：自研 harness 以实例 ID 为分组用 tool_search 加载，Claude 按名字用 ToolSearch 搜；name 是调用用的名字。
     'plugin.tools': text(() => JSON.stringify([...Map.groupBy(pluginToolBindings(thread), (binding) => binding.instanceId)]

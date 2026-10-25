@@ -17,6 +17,14 @@ export async function mainBranch(p: Pick<Checkout, 'path'>): Promise<string> {
   return branch;
 }
 
+/** 主线上一个文件的内容；主线上没有（或检出不在分支上）时为 null。代理起的预置脚本与它一致才直接在沙箱外运行。 */
+export async function mainlineFile(p: Pick<Checkout, 'path'>, path: string): Promise<string | null> {
+  try {
+    const result = await gitTry(p.path, ['show', `refs/heads/${await mainBranch(p)}:${path}`]);
+    return result.code === 0 ? result.stdout : null;
+  } catch { return null; }
+}
+
 /** 主线当前的 commit。远程还是空仓库时主线没有提交，先补一个空的初始提交，工作区从它开出，集成时一并推上去。 */
 export async function mainline(p: Pick<Checkout, 'path'>): Promise<string> {
   const branch = await mainBranch(p);

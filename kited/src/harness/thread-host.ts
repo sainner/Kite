@@ -6,6 +6,7 @@ import { FileJournal } from './journal.ts';
 import { HarnessRunner } from './runner.ts';
 import { localTools, type ShellBackground, type ShellOutside } from '../execution/local-tools.ts';
 import type { SecretProvider } from '../secrets.ts';
+import type { CheckHost } from '../check.ts';
 import { processAlive, processGroupsSchema, stopProcessGroups, type NetworkAsk } from '../execution/command.ts';
 import { commandEnvironment, workspacePolicy, type ExecutionPolicy } from '../execution/sandbox.ts';
 import { SkillCatalog } from './context/project.ts';
@@ -27,6 +28,8 @@ export interface ThreadHostOptions extends Pick<HarnessOptions, 'onEvent' | 'aft
   outside?: ShellOutside;
   /** 工具用的 skill 清单，每次请求前刷新后再调 prepareRequest；不给时只有系统层与项目层。 */
   skills?: SkillCatalog;
+  /** check 工具要的检出、日志目录与出沙箱的判断，见 CheckHost；独立终端没有。 */
+  check?: CheckHost;
   prepareRequest(tools: Tool[], cursor: { afterNotification: number }): HarnessRequest;
   /** 独立终端的配置来源；kited 使用实例配置，不在 metadata 重复保存。 */
   settings?: RequestSettings;
@@ -134,6 +137,7 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
       ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
       ...(options.background ? { background: options.background } : {}),
       ...(options.outside ? { outside: options.outside } : {}),
+      ...(options.check ? { check: options.check } : {}),
       policy: () => {
         const current = policy();
         return { ...current, denyRead: [...(current.denyRead ?? []), directory], denyWrite: [...(current.denyWrite ?? []), directory] };
