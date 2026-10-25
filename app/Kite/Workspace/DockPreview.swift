@@ -73,7 +73,7 @@ struct DockStagePreview: View {
         #if os(macOS)
         guard Self.scripted else { return }
         if Self.crowded, crowd.count > 12 {
-            await crowdedScript(scene, stacked: crowd[12])
+            await crowdedScript(scene, stacked: crowd[12], family: parent.id)
         } else {
             await script(scene, main: main.id, docs: docs.id, files: files.id, family: parent.id, child: child.id)
         }
@@ -120,18 +120,51 @@ struct DockStagePreview: View {
         Self.log.notice("step done at \(Date().timeIntervalSince1970, privacy: .public)")
     }
 
-    /// 停靠栏放不下时：把叠在末端、半透明的一格放上台面，再缩小回去。
-    private func crowdedScript(_ scene: DockPreviewScene, stacked: String) async {
-        let layout = scene.area.layout
+    /// 停靠栏放不下时：把叠在末端、半透明的一格放上台面，再缩小回去；用滚轮把停靠栏往下滚一段，再把它放上台面（从滚过以后的位置起）、
+    /// 缩小回去；最后在家族格上往回滚（收着的家族格里的滚动区不接，停靠栏照常滚）。
+    private func crowdedScript(_ scene: DockPreviewScene, stacked: String, family: String) async {
+        let area = scene.area, layout = area.layout
         let pause = 2.5 * WindowMotionKind.slowdown / 4 + 2
-        try? await Task.sleep(for: .seconds(4))
-        Self.log.notice("step open-stacked at \(Date().timeIntervalSince1970, privacy: .public)")
-        layout.activate(Pane(stacked))
-        try? await Task.sleep(for: .seconds(pause))
-        Self.log.notice("step minimize-stacked at \(Date().timeIntervalSince1970, privacy: .public)")
-        layout.minimize(Pane(stacked))
-        try? await Task.sleep(for: .seconds(pause))
-        Self.log.notice("step done at \(Date().timeIntervalSince1970, privacy: .public)")
+        func step(_ name: String, after seconds: Double, _ action: () async -> Void) async {
+            try? await Task.sleep(for: .seconds(seconds))
+            Self.log.notice("step \(name, privacy: .public) at \(Date().timeIntervalSince1970, privacy: .public)")
+            await action()
+        }
+        func dock() -> DockGeometry { StagePlan.dock(layout: layout, area: area, bounds: CGRect(origin: .zero, size: frame.size)).dock }
+        await step("open-stacked", after: 4) { layout.activate(Pane(stacked)) }
+        await step("minimize-stacked", after: pause) { layout.minimize(Pane(stacked)) }
+        await step("scroll-down", after: pause) {
+            let cell = dock().entries[6].slot.frame
+            await scroll(at: CGPoint(x: cell.midX, y: cell.midY), by: 120)
+        }
+        await step("open-scrolled", after: 3) { layout.activate(Pane(stacked)) }
+        await step("minimize-scrolled", after: pause) { layout.minimize(Pane(stacked)) }
+        await step("scroll-on-family", after: pause) {
+            if let cell = dock().items.first(where: { $0.item.id == DockEntry.familyID(family) })?.slot.frame {
+                await scroll(at: CGPoint(x: cell.midX, y: cell.midY), by: -120)
+            }
+        }
+        await step("done", after: 3) {}
+    }
+
+    /// 在台面坐标的 point 上用触控板滚 distance 点（正的往下翻），分几步，带开始、结束的阶段，同真的滚动。
+    private func scroll(at point: CGPoint, by distance: CGFloat) async {
+        let steps = 12
+        for index in 0...steps + 1 {
+            let phase: CGScrollPhase = index == 0 ? .began : index > steps ? .ended : .changed
+            let delta = index == 0 || index > steps ? 0 : -distance / CGFloat(steps)
+            guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: Int32(delta), wheel2: 0, wheel3: 0)
+            else { return }
+            event.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase.rawValue))
+            event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+            guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }), let content = window.contentView else { return }
+            let global = CGPoint(x: frame.minX + point.x, y: frame.minY + point.y)
+            let local = content.convert(CGPoint(x: global.x, y: content.isFlipped ? global.y : content.bounds.height - global.y), to: nil)
+            event.location = window.convertPoint(toScreen: local).flippedForQuartz
+            event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
+            if let ns = NSEvent(cgEvent: event) { window.sendEvent(ns) }
+            try? await Task.sleep(for: .milliseconds(16))
+        }
     }
 
     /// 在台面坐标的 point 上按下、松开。
@@ -167,6 +200,15 @@ struct DockStagePreview: View {
     }
     #endif
 }
+
+#if os(macOS)
+private extension CGPoint {
+    /// 屏幕坐标（左下角起）换成 Quartz 事件的坐标（主屏左上角起）。
+    var flippedForQuartz: CGPoint {
+        CGPoint(x: x, y: (NSScreen.screens.first?.frame.height ?? 0) - y)
+    }
+}
+#endif
 
 /// 停靠栏预览：用真实的停靠栏组件（DockBand、DockGroup、DockLayoutFolder）画造出来的实例、布局和活动，不建工作区、不发请求，也不接点击。
 /// 头像签名取已连接工作机上的角色，没连上时都是默认图案。一屏摆下：左边是各种格子，中间是竖排的整条停靠栏，右边是横排的。
