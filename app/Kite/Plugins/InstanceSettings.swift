@@ -383,7 +383,7 @@ struct InstanceActions: View {
     }
 }
 
-/// 一项实例操作。实例操作只有这一份：停靠栏的菜单（含缩成停靠形状的卡片）和会话窗口的更多菜单都从这里出；结束性的（停止、归档）用危险色。
+/// 一项实例操作。实例操作只有这一份：停靠栏的菜单和会话窗口的更多菜单都从这里出；结束性的（停止、归档）用危险色。
 struct InstanceAction {
     let title: String
     let symbol: String

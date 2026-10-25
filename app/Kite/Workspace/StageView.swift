@@ -387,10 +387,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
             }
             // 停在停靠栏里的卡片整张透明，不压暗（压暗的模糊挂在铺满台面的图层上）
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane && !placed.hidden
+            // 缩成停靠形状的不接：停在格子里的整张透明，别的时候在飞、在拖，点、右键、读屏都归停靠栏里那一格
             let arrangement = CardView.Arrangement(
                 placed: placed, closing: closing,
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed,
-                acceptsInput: !blocksInput && !resizing && !closing && !dimmed && !placed.hidden, dotsHidden: resizing,
+                acceptsInput: !blocksInput && !resizing && !closing && !dimmed && !placed.minimized, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
                                          hasThread: area?.thread(in: pane) != nil),
@@ -546,11 +547,6 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     func drop() {
         group.layout.drop(in: stageRect)
-    }
-
-    /// 读屏在缩成停靠形状的卡片上要展开：放上台面。
-    func activate(_ pane: Pane) {
-        group.layout.restore(pane, in: stageRect)
     }
 
     // MARK: - 逐帧

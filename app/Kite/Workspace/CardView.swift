@@ -148,8 +148,6 @@ final class CardView: NSView {
         headerView.drag.onChanged = { [weak stage] drag in stage?.drag(pane, to: drag.location) }
         headerView.drag.onEnded = { [weak stage] in stage?.drop() }
         headerView.drag.onClick = { [weak self] in self?.click() }
-        headerView.contextMenu.delegate = headerView
-        headerView.buildMenu = { [weak self] menu in self?.buildMenu(menu) }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
         bodyDeferred = placed?.minimized == true
         environmentChanged()
@@ -201,7 +199,6 @@ final class CardView: NSView {
         drag.onChanged = nil
         drag.onEnded = nil
         drag.onClick = nil
-        headerView.buildMenu = nil
         container?.native = nil
         container?.host.rootView = AnyView(EmptyView())
         backdrop?.rootView = AnyView(EmptyView())
@@ -465,8 +462,6 @@ final class CardView: NSView {
         headerView.radius = target.radius
         let drag = headerView.drag
         drag.isHidden = fixed
-        let contextMenu = minimized ? headerView.contextMenu : nil
-        if drag.menu !== contextMenu { drag.menu = contextMenu }
         let shown = state.buttonsShown
         if content.buttonsShown != shown { content.buttonsShown = shown }
         let menu = state.menuWidth
@@ -725,25 +720,10 @@ final class CardView: NSView {
         setHovered(false)
     }
 
+    /// 点标题栏：聚焦这张卡片。缩成停靠形状的卡片不接点击（见 StageView.arrange 的 acceptsInput），点的是停靠栏里那一格；
+    /// 菜单、读屏同样由那一格给。
     private func click() {
-        guard let placed, let stage else { return }
-        // 缩在停靠栏里（家族格里的父代理也是）：放上台面
-        if placed.minimized { stage.activate(pane) }
-        else { stage.group.layout.focus(pane) }
-    }
-
-    /// 右键菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作。标题栏上没有。
-    private func buildMenu(_ menu: NSMenu) {
-        menu.removeAllItems()
-        guard let stage, let placed, let area = stage.group.workspace, let instance = area.instance(of: pane) else { return }
-        guard placed.minimized else { return }
-        let label = NSMenuItem(title: area.dockLabel(.pane(pane)), action: nil, keyEquivalent: "")
-        label.isEnabled = false
-        menu.addItem(label)
-        let model = stage.model
-        for action in InstanceAction.all(for: instance, in: area, model: model, pane: pane) {
-            menu.addItem(MenuAction.item(action.title, enabled: action.enabled, destructive: action.destructive, perform: action.perform))
-        }
+        stage?.group.layout.focus(pane)
     }
 
     // MARK: - 命中与读屏
@@ -765,23 +745,10 @@ final class CardView: NSView {
         return window.convertToScreen(convert(placed.target.frame, to: nil))
     }
 
-    /// 读屏打开右键菜单（VO-Shift-M）：同缩成停靠形状时右键。
-    override func accessibilityPerformShowMenu() -> Bool {
-        guard let placed, placed.minimized, acceptsInput else { return false }
-        let menu = headerView.contextMenu
-        buildMenu(menu)
-        guard !menu.items.isEmpty else { return false }
-        menu.popUp(positioning: nil, at: CGPoint(x: placed.target.frame.minX + 12, y: placed.target.frame.minY + 12), in: self)
-        return true
-    }
-
-    /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）；缩在停靠栏里时展开窗口。最小化时正文对读屏隐藏，见 PaneCardBody。
+    /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）。缩成停靠形状时没有（正文也对读屏隐藏，见 PaneCardBody），
+    /// 由停靠栏里那一格给。
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
-        guard let placed, let stage, !closing else { return nil }
-        let pane = pane
-        if placed.minimized {
-            return [NSAccessibilityCustomAction(name: "展开窗口") { [weak stage] in stage?.activate(pane); return true }]
-        }
+        guard let placed, let stage, !closing, !placed.minimized else { return nil }
         return paneWindowActions(group: stage.group, pane: pane, model: stage.model)?.commands.filter(\.enabled).map { command in
             NSAccessibilityCustomAction(name: command.title) { command.action(); return true }
         }
@@ -942,10 +909,8 @@ private func outline(_ frame: CGRect, radius: CGFloat, in layer: CALayer) -> CGP
 }
 
 /// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
-private final class CardHeaderView: NSView, NSMenuDelegate {
+private final class CardHeaderView: NSView {
     let drag = MouseDragArea.DragView()
-    let contextMenu = NSMenu()
-    var buildMenu: ((NSMenu) -> Void)?
     /// 外框在这一层里的范围和圆角。
     var clip = CGRect.zero
     var radius: CGFloat = 0
@@ -966,10 +931,6 @@ private final class CardHeaderView: NSView, NSMenuDelegate {
         guard NSBezierPath(roundedRect: clip, xRadius: radius, yRadius: radius).contains(local) else { return nil }
         let hit = super.hitTest(point)
         return hit === self ? nil : hit
-    }
-
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        buildMenu?(menu)
     }
 }
 

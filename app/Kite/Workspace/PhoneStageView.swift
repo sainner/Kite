@@ -311,8 +311,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane && !placed.hidden
             let dragged = layout.drag?.pane == pane
             let hasThread = area?.thread(in: pane) != nil
-            // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消
-            let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed && !placed.hidden
+            // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消。别的缩成停靠形状的不接：
+            // 停在格子里的整张透明，别的时候在飞，点按、长按菜单、读屏都归停靠栏里那一格
+            let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed && (!placed.minimized || dragged)
             let arrangement = PhoneCardView.Arrangement(
                 placed: placed, closing: closing,
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
@@ -471,11 +472,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     func cancelDrag() {
         group.layout.cancelDrag()
-    }
-
-    /// 读屏在缩成停靠形状的卡片上要展开：放上台面。
-    func activate(_ pane: Pane) {
-        group.layout.restore(pane, in: stageRect)
     }
 
     // MARK: - 逐帧

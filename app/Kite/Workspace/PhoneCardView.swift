@@ -169,8 +169,6 @@ final class PhoneCardView: UIView {
             }
         }
         headerView.tapped = { [weak self] in self?.click() }
-        headerView.buildMenu = { [weak self] in self?.menu() }
-        headerView.menuPreview = { [weak self] in self?.menuPreview() }
         motion.onStart = { [weak self] motion in self?.flightStarted(motion) }
         bodyDeferred = placed?.minimized == true
         environmentChanged()
@@ -220,8 +218,6 @@ final class PhoneCardView: UIView {
         presentation.motion?.onStart = nil
         headerView.dragged = nil
         headerView.tapped = nil
-        headerView.buildMenu = nil
-        headerView.menuPreview = nil
         container?.island.rootView = AnyView(EmptyView())
         backdrop?.rootView = AnyView(EmptyView())
         icon.rootView = AnyView(EmptyView())
@@ -740,40 +736,10 @@ final class PhoneCardView: UIView {
         setHovered(false)
     }
 
+    /// 点标题栏：聚焦这张卡片。缩成停靠形状的卡片除了拖着的都不接点按（见 PhoneStageView.arrange 的 accepts），点的是停靠栏里那一格；
+    /// 长按菜单、读屏同样由那一格给。
     private func click() {
-        guard let placed, let stage else { return }
-        // 缩在停靠栏里（家族格里的父代理也是）：放上台面
-        if placed.minimized { stage.activate(pane) }
-        else { stage.group.layout.focus(pane) }
-    }
-
-    /// 长按（指针右键）菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作。
-    /// 标题栏上没有，长按直接拿起卡片。
-    private func menu() -> UIMenu? {
-        guard let stage, let placed, placed.minimized, let area = stage.group.workspace, let instance = area.instance(of: pane) else { return nil }
-        var items: [UIMenuElement] = [UIAction(title: area.dockLabel(.pane(pane)), attributes: .disabled) { _ in }]
-        let model = stage.model
-        for action in InstanceAction.all(for: instance, in: area, model: model, pane: pane) {
-            var attributes: UIMenuElement.Attributes = []
-            if !action.enabled { attributes.insert(.disabled) }
-            if action.destructive { attributes.insert(.destructive) }
-            let perform = action.perform
-            items.append(UIAction(title: action.title, attributes: attributes) { _ in perform() })
-        }
-        return UIMenu(children: items)
-    }
-
-    /// 长按菜单浮起来的：缩成停靠形状的整个外框。从卡片上截一份图，菜单开着时原处照常显示。
-    private func menuPreview() -> UITargetedPreview? {
-        guard let placed else { return nil }
-        let rect = placed.target.frame
-        guard let snapshot = resizableSnapshotView(from: rect, afterScreenUpdates: false, withCapInsets: .zero) else { return nil }
-        let parameters = UIPreviewParameters()
-        parameters.backgroundColor = .clear
-        let radius = min(placed.target.radius, rect.height / 2)
-        parameters.visiblePath = UIBezierPath(roundedRect: CGRect(origin: .zero, size: rect.size), cornerRadius: radius)
-        return UITargetedPreview(view: snapshot, parameters: parameters,
-                                 target: UIPreviewTarget(container: self, center: CGPoint(x: rect.midX, y: rect.midY)))
+        stage?.group.layout.focus(pane)
     }
 
     // MARK: - 命中与读屏
@@ -790,28 +756,12 @@ final class PhoneCardView: UIView {
         set {}
     }
 
-    /// 缩成停靠形状时整张是一个按钮（点了展开），正文对读屏隐藏；停着时读正文和窗口按钮。收进家族格的子代理窗口整张透明，由家族格读。
-    override var isAccessibilityElement: Bool {
-        get { placed?.minimized == true && placed?.hidden == false }
-        set {}
-    }
-
-    override var accessibilityTraits: UIAccessibilityTraits {
-        get { placed?.minimized == true ? .button : [] }
-        set {}
-    }
-
     override var accessibilityFrame: CGRect {
         get { placed.map { UIAccessibility.convertToScreenCoordinates($0.target.frame, in: self) } ?? .zero }
         set {}
     }
 
-    override func accessibilityActivate() -> Bool {
-        guard placed?.minimized == true, acceptsInput else { return false }
-        click()
-        return true
-    }
-
+    /// 停着时读正文和窗口按钮；缩成停靠形状时整张不读，由停靠栏里那一格读。
     override var accessibilityElements: [Any]? {
         get {
             guard let placed, !placed.minimized else { return nil }
@@ -826,14 +776,10 @@ final class PhoneCardView: UIView {
         set {}
     }
 
-    /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）；缩在停靠栏里时展开窗口。
+    /// 读屏的动作同窗口按钮收进更多菜单时的那几项（paneWindowActions）。缩成停靠形状时没有，由停靠栏里那一格给。
     override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
         get {
-            guard let placed, let stage, !closing else { return nil }
-            let pane = pane
-            if placed.minimized {
-                return [UIAccessibilityCustomAction(name: "展开窗口") { [weak stage] _ in stage?.activate(pane); return true }]
-            }
+            guard let placed, let stage, !closing, !placed.minimized else { return nil }
             return paneWindowActions(group: stage.group, pane: pane, model: stage.model)?.commands.filter(\.enabled).map { command in
                 UIAccessibilityCustomAction(name: command.title) { _ in command.action(); return true }
             }
@@ -1050,17 +996,13 @@ final class PhoneContentContainer: UIView, HostedContentSurface {
 
 /// 标题栏一层：拖动区和窗口按钮，按停着的外框摆，命中按外框的圆角裁。
 /// 拖动卡片分输入方式起拖：iPad 指针（触控板、鼠标）按住挪过一段距离就起拖，同 Mac（ThresholdDrag，只认指针）；
-/// 手指和笔要先长按，按系统拖放的惯例交给 UIDragInteraction，时长用系统的：标题栏上长按到时直接拿起卡片；缩成停靠形状时还有长按菜单
-/// （UIContextMenuInteraction，同一个视图上），长按到时浮起、弹出菜单，不动就留着菜单，动了菜单收起、转成拖动（系统协调两者）；没长按就滑动的不起拖，
+/// 手指和笔要先长按，按系统拖放的惯例交给 UIDragInteraction，时长用系统的：标题栏上长按到时直接拿起卡片；没长按就滑动的不起拖，
 /// 照常交给别的手势。系统的拖动只借它的长按和跟踪：拖着的东西看不见，卡片照旧缩成停靠形状跟着手指（PhoneStageView.drag），
 /// 松手由排布按落点放（系统那边没有放的地方，一律当取消）。
-private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UIDragInteractionDelegate {
+private final class CardHeaderView: UIView, UIDragInteractionDelegate {
     let drag = CardDragArea()
     var dragged: ((UIGestureRecognizer.State, CGPoint) -> Void)?
     var tapped: (() -> Void)?
-    var buildMenu: (() -> UIMenu?)?
-    /// 长按菜单浮起来的样子：缩成停靠形状的整个外框，卡片给。
-    var menuPreview: (() -> UITargetedPreview?)?
     /// 外框在这一层里的范围和圆角。
     var clip = CGRect.zero
     var radius: CGFloat = 0
@@ -1080,7 +1022,6 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UI
         let tap = UITapGestureRecognizer(target: self, action: #selector(tap(_:)))
         drag.addGestureRecognizer(tap)
         drag.addGestureRecognizer(touchKind)
-        drag.addInteraction(UIContextMenuInteraction(delegate: self))
         let lift = UIDragInteraction(delegate: self)
         lift.isEnabled = true
         drag.addInteraction(lift)
@@ -1103,24 +1044,6 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UI
         if recognizer.state == .ended { tapped?() }
     }
 
-    // MARK: 长按菜单（只在缩成停靠形状时）
-
-    func contextMenuInteraction(_ interaction: UIContextMenuInteraction,
-                                configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
-        guard let menu = buildMenu?() else { return nil }
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in menu }
-    }
-
-    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configuration: UIContextMenuConfiguration,
-                                highlightPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
-        menuPreview?()
-    }
-
-    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configuration: UIContextMenuConfiguration,
-                                dismissalPreviewForItemWithIdentifier identifier: any NSCopying) -> UITargetedPreview? {
-        menuPreview?()
-    }
-
     // MARK: 手指、笔的长按起拖
 
     func dragInteraction(_ interaction: UIDragInteraction, itemsForBeginning session: any UIDragSession) -> [UIDragItem] {
@@ -1130,7 +1053,7 @@ private final class CardHeaderView: UIView, UIContextMenuInteractionDelegate, UI
         return [item]
     }
 
-    /// 有长按菜单时浮起来的是菜单的那份（见 menuPreview）；拖动本身看不见，卡片自己跟着手指。
+    /// 拖动本身看不见，卡片自己跟着手指。
     func dragInteraction(_ interaction: UIDragInteraction, previewForLifting item: UIDragItem,
                          session: any UIDragSession) -> UITargetedDragPreview? {
         UITargetedDragPreview(view: Self.invisible(), parameters: Self.invisibleParameters(),
