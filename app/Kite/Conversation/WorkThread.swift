@@ -127,9 +127,9 @@ final class WorkThread: Identifiable {
         summarizeTranscript()
     }
 
-    /// 尚未创建的会话沿用同一套工作区，只保存草稿，不制造后端记录。
-    init(workspace: String = "", workspaceID: String = "", project: String = "Kite") {
-        id = "draft-" + workspace
+    /// 尚未创建的会话沿用同一套工作区，只保存草稿，不制造后端记录。id 由本机定，就是将来代理实例的 ID（见 WorkArea.draftPane）。
+    init(workspace: String = "", workspaceID: String = "", project: String = "Kite", id: String? = nil) {
+        self.id = id ?? "draft-" + workspace
         self.workspaceID = workspaceID
         tint = Palette.breeze
         title = "新代理"

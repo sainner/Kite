@@ -28,7 +28,6 @@ final class CardView: NSView {
         let header: HeaderState
         /// 窗口按钮里展开那一格是展开、还原还是没有。
         let expansion: PaneExpansion
-        let pinned: Bool
     }
 
     /// 标题栏一层要读的卡片状态：正文报的标题栏高、右边菜单宽、窗口按钮的尺寸、挖空的范围，和窗口按钮露不露。
@@ -39,14 +38,12 @@ final class CardView: NSView {
         let controlsSize: CGSize
         let excluded: [CGRect]
         let buttonsShown: Bool
-        let pinShown: Bool
     }
 
-    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool, pinned: Bool) -> HeaderState {
-        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread,
-                                          pinned: pinned)
+    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool) -> HeaderState {
+        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread)
         return HeaderState(height: header.height, menuWidth: header.menuWidth, controlsSize: header.controlsSize,
-                           excluded: headerRegions.settled, buttonsShown: controls.shown, pinShown: controls.pinShown)
+                           excluded: headerRegions.settled, buttonsShown: controls.shown)
     }
 
     let pane: Pane
@@ -277,7 +274,6 @@ final class CardView: NSView {
         if content.minimized != minimized { content.minimized = minimized }
         // 窗口按钮飞行中看不见（见 CardButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
         if content.expansion == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
-        if content.pinned != arrangement.pinned { content.pinned = arrangement.pinned }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
         if presence.onScreen != !minimized { presence.onScreen = !minimized }
         // 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace；会话窗口推迟改大小时一起推迟
@@ -403,8 +399,7 @@ final class CardView: NSView {
 
     private func placeHeaderControls() {
         guard let placed, let arrangement else { return }
-        let headerPlacement = HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread,
-                                              pinned: arrangement.pinned)
+        let headerPlacement = HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread)
         if header.placement != headerPlacement { header.placement = headerPlacement }
     }
 
@@ -475,7 +470,6 @@ final class CardView: NSView {
         if drag.menu !== contextMenu { drag.menu = contextMenu }
         let shown = state.buttonsShown
         if content.buttonsShown != shown { content.buttonsShown = shown }
-        if content.pinShown != state.pinShown { content.pinShown = state.pinShown }
         let menu = state.menuWidth
         let trailing = minimized ? 0 : menu + (shown ? state.controlsSize.width + Metrics.paneButtonGap : 0) + Metrics.paneMargin
         let dragFrame = CGRect(x: 0, y: 0, width: max(frame.width - trailing, 0), height: height)
@@ -742,12 +736,10 @@ final class CardView: NSView {
         else { stage.group.layout.focus(pane) }
     }
 
-    /// 右键菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作和关闭窗口。标题栏上没有。
+    /// 右键菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作。标题栏上没有。
     private func buildMenu(_ menu: NSMenu) {
         menu.removeAllItems()
-        guard let stage, let placed, let area = stage.group.workspace,
-              let target = area.windows.first(where: { $0.id == pane.id })?.target,
-              let instance = area.instances.first(where: { $0.id == target.instanceId }) else { return }
+        guard let stage, let placed, let area = stage.group.workspace, let instance = area.instance(of: pane) else { return }
         guard placed.minimized else { return }
         let label = NSMenuItem(title: area.dockLabel(.pane(pane)), action: nil, keyEquivalent: "")
         label.isEnabled = false

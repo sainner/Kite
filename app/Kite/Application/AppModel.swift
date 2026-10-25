@@ -153,6 +153,11 @@ final class AppModel {
     var gitLogin: GitLogin?
     /// 本机新建、工作机还没列出来的工作区，见 createWorkspace。
     @ObservationIgnored private var creatingWorkspaces: [String: WorkArea] = [:]
+    /// 各项目读到的布局，按项目 ID；工作区拿它的一份（见 distributeLayouts、refreshLayouts）。
+    @ObservationIgnored var projectLayouts: [String: [ProjectLayout]] = [:]
+    @ObservationIgnored var loadingLayouts: Set<String> = []
+    /// 正在跟的工作区事件流：此刻在看的那个工作区，收代理请用户看实例的 instance.show，见 followShowRequests。
+    @ObservationIgnored private var showFollower: (area: WorkArea, client: KitedClient, task: Task<Void, Never>)?
 
     init(account: KiteAccount = KiteAccount()) {
         self.account = account
@@ -188,50 +193,62 @@ final class AppModel {
         for area in workspaces where area.remote.machine.id == id { area.definitions = values }
     }
 
-    /// 新建窗口里选好了插件，这个窗口原地变成它（见 WorkArea.chooserWindow）：代理变成新代理的草稿；带视图的插件按这个窗口的 ID
-    /// 新建实例和窗口（见 sendWindowRequest）；只在后台的插件放进停靠栏，新建窗口飞进它那一格。
+    /// 新建页里选好了插件，这一格原地变成它（见 WorkArea.chooserPane）：代理变成新代理的草稿；带视图的插件按新建页的 ID 新建实例，
+    /// 卡片不换（见 createInstance）；只在后台的插件放进停靠栏，新建页飞进它那一格。
     func choose(_ definition: RemotePluginDefinition, in area: WorkArea) {
-        guard let window = area.chooserWindow else { return }
         if definition.agent != nil { area.chooseAgent(); return }
         if !definition.views.isEmpty {
-            send(OpenWindowRequest(id: window, content: .create(definition.id, instance: UUID().uuidString.lowercased())), in: area)
+            createInstance(CreateInstanceRequest(id: area.chooserPane, definitionId: definition.id), in: area)
             return
         }
-        let request = CreatePluginInstance(id: UUID().uuidString.lowercased(), definitionId: definition.id)
-        sendInstanceRequest(request, in: area)
+        let request = CreateInstanceRequest(id: UUID().uuidString.lowercased(), definitionId: definition.id)
+        createInstance(request, in: area, show: false)
         area.closeChooser(into: request.id)
     }
 
-    /// 后台实例不等工作机：ID 由本机定，本机先放进停靠栏（见 WorkArea.openingInstances），工作机按同一个 ID 建好后由它的列表接上；
-    /// 建不成再收回。
-    private func sendInstanceRequest(_ request: CreatePluginInstance, in area: WorkArea) {
-        guard let definition = area.definitions.first(where: { $0.id == request.definitionId }) else { return }
+    /// 新建实例不等工作机：ID 由本机定，本机先按它建好、放上台面（见 WorkArea.openLocally），工作机按同一个 ID 建好后由它的列表接上，卡片不换；
+    /// 建不成再收回。预览的同一目标与设备已经在跑时工作机返回那个实例：本机先建的收回，放上那个实例。show 为 false 时只建、不放上台面（后台实例）。
+    /// 返回工作机确认的实例。
+    @discardableResult
+    func createInstance(_ request: CreateInstanceRequest, in area: WorkArea, show: Bool = true) -> Task<RemotePluginInstance, Error> {
         area.windowError = nil
         area.failedInstanceRequests.removeAll { $0.id == request.id }
-        area.createLocally(RemotePluginInstance(id: request.id, workspaceId: area.id, definitionId: definition.id,
-                                                title: area.newInstanceTitle(definition), status: .open, presentation: .background,
-                                                createdAt: Self.now))
-        Task {
-            let client: KitedClient
+        if let definition = area.definitions.first(where: { $0.id == request.definitionId }) {
+            let local = RemotePluginInstance(id: request.id, workspaceId: area.id, definitionId: definition.id,
+                                             title: request.title ?? area.newInstanceTitle(definition), status: .open, createdAt: Self.now,
+                                             view: definition.views.isEmpty ? nil : definition.defaultView,
+                                             state: request.page.map(RemotePluginInstance.State.init(page:)),
+                                             config: request.preview.map { InstanceAgentConfig(preview: $0) })
+            if show { area.openLocally(local) } else { area.createLocally(local) }
+        }
+        let closing = Array(area.closeRequests.values)
+        return Task {
+            let instance: RemotePluginInstance, client: KitedClient
             do {
+                // 先等在路上的关闭：工作机先收到新建的话，预览会把还没关的那个实例交回来
+                for close in closing { await close.value }
                 client = try activeClient(in: area)
                 guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-                let _: RemotePluginInstance = try await client.request("/workspaces/\(area.id)/plugin-instances", method: "POST", body: request, as: RemotePluginInstance.self)
+                instance = try await client.createInstance(workspace: area.id, id: request.id, definitionId: request.definitionId, title: request.title,
+                                                           command: request.command, preview: request.preview, page: request.page)
             } catch {
-                area.settleInstance(request.id)
+                area.settleInstance(request.id, rejected: Self.rejected(error))
                 if !Self.rejected(error) { area.failedInstanceRequests.append(request) }
                 area.windowError = error.localizedDescription
-                return
+                throw error
             }
             do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
+            if instance.id != request.id {
+                area.settleInstance(request.id)
+                if show, accepts(client) { area.layout.activate(Pane(instance.id)) }
+            }
+            return instance
         }
     }
 
-    /// 重发网络中断时没得到确认的开窗口、建实例请求，ID 不变。
+    /// 重发网络中断时没得到确认的建实例请求，ID 不变。
     func retryRequests(in area: WorkArea) {
-        let windows = area.failedWindowRequests, instances = area.failedInstanceRequests
-        for request in windows { send(request, in: area) }
-        for request in instances { sendInstanceRequest(request, in: area) }
+        for request in area.failedInstanceRequests { createInstance(request, in: area, show: area.layout.panes.contains(Pane(request.id))) }
     }
 
     /// 明确拒绝可以结束这次请求；网络中断保留同一 ID，供用户安全重试。
@@ -254,6 +271,10 @@ final class AppModel {
     func clearAccountConnections() {
         connectionRun = nil
         stopConnections()
+        showFollower?.task.cancel()
+        showFollower = nil
+        projectLayouts = [:]
+        loadingLayouts = []
         connections = [:]
         accountMachineID = nil
         workspaces = []
@@ -492,7 +513,8 @@ final class AppModel {
                 return
             }
             if event.type == "library.changed" {
-                if let kind = event.kind.flatMap(LibraryList.init) { self.libraryChanged(kind, on: connection) }
+                if event.kind == "layout" { if let project = event.projectId { Task { await self.refreshLayouts(project: project, client: client) } } }
+                else if let kind = event.kind.flatMap(LibraryList.init) { self.libraryChanged(kind, on: connection) }
                 return
             }
             if event.type == "thread.activity" {
@@ -521,8 +543,11 @@ final class AppModel {
                 Task { await self.refreshLineInbox() }
                 Task { await self.refreshUpdate(connection) }
                 LineAttention.shared.report()
-                // 断线期间收不到资源库的变化事件，重连后每一类都当变过
+                // 断线期间收不到资源库的变化事件，重连后每一类都当变过；各项目的布局也重读
                 for kind in LibraryList.allCases { self.libraryChanged(kind, on: connection) }
+                for project in Set(self.workspaces.filter { $0.remote.machine.id == connection.id }.map(\.remote.project.id)) {
+                    Task { await self.refreshLayouts(project: project, client: client) }
+                }
                 TimingTrace.mark("工作机 \(connection.machine.name) 目录快照已应用")
             } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
         }
@@ -555,6 +580,7 @@ final class AppModel {
             connection.connected = true
             connection.error = nil
         }
+        distributeLayouts(on: client)
     }
 
     private func replaceWorkspaces(_ areas: [WorkArea], on machine: String) {
@@ -590,7 +616,7 @@ final class AppModel {
         let info = WorkspaceInfo(id: id, epoch: 1, checkoutId: checkout.id, name: "新工作区", cwd: "",
                                  branch: "kite/\(id)", base: nil, status: .preparing, createdAt: Self.now)
         let area = WorkArea(remote: RemoteWorkspace(machine: connection.machine, project: project, checkout: checkout, workspace: info,
-                                                    threads: [], instances: [], windows: []))
+                                                    threads: [], instances: []))
         area.openDraft()
         let before = (selected, selectedProjectID)
         creatingWorkspaces[id] = area
@@ -614,23 +640,24 @@ final class AppModel {
         }
     }
 
-    func startThread(in area: WorkArea, message: Message, window: String) async throws {
+    /// 草稿发出第一条消息：按草稿的 ID 创建代理实例与会话，草稿对象原地变成这个代理（见 WorkArea.update），卡片不换。
+    func startThread(in area: WorkArea, message: Message, instance: String) async throws {
         let client = try activeClient(in: area)
         guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
         let draft = area.draftThread
         let choice = draft.draftChoice
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, approval: choice?.approval, mcp: choice?.mcp, windowId: window,
+                                      tools: choice?.tools, approval: choice?.approval, mcp: choice?.mcp, instanceId: instance,
                                       messageId: message.id, attachments: message.attachments.isEmpty ? nil : message.attachments.map(\.id)),
             as: RemoteThread.self)
-        // 读回的窗口指向新实例，草稿对象由 WorkArea.update 认领，接着当这个代理
+        // 读回的实例就是草稿的 ID，草稿对象由 WorkArea.update 认领，接着当这个代理
         try await refresh(client)
         guard accepts(client) else { throw KitedError(message: "工作机已切换") }
     }
 
-    /// 归档不等工作机：本机先按已归档算，停靠栏里那一格和它的窗口当场收掉（见 WorkArea.archivingInstances）；工作机归档不成再放回来，
-    /// 报在归档失败的提示里。归档保留会话与数据，工作机停止执行并关闭它的全部窗口；代理的各层子代理一起归档（见 WorkArea.subagents）。
+    /// 归档不等工作机：本机先按已归档算，停靠栏里那一格和它的卡片当场收掉（见 WorkArea.archivingInstances）；工作机归档不成再放回来，
+    /// 报在归档失败的提示里。归档保留会话与数据，工作机停止执行；代理的各层子代理一起归档（见 WorkArea.subagents）。
     /// 几个一起归档时（家族格的「归档空闲的子代理」）本机一起先收掉，工作机逐个归档，归档不成的放回来、报第一个原因，最后读一次列表。
     func archiveInstances(_ instances: [RemotePluginInstance], in area: WorkArea) throws {
         let client = try activeClient(in: area)
@@ -654,77 +681,24 @@ final class AppModel {
         }
     }
 
-    /// 实例已有窗口时不另开：已经是要的视图，或者本机先开、工作机还没建好（等建好再换），只调到前面；否则原地换过去（见 sendWindowRequest）。
-    func openWindow(_ content: OpenWindowRequest.Content, in area: WorkArea) {
-        if case .open(let target) = content, let window = area.window(of: target.instanceId),
-           window.target.viewId == target.viewId || area.isOpening(Pane(window.id)) {
-            area.layout.activate(Pane(window.id))
-            return
-        }
-        send(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: content), in: area)
-    }
-
-    /// 发出开窗口请求，失败报在窗口操作的提示里。
-    private func send(_ request: OpenWindowRequest, in area: WorkArea) {
-        let task = sendWindowRequest(request, in: area)
-        Task { if case .failure(let error) = await task.result { area.windowError = error.localizedDescription } }
-    }
-
-    /// 开窗口不等工作机：工作机用请求 ID 作新窗口的 ID、用请求里的实例 ID 建新实例（见 kited 的 openWindow），本机先按这两个 ID
-    /// 建好、放上台面（见 WorkArea.openingWindows、openingInstances），工作机建好后由它的列表接上，卡片不换；建不成再收回。
-    /// 实例已有窗口时工作机不另开，把那个窗口换到请求的视图：本机也先换（见 WorkArea.switchingViews），有了结果以工作机的列表为准。
-    /// 几个请求可以同时在路上。返回工作机确认的窗口。
-    private func sendWindowRequest(_ request: OpenWindowRequest, in area: WorkArea) -> Task<RemoteWorkspaceWindow, Error> {
+    /// 把实例放上本机的台面（在台面上就聚焦），要看的不是它当前的视图就先换视图：本机先按新视图显示（见 WorkArea.switchLocally），
+    /// 工作机确认后以它为准，换不成退回。view 为 nil 时照它当前的视图。
+    func showInstance(_ id: String, view: String? = nil, in area: WorkArea) {
+        guard let instance = area.instances.first(where: { $0.id == id && $0.status == .open }) else { return }
+        area.layout.activate(Pane(id))
+        guard let view, view != area.currentView(of: instance), !area.isOpening(instance: id),
+              area.definition(of: instance)?.views.contains(where: { $0.id == view }) == true else { return }
+        let request = UUID().uuidString
+        area.switchLocally(id, to: view, request: request)
         area.windowError = nil
-        area.failedWindowRequests.removeAll { $0.id == request.id }
-        var local: WindowTarget?
-        var created: String?
-        var switching: String?
-        switch request.content {
-        case .open(let target):
-            if let window = area.window(of: target.instanceId) {
-                switching = window.id
-                area.switchLocally(window.id, to: target.viewId, request: request.id)
-                area.layout.activate(Pane(window.id))
-            } else {
-                local = target
-            }
-        case .create(let definitionId, let instanceId, let title, _, let preview, let page):
-            if let definition = area.definitions.first(where: { $0.id == definitionId }) {
-                area.createLocally(RemotePluginInstance(id: instanceId, workspaceId: area.id, definitionId: definitionId,
-                                                        title: title ?? area.newInstanceTitle(definition), status: .open, presentation: .window,
-                                                        createdAt: Self.now, state: page.map(RemotePluginInstance.State.init(page:)),
-                                                        config: preview.map { InstanceAgentConfig(preview: $0) }))
-                created = instanceId
-                local = WindowTarget(instanceId: instanceId, viewId: definition.defaultView)
-            }
-        }
-        if let local { area.openLocally(RemoteWorkspaceWindow(id: request.id, workspaceId: area.id, target: local, state: .open, createdAt: 0)) }
-        let closing = Array(area.closeRequests.values)
-        return Task {
-            let window: RemoteWorkspaceWindow, client: KitedClient
+        Task {
+            defer { area.settleSwitch(id, request: request) }
             do {
-                for close in closing { await close.value }
-                client = try activeClient(in: area)
+                let client = try activeClient(in: area)
                 guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-                window = try await client.request("/workspaces/\(area.id)/windows", method: "POST", body: request, as: RemoteWorkspaceWindow.self)
-            } catch {
-                area.settleOpening(request.id, rejected: Self.rejected(error))
-                if let created { area.settleInstance(created) }
-                if let switching { area.settleSwitch(switching, request: request.id) }
-                if !Self.rejected(error) { area.failedWindowRequests.append(request) }
-                throw error
-            }
-            do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
-            if let switching { area.settleSwitch(switching, request: request.id) }
-            // 新建预览时同一目标与设备已经有了，工作机打开的是那个实例：本机先建的实例收回
-            if let created, window.target.instanceId != created { area.settleInstance(created) }
-            if accepts(client), switching == nil, local == nil || window.id != request.id {
-                // 本机没先开，或工作机交回了这个实例原有的窗口：本机先开的那个换成它
-                area.settleOpening(request.id)
-                area.layout.activate(Pane(window.id))
-            }
-            return window
+                _ = try await client.switchView(instance: id, viewId: view)
+                try await refresh(client)
+            } catch { area.windowError = error.localizedDescription }
         }
     }
 
@@ -740,13 +714,12 @@ final class AppModel {
             ?? area.preferredInstance { $0.definitionId == Self.filesDefinition && $0.state?.port == target.port }
         if let existing {
             area.webLinks[existing.id] = WebLink(target: target)
-            let view = existing.definitionId == Self.previewDefinition ? "screen" : "files"
-            openWindow(.open(.init(instanceId: existing.id, viewId: view)), in: area)
+            showInstance(existing.id, view: existing.definitionId == Self.previewDefinition ? "screen" : "files", in: area)
             return
         }
         let id = UUID().uuidString.lowercased()
         area.webLinks[id] = WebLink(target: target)
-        openWindow(.create(Self.filesDefinition, instance: id, page: .port(target.port)), in: area)
+        createInstance(CreateInstanceRequest(id: id, definitionId: Self.filesDefinition, page: .port(target.port)), in: area)
     }
 
     /// 消息里的外网链接在浏览里打开（docs/成果查看与位置.md「运行中的网页」）：已有在看外网的浏览窗口就在它里面打开（开着窗口的优先），
@@ -754,10 +727,10 @@ final class AppModel {
     func openWebAddress(_ url: URL, in area: WorkArea) {
         guard let existing = area.preferredInstance(where: { $0.definitionId == Self.filesDefinition && $0.state?.url != nil }),
               let browser = area.files[existing.id] else {
-            openWindow(.create(Self.filesDefinition, instance: UUID().uuidString.lowercased(), page: .url(url)), in: area)
+            createInstance(CreateInstanceRequest(id: UUID().uuidString.lowercased(), definitionId: Self.filesDefinition, page: .url(url)), in: area)
             return
         }
-        openWindow(.open(.init(instanceId: existing.id, viewId: "files")), in: area)
+        showInstance(existing.id, view: "files", in: area)
         Task {
             do { try await browser.openPage(.url(url)) }
             catch { area.windowError = error.localizedDescription }
@@ -781,17 +754,16 @@ final class AppModel {
     }
     #endif
 
-    /// 新建窗口里选了一个目标：这个窗口原地变成以它起的预览，名字是目标名，带设备的加上型号或设备名，同工作机。
-    /// 同一目标与设备已经在跑时关掉新建窗口、打开那个预览；已经结束、还没回收的由工作机在原来的实例里重新起。
+    /// 新建页里选了一个目标：这一格原地变成以它起的预览，名字是目标名，带设备的加上型号或设备名，同工作机。
+    /// 同一目标与设备已经在跑时关掉新建页、放上那个预览；已经结束、还没回收的由工作机在原来的实例里重新起。
     func choosePreview(_ spec: PreviewSpec, deviceTitle: String?, in area: WorkArea) {
         if let existing = area.preview(for: spec), existing.state?.terminal?.running == true {
             area.closeChooser()
-            openWindow(.open(.init(instanceId: existing.id, viewId: "screen")), in: area)
+            showInstance(existing.id, view: "screen", in: area)
             return
         }
-        guard let window = area.chooserWindow else { return }
         let title = deviceTitle.map { "\(spec.target) · \($0)" } ?? spec.target
-        send(OpenWindowRequest(id: window, content: .create(Self.previewDefinition, instance: UUID().uuidString.lowercased(), title: title, preview: spec)), in: area)
+        createInstance(CreateInstanceRequest(id: area.chooserPane, definitionId: Self.previewDefinition, title: title, preview: spec), in: area)
     }
 
     /// 改预览的网页在哪看，各设备共用。
@@ -804,20 +776,10 @@ final class AppModel {
         try await refresh(client)
     }
 
-    /// 已经结束的预览在原来的实例里重新起：同新建，工作机认出同一目标与设备，打开这个实例。
+    /// 已经结束的预览在原来的实例里重新起：同新建，工作机认出同一目标与设备，返回这个实例。
     func restartPreview(_ instance: RemotePluginInstance, in area: WorkArea) {
         guard let spec = instance.config?.preview else { return }
-        openWindow(.create(Self.previewDefinition, instance: UUID().uuidString.lowercased(), title: instance.title, preview: spec), in: area)
-    }
-
-    /// 停终端或预览的进程：先挂断，等不到退出再停整个进程组；工作机确认进程结束才返回，没有窗口的随之回收。
-    func stopProcess(_ instance: RemotePluginInstance, in area: WorkArea) async throws {
-        struct Stop: Encodable { let operationId: String; let instanceId: String }
-        struct Stopped: Decodable { let ok: Bool }
-        let client = try activeClient(in: area)
-        let operation = instance.definitionId == Self.previewDefinition ? "preview.stop" : "terminal.stop"
-        _ = try await client.request("/workspaces/\(area.id)/operations/\(operation)", method: "POST",
-                                     body: Stop(operationId: UUID().uuidString, instanceId: instance.id), as: Stopped.self)
+        createInstance(CreateInstanceRequest(id: UUID().uuidString.lowercased(), definitionId: Self.previewDefinition, title: instance.title, preview: spec), in: area)
     }
 
     /// 代码块的「在终端中执行」：新开一个以命令第一行为名的终端，工作机等 shell 起好后把命令打进去执行。
@@ -825,7 +787,7 @@ final class AppModel {
         let command = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !command.isEmpty else { return }
         let title = String(firstLine(command).trimmingCharacters(in: .whitespaces).prefix(60))
-        openWindow(.create("kite.terminal", instance: UUID().uuidString.lowercased(), title: title, command: command), in: area)
+        createInstance(CreateInstanceRequest(id: UUID().uuidString.lowercased(), definitionId: "kite.terminal", title: title, command: command), in: area)
     }
 
     /// 工作区的预览目标（.kite/preview/ 下的文件名）与设备候选，新建窗口每次打开都来取。
@@ -845,28 +807,19 @@ final class AppModel {
         #endif
     }()
 
-    /// 菜单里的停止终端、预览：不等结果，失败报在窗口提示里。
-    func requestStop(_ instance: RemotePluginInstance, in area: WorkArea) {
-        Task {
-            do { try await stopProcess(instance, in: area) }
-            catch { area.windowError = error.localizedDescription }
-        }
-    }
-
-    /// 引用只选择资源；窗口身份仍按现有浏览实例与视图复用。窗口先在本机打开（见 sendWindowRequest），再选文件；
+    /// 引用只选择资源；实例身份仍按现有浏览实例复用。实例先在本机放上台面（见 createInstance、showInstance），再选文件；
     /// 还没有文件实例的，等工作机建好实例才能选。
-    /// 窗口不在台面上时目录先收起、不带动画，窗口打开出来就是文件：等选好文件再收（见 navigate），目录会在窗口展开时划走。
+    /// 实例不在台面上时目录先收起、不带动画，放上台面出来就是文件：等选好文件再收（见 navigate），目录会在卡片展开时划走。
     /// 可能是目录的引用不收，读得出目录就展开到它。
     func openFileReference(_ reference: FileReference, in area: WorkArea) async throws {
-        // 正在看网页的浏览窗口不拿来开文件
+        // 正在看网页的浏览不拿来开文件
         let browsing = area.preferredInstance { area.files[$0.id].map { !$0.displayingWeb } ?? false }?.id
         guard let instanceID = browsing else {
             let instanceID = UUID().uuidString.lowercased()
             if !reference.mayBeDirectory { area.referencedFiles.insert(instanceID) }
             defer { area.referencedFiles.remove(instanceID) }
-            let request = OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .create(Self.filesDefinition, instance: instanceID))
-            let window = try await sendWindowRequest(request, in: area).value
-            guard let browser = area.files[window.target.instanceId] else { throw KitedError(message: "文件窗口尚未就绪") }
+            let instance = try await createInstance(CreateInstanceRequest(id: instanceID, definitionId: Self.filesDefinition), in: area).value
+            guard let browser = area.files[instance.id] else { throw KitedError(message: "文件窗口尚未就绪") }
             try await browser.open(reference)
             return
         }
@@ -876,35 +829,35 @@ final class AppModel {
             transaction.disablesAnimations = true
             withTransaction(transaction) { browser.showDirectory = false }
         }
-        let target = WindowTarget(instanceId: instanceID, viewId: "files")
-        var opening: Task<RemoteWorkspaceWindow, Error>?
-        if let window = area.window(of: instanceID) { area.layout.activate(Pane(window.id)) }
-        else { opening = sendWindowRequest(OpenWindowRequest(id: UUID().uuidString.lowercased(), content: .open(target)), in: area) }
+        showInstance(instanceID, view: "files", in: area)
         try await browser.open(reference)
-        _ = try await opening?.value
     }
 
-    /// 关窗口不等工作机：本机先关掉、飞回停靠栏（见 WorkArea.closingWindows），工作机关不掉再放回来。
-    /// 本机先开、工作机还没建好的窗口要等建好才能关。
-    func closeWindow(_ pane: Pane, in area: WorkArea) {
-        if pane.id == area.draftWindow { area.closeDraft(); return }
-        if pane.id == area.chooserWindow { area.closeChooser(); return }
-        guard area.windows.contains(where: { $0.id == pane.id }), !area.isOpening(pane), area.closeRequests[pane.id] == nil else { return }
+    /// 标题栏的关闭、⌘W 落在这个 pane 上：草稿和新建页只在本机，关掉就丢（垫底的新建页不能关）；
+    /// closable、process 的实例关闭（见 closeInstance）；persistent 的没有关闭，缩小它。
+    func close(_ pane: Pane, in area: WorkArea) {
+        if pane.id == area.draftPane { area.closeDraft(); return }
+        if area.isChooser(pane) { area.closeChooser(); return }
+        guard let instance = area.instance(of: pane) else { return }
+        if area.lifetime(of: instance) == .persistent { area.layout.minimize(pane) } else { closeInstance(instance.id, in: area) }
+    }
+
+    /// 关闭实例不等工作机：本机先从台面和停靠栏去掉（见 WorkArea.closingInstances），工作机回收不成再放回来。
+    /// 本机先建、工作机还没建好的要等建好才能关。进程实例的进程还在跑时工作机先停再回收（停止等于关闭）。
+    func closeInstance(_ id: String, in area: WorkArea) {
+        guard let instance = area.instances.first(where: { $0.id == id && $0.status == .open }), !area.isOpening(instance: id),
+              area.lifetime(of: instance) != .persistent, area.closeRequests[id] == nil else { return }
         area.windowError = nil
-        // 父代理关窗口：子代理收着的窗口一起关，台面上的留着
-        let descendants = area.descendantPanesClosing(with: pane)
-        area.closeLocally(pane.id)
-        for child in descendants { closeWindow(child, in: area) }
-        area.closeRequests[pane.id] = Task {
-            defer { area.closeRequests[pane.id] = nil }
+        area.closeLocally(id)
+        area.closeRequests[id] = Task {
+            defer { area.closeRequests[id] = nil }
             let client: KitedClient
             do {
                 client = try activeClient(in: area)
                 guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-                struct Closed: Decodable { let ok: Bool }
-                _ = try await client.request("/workspaces/\(area.id)/windows/\(pane.id)", method: "DELETE", as: Closed.self)
+                try await client.closeInstance(id: id)
             } catch {
-                area.reopenClosing(pane.id)
+                area.reopenClosing(id)
                 area.windowError = error.localizedDescription
                 return
             }
@@ -919,6 +872,50 @@ final class AppModel {
         if !detached.contains(selected), let area = workspace(selected) { return area }
         let line = lineArea?.id
         return workspaces.first { !detached.contains($0.id) && $0.id != line } ?? workspaces.first { !detached.contains($0.id) }
+    }
+}
+
+extension AppModel {
+    /// 跟着此刻在看的工作区（前台的那个窗口组）订它的事件流，只收 instance.show：代理请用户看一个实例时，正看着这个工作区、处于前台的设备
+    /// 把它放上台面，其他设备不动（docs/台面与停靠栏.md「跨设备」）。看的工作区、连接变了就换一条流。App 建好模型后调一次，之后自己跟着观察重调。
+    func followShowRequests() {
+        let target = withObservationTracking { () -> (WorkArea, KitedClient)? in
+            guard sidebarSection == .workspaces, selectedProject == nil, let area = current, let client = area.pluginClient else { return nil }
+            return (area, client)
+        } onChange: {
+            Task { @MainActor [weak self] in self?.followShowRequests() }
+        }
+        if let showFollower, showFollower.area === target?.0, showFollower.client == target?.1 { return }
+        showFollower?.task.cancel()
+        showFollower = nil
+        guard let (area, client) = target else { return }
+        let task = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await client.events(scope: .workspace(area.id)) { event in
+                        guard event.type == "instance.show", let id = event.instanceId else { return }
+                        self?.showRequested(id, in: area)
+                    }
+                } catch {}
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        showFollower = (area, client, task)
+    }
+
+    /// 代理请用户看这个实例：App 在前台、正看着这个工作区才放上台面；实例还没随目录列出来的等它一到（见 WorkArea.pendingShow）。
+    func showRequested(_ id: String, in area: WorkArea) {
+        guard Self.isForeground, current === area else { return }
+        if area.layout.panes.contains(Pane(id)) { area.layout.activate(Pane(id)) } else { area.pendingShow = id }
+    }
+
+    private static var isForeground: Bool {
+        #if os(macOS)
+        NSApp.isActive
+        #else
+        UIApplication.shared.applicationState == .active
+        #endif
     }
 }
 

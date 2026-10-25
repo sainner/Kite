@@ -296,7 +296,7 @@ private struct ThreadControlsRoot: View {
         MacControlsBar(typing: $typing, send: { message, alongside in
             pane.send(message, thread: thread, model: model, area: area, alongside: alongside)
         }, voiceOwner: pane.patternSlot, link: link)
-        .disabled(area.creatingWindow != nil || thread.configuringTemplate)
+        .disabled(area.creatingInstance != nil || thread.configuringTemplate)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 }

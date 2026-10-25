@@ -311,10 +311,11 @@ struct RemoteEvent: Decodable {
     var state: RemoteState?
     var message: String?
     var modelAccounts: ModelAccountsSnapshot?
-    /// monitor.changed 的实例。
+    /// monitor.changed、instance.show 的实例。
     var instanceId: String?
-    /// library.changed 变了的那一类目录，见 LibraryList。
+    /// library.changed 变了的那一类目录，见 LibraryList；kind 为 layout 时另带 projectId。
     var kind: String?
+    var projectId: String?
     /// line.notification 带的系统通知。
     var notification: LineNotificationPayload?
     /// mcp.changed：为真是服务清单本身变了，不只是连接状态。
@@ -332,6 +333,8 @@ nonisolated struct LineNotificationPayload: Decodable, Sendable {
 enum KitedEventScope {
     case catalog
     case thread(String)
+    /// 一个工作区的管理事件流（/events?workspace=）：App 只从这里收代理请用户看某个实例的 instance.show，别的事件由目录流处理。
+    case workspace(String)
 }
 
 struct KitedError: LocalizedError {
@@ -362,7 +365,14 @@ extension String {
 /// 地址来自工作机目录；每个连接实例拥有身份，旧账号的迟到响应不能被新连接接收。
 struct KitedClient: Equatable {
     /// 本机 kited 的地址：作为工作机的 Mac 直接访问它，不经组网。
-    static let local = "http://127.0.0.1:5483"
+    /// Debug 构建带 `--kited http://127.0.0.1:5484` 启动时换成给的地址：验证时对着临时目录里跑的开发版 kited，不碰用户装着的服务。
+    static let local: String = {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--kited"), arguments.indices.contains(index + 1) { return arguments[index + 1] }
+        #endif
+        return "http://127.0.0.1:5483"
+    }()
     let identity = UUID()
     let address: String
     var machineID: String? = nil
@@ -412,12 +422,15 @@ struct KitedClient: Equatable {
 
     /// 首帧包含所选范围的完整快照；取消任务时关闭 URLSession。
     func events(scope: KitedEventScope = .catalog, receive: (RemoteEvent) async throws -> Void) async throws {
-        let thread: String? = switch scope {
-        case .catalog: nil
-        case .thread(let id): id
+        var thread: String?, workspace: String?
+        switch scope {
+        case .catalog: break
+        case .thread(let id): thread = id
+        case .workspace(let id): workspace = id
         }
         // 目录流带上这台设备：连着 Line 所在的工作机时，App 报的关注状态才算数（见 LineAttention）
-        let (connection, stream) = try await streamRequest("/events", thread: thread, device: thread == nil ? LineAttention.deviceID : nil)
+        let (connection, stream) = try await streamRequest("/events", thread: thread, device: thread == nil && workspace == nil ? LineAttention.deviceID : nil,
+                                                           extra: workspace.map { [URLQueryItem(name: "workspace", value: $0)] } ?? [])
         defer { connection.invalidateAndCancel() }
         var request = stream
         request.timeoutInterval = 60
@@ -741,6 +754,48 @@ struct KitedClient: Equatable {
             throw KitedError(message: body?.error ?? "服务返回 \(http.statusCode)", status: http.statusCode, gitLogin: body?.gitLogin,
                              machineID: body?.gitLoginMachine ?? machineID, children: body?.children)
         }
+    }
+}
+
+/// 实例与布局的几个请求，接口见 docs/kited.md。
+extension KitedClient {
+    /// 新建实例，响应是实例（带当前视图）。同一 id 同内容重试返回同一个实例；预览的同一目标与设备已经在跑时返回那个实例。
+    func createInstance(workspace: String, id: String, definitionId: String, title: String? = nil, command: String? = nil,
+                        preview: PreviewSpec? = nil, page: BrowsePage? = nil) async throws -> RemotePluginInstance {
+        try await request("/workspaces/\(workspace.pathComponent)/instances", method: "POST",
+                          body: CreateInstanceRequest(id: id, definitionId: definitionId, title: title, command: command, preview: preview, page: page),
+                          as: RemotePluginInstance.self)
+    }
+
+    /// 换实例当前显示的视图，各端同步；返回实例。
+    func switchView(instance: String, viewId: String) async throws -> RemotePluginInstance {
+        struct Body: Encodable { let viewId: String }
+        return try await request("/instances/\(instance.pathComponent)/view", method: "PUT", body: Body(viewId: viewId), as: RemotePluginInstance.self)
+    }
+
+    /// 关闭实例：closable 的回收，process 的先停进程再回收。已经不存在（404）当成功：迟到的重试不会复活实例。
+    func closeInstance(id: String) async throws {
+        do { let _: JSON = try await request("/instances/\(id.pathComponent)", method: "DELETE", as: JSON.self) }
+        catch let error as KitedError where error.status == 404 {}
+    }
+
+    /// 项目的布局。
+    func layouts(project: String) async throws -> [ProjectLayout] {
+        struct Body: Decodable { let layouts: [ProjectLayout] }
+        return try await request("/project-registry/\(project.pathComponent)/layouts", as: Body.self).layouts
+    }
+
+    /// 新建（不带 expectedRevision）或整体替换一个布局，版本不符 409。
+    func putLayout(project: String, id: String, expectedRevision: String?, layout: ProjectLayout.Recipe) async throws -> ProjectLayout {
+        struct Body: Encodable { let expectedRevision: String?; let layout: ProjectLayout.Recipe }
+        return try await request("/project-registry/\(project.pathComponent)/layouts/\(id.pathComponent)", method: "PUT",
+                                 body: Body(expectedRevision: expectedRevision, layout: layout), as: ProjectLayout.self)
+    }
+
+    func deleteLayout(project: String, id: String, expectedRevision: String) async throws {
+        let query = expectedRevision.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? expectedRevision
+        let _: JSON = try await request("/project-registry/\(project.pathComponent)/layouts/\(id.pathComponent)?expectedRevision=\(query)",
+                                        method: "DELETE", as: JSON.self)
     }
 }
 

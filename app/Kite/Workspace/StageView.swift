@@ -3,8 +3,9 @@ import AppKit
 import SwiftUI
 
 /// Mac 宽屏的台面：各张卡片、卡片之间的缝、拖动时的占位都是 AppKit 视图（StageView、CardView），拖缝改宽时
-/// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、能展开的格子、空台面的画板、停靠栏上面那一层（脉冲）
+/// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、能展开的格子、停靠栏上面那一层（脉冲）
 /// 不随拖缝改尺寸，仍是 SwiftUI，各放进一个铺满台面的托管视图（StageIsland）。窗口正文也还是每张卡片一个托管视图。
+/// 台面空着时垫底的是新建实例的选择页，也是一张卡片（见 WindowLayout.floor）。
 /// 排布的计算和 iPad 的台面（PhoneStageView）共用 StagePlan。
 /// 原生层报不了偏好，有没有窗口开点阵、摆在点阵上的图形、停靠栏悬停标签由这里接着往上报（见 StageReports）。
 struct StageHost: View {
@@ -86,7 +87,7 @@ private struct StageRepresentable: NSViewRepresentable {
     }
 }
 
-/// 台面本身：最底下停靠栏、能展开的格子和空画板几个托管视图，上面依次是缝、拖动时的占位、各张卡片，最上面是停靠栏的脉冲，
+/// 台面本身：最底下停靠栏、能展开的格子几个托管视图，上面依次是缝、拖动时的占位、各张卡片，最上面是停靠栏的脉冲，
 /// 展开着的那一格抬到它上面。
 /// 观察排布模型（ModelTracking），变了在 layout 里重算 StagePlan、摆缝和卡片；排布动画由各张卡片整段交给 Core Animation，
 /// 只有跟手拖动的那张由显示链接逐帧取样。
@@ -98,16 +99,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     let model: AppModel
     private let reports: StageReports
     let geometry = StageGeometry()
-    /// 空画板的台面大小：侧栏收起、展开时空画板自己从原来的地方排过去（见 placeWindowless），停靠栏不跟着每帧排。
-    private let windowlessGeometry = StageGeometry()
-    /// 侧栏收起、展开时空画板正在排过去的这一段，由显示链接逐帧排。
-    private var windowlessFlight: WindowlessFlight?
     private(set) var environment = EnvironmentValues()
     private(set) var look: StageAppearance?
     private var openSidebar: (@MainActor () -> Void)?
 
     private let dockRail = StageIsland()
-    private let windowless = StageIsland()
     private let placeholder = PlaceholderView()
     private let dockOverlay = StageIsland()
     /// 停靠栏里能展开的格子（家族格、「更多」）各一层，按格子的 ID：收着时同停靠栏压在卡片下面，展开到收回之前抬到最上面，
@@ -119,14 +115,12 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     private var cards: [Pane: CardView] = [:]
     /// 台面上和正在退出的窗口，按加入的先后；退出动画走完才拿掉。
     private var retained: [Pane] = []
-    /// 窗口指向的实例，窗口没了以后还要知道它属于哪个实例（停靠栏里那一格先不显示）。
+    /// pane 对应的实例（见 WorkArea.dockInstanceID），pane 没了以后还要知道它飞向哪个实例的格子（那一格先不显示）。
     private var paneInstances: [Pane: String] = [:]
     /// 排过一轮了：之后才有的卡片是新打开的窗口，要动着出来（见 CardPresentation.place 的 appearing）。
     private var populated = false
 
     private let tracking = ModelTracking()
-    /// 空画板报的点阵用量，台面合起来往上报。
-    private lazy var windowlessReports = StageIslandReports(stage: self)
     private var displayLink: CADisplayLink?
     /// 报给排布模型的视口，变了才报。
     private var viewport: CGSize?
@@ -176,13 +170,12 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         self.reports = reports
         super.init(frame: .zero)
         wantsLayer = true
-        for island in [dockRail, windowless] { addSubview(island) }
+        addSubview(dockRail)
         addSubview(placeholder)
         addSubview(dockOverlay)
         // 停靠栏上面那一层压在拖动、关闭中置顶的卡片上面，见 CardView.raised
         dockOverlay.wantsLayer = true
         dockOverlay.layer?.zPosition = 2
-        windowless.hitRegion = { [weak self] in self?.windowlessHitRegion }
         dockRail.hitRegion = { [weak self] in self?.dockHitRegion }
         dockOverlay.hitRegion = { [weak self] in self?.overlayHitRegion }
     }
@@ -237,7 +230,6 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     private func installIslands() {
         let layout = group.layout, geometry = geometry
         dockRail.rootView = rooted(StageDockRail(layout: layout, area: group.workspace, geometry: geometry))
-        windowless.rootView = rooted(StageWindowless(layout: layout, geometry: windowlessGeometry, reports: windowlessReports))
         dockOverlay.rootView = rooted(StageDockOverlay(layout: layout, area: group.workspace, geometry: geometry))
         for (id, island) in unfolds { island.rootView = unfoldRoot(id, appearing: false) }
     }
@@ -262,7 +254,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         for gap in gaps.values { gap.removeFromSuperview() }
         gaps = [:]
         dropUnfolds()
-        for island in [dockRail, windowless, dockOverlay] {
+        for island in [dockRail, dockOverlay] {
             island.hitRegion = nil
             island.rootView = AnyView(EmptyView())
         }
@@ -310,30 +302,14 @@ final class StageView: RepresentedRoot, StageDotsReporting {
                 group.layout.updateViewport(stage.size, presentation: .tiled, leading: origin.x + stage.minX, animated: toggled)
             }
         }
-        for island in [dockRail, windowless, dockOverlay] + unfolds.values { place(island, bounds) }
+        for island in [dockRail, dockOverlay] + unfolds.values { place(island, bounds) }
         place(placeholder, bounds)
         if geometry.bounds != stage { geometry.bounds = stage }
-        placeWindowless(stage, offset: offset, flies: toggled)
         laying = true
         defer { laying = false }
         let arranged = tracking.track({ arrange() }) { [weak self] in self?.invalidateArrangement() }
         // 别的挪动（拖侧栏的边起手、松手）当场摆过去
         settle(arranged, immediate: offset != .zero && !toggled)
-    }
-
-    /// 空画板排在哪：平时同台面。侧栏收起、展开时它露着（台面上没有窗口）就从原来的地方按窗口的曲线排过去，见 WindowlessFlight。
-    private func placeWindowless(_ rect: CGRect, offset: CGVector, flies: Bool) {
-        let layout = group.layout
-        let shown = (layout.shown?.panes.isEmpty ?? true) && windowlessGeometry.bounds != .zero
-        if flies, shown, look?.reduceMotion == false {
-            let flight = WindowlessFlight(from: windowlessGeometry.bounds.offsetBy(dx: offset.dx, dy: offset.dy), to: rect)
-            windowlessFlight = flight
-            windowlessGeometry.bounds = flight.from
-            updateDisplayLink()
-        } else if windowlessFlight?.to != rect {
-            windowlessFlight = nil
-            if windowlessGeometry.bounds != rect { windowlessGeometry.bounds = rect }
-        }
     }
 
     /// 排版当中（settle 里动画停下、悬停变了）改了排布读过的模型：这一轮排完 AppKit 会清掉 needsLayout，所以下一拍再标一次。
@@ -381,11 +357,8 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
         for pane in layout.panes where !retained.contains(pane) { retained.append(pane) }
         if let area {
-            for window in area.windows where paneInstances[Pane(window.id)] != window.target.instanceId {
-                paneInstances[Pane(window.id)] = window.target.instanceId
-            }
-            // 新建窗口交给了后台实例：飞进那一格，飞到之前那一格先不显示
-            for (pane, instance) in area.handedOff where paneInstances[Pane(pane)] != instance { paneInstances[Pane(pane)] = instance }
+            // 新建页交给了后台实例：飞进那一格，飞到之前那一格先不显示
+            for pane in retained where paneInstances[pane] != area.dockInstanceID(pane) { paneInstances[pane] = area.dockInstanceID(pane) }
         }
         let retiring = Set(retained.filter { !layout.panes.contains($0) }.compactMap { paneInstances[$0] })
         if geometry.retiring != retiring { geometry.retiring = retiring }
@@ -399,7 +372,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         // 拖动、拖缝时每步都来一轮，展开、还原按钮要等卡片停下才换（updateExpands）：沿用上一轮算的，松手那一轮再算。
         // 拖侧栏改宽不算：台面大小在变，能不能展开可能跟着变，停下后也未必再来一轮
         let keepsExpansion = layout.drag != nil || resizing
-        // 没在台面上停过的窗口（停靠栏里的）按台面的大小排正文：拖侧栏改宽时台面每步都变，收着的窗口不跟着每步重排，
+        // 没在台面上停过的卡片（停靠栏里的）按台面的大小排正文：拖侧栏改宽时台面每步都变，收着的不跟着每步重排，
         // 用开始拖时的大小，停下后照常
         let fallback = leadingInset > 0 ? frozenFallback ?? plan.regions.canvas.size : plan.regions.canvas.size
         frozenFallback = leadingInset > 0 ? fallback : nil
@@ -424,12 +397,11 @@ final class StageView: RepresentedRoot, StageDotsReporting {
                 acceptsInput: !blocksInput && !resizing && !closing && !dimmed && !placed.hidden, dotsHidden: resizing,
                 dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
-                                         hasThread: area?.thread(in: pane) != nil, pinned: layout.pinned.contains(pane)),
-                expansion: (keepsExpansion ? card.arrangement?.expansion : nil) ?? layout.expansion(of: pane),
-                pinned: layout.pinned.contains(pane))
+                                         hasThread: area?.thread(in: pane) != nil),
+                expansion: (keepsExpansion ? card.arrangement?.expansion : nil) ?? layout.expansion(of: pane))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
-        arranged.visible = Set(plan.onStage.compactMap { area?.dockInstanceID($0) })
+        arranged.visible = Set(plan.onStage.map(\.id))
         cardDots = (cards.values.contains { $0.bodyReports.usesDots }, cards.values.reduce(into: Set<String>()) {
             $0.formUnion($1.bodyReports.dotSlots)
             $0.formUnion($1.bodyReports.threadSlots)
@@ -617,30 +589,26 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     // MARK: - 卡片的拖动、点击
 
     func drag(_ pane: Pane, to point: CGPoint) {
-        let layout = group.layout, area = group.workspace, bounds = stageRect
+        let layout = group.layout, area = group.workspace
         area?.collapseDock()
         area?.dockHover = nil
-        let regions = layout.regions(in: bounds)
-        let onStage = Set(layout.shown?.panes ?? [])
-        layout.drag(pane, to: local(point), in: bounds) { remaining, location in
-            StagePlan.dockIndex(of: pane, among: remaining, at: location, onStage: onStage, regions: regions, area: area)
-        }
+        layout.drag(pane, to: local(point), in: stageRect)
     }
 
     func drop() {
         group.layout.drop(in: stageRect)
     }
 
-    /// 点最小化的窗口（家族格里的父代理也是）：放上台面。
+    /// 点缩在停靠栏里的卡片（家族格里的父代理也是）：放上台面。
     func activate(_ pane: Pane) {
         group.layout.restore(pane, in: stageRect)
     }
 
     // MARK: - 逐帧
 
-    /// 有卡片在跟手拖动、空画板在排过去（见 placeWindowless）时开显示链接，逐帧取样；别的排布动画整段交给 Core Animation（见 CardView.flightStarted）。
+    /// 有卡片在跟手拖动时开显示链接，逐帧取样；别的排布动画整段交给 Core Animation（见 CardView.flightStarted）。
     func updateDisplayLink() {
-        let moving = cards.values.contains { $0.needsFrames } || windowlessFlight != nil
+        let moving = cards.values.contains { $0.needsFrames }
         if moving, displayLink == nil {
             let link = displayLink(target: self, selector: #selector(tick(_:)))
             link.add(to: .main, forMode: .common)
@@ -656,12 +624,6 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         for card in cards.values where card.needsFrames {
             card.applyPresentation(at: date)
             moving = true
-        }
-        if var flight = windowlessFlight {
-            let frame = flight.frame(at: link.targetTimestamp)
-            windowlessFlight = frame == nil ? nil : flight
-            windowlessGeometry.bounds = frame ?? flight.to
-            moving = moving || frame != nil
         }
         if !moving { link.isPaused = true }
     }
@@ -793,12 +755,6 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         group.layout.transitioning || group.workspace == nil ? nil : regions.dock
     }
 
-    /// 台面上没有窗口、也没在拖窗口时空画板接，只在显示着时接。
-    private var windowlessHitRegion: CGRect? {
-        let layout = group.layout
-        return (layout.shown?.panes.isEmpty ?? true) && layout.drag == nil && !layout.transitioning ? regions.canvas : nil
-    }
-
     /// 停靠栏展开时铺满台面接点空白收起；收着时上面只有脉冲，不接。
     private var overlayHitRegion: CGRect? {
         guard let area = group.workspace, !area.dockExpansion.isEmpty, !group.layout.transitioning else { return nil }
@@ -810,15 +766,15 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     private var hoverTips: [DockHoverTip] = []
     private var reporting = false
 
-    /// 各张卡片和空画板报的点阵用量、停靠栏悬停标签交给 StageHost。外面的 SwiftUI 正在排版（台面就排在它里面），隔一拍再改它读的值。
+    /// 各张卡片报的点阵用量、停靠栏悬停标签交给 StageHost。外面的 SwiftUI 正在排版（台面就排在它里面），隔一拍再改它读的值。
     func reportDots() {
         guard !reporting else { return }
         reporting = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             reporting = false
-            let uses = windowlessReports.usesDots || cardDots.uses
-            let slots = windowlessReports.slots.union(cardDots.slots)
+            let uses = cardDots.uses
+            let slots = cardDots.slots
             if reports.usesDots != uses { reports.usesDots = uses }
             if reports.dotSlots != slots { reports.dotSlots = slots }
             if reports.hoverTips != hoverTips { reports.hoverTips = hoverTips }
@@ -830,7 +786,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
     }
 }
 
-/// 台面里铺满台面的托管视图（停靠栏、能展开的格子、空画板、停靠栏上面那一层）：坐标和台面一样，里面的 SwiftUI 按台面坐标摆。
+/// 台面里铺满台面的托管视图（停靠栏、能展开的格子、停靠栏上面那一层）：坐标和台面一样，里面的 SwiftUI 按台面坐标摆。
 /// 只在 hitRegion 里接点击，其余的点落到下面；读屏照常。
 final class StageIsland: NSHostingView<AnyView> {
     var hitRegion: (() -> CGRect?)?

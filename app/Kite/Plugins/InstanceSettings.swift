@@ -68,7 +68,7 @@ struct InstanceSettings: View {
                 }
                 ForEach(definition?.views ?? []) { view in
                     Button("打开\(view.title)") {
-                        model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
+                        model.showInstance(instance.id, view: view.id, in: area)
                     }.disabled(!available)
                 }
             }
@@ -86,7 +86,7 @@ struct InstanceSettings: View {
                 }
             }
             if definition?.lifetime == .persistent {
-                CardSection("归档", note: "停止执行并关闭窗口，会话和数据保留在工作机上。") {
+                CardSection("归档", note: "停止执行，各端的台面与停靠栏一起去掉它，会话和数据保留在工作机上。") {
                     Button("归档实例…", role: .destructive) { archiving = instance }.disabled(!available)
                 }
             }
@@ -318,7 +318,7 @@ struct ArchiveInstanceConfirmation: ViewModifier {
             } message: { target in
                 let children = area.subagents(of: target).count
                 let who = children > 0 ? "它和它开出的 \(children) 个子代理" : "它"
-                Text("归档会停止\(who)正在进行的执行并关闭\(children > 0 ? "它们" : "它")的窗口，会话和数据保留在工作机上。目前还不能在界面里查看或恢复已归档的实例。")
+                Text("归档会停止\(who)正在进行的执行，从各端的台面与停靠栏去掉\(children > 0 ? "它们" : "它")，会话和数据保留在工作机上。目前还不能在界面里查看或恢复已归档的实例。")
             }
             .alert("归档失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("好", role: .cancel) { error = nil }
@@ -349,7 +349,7 @@ struct ArchiveIdleSubagentsConfirmation: ViewModifier {
                 Button("归档", role: .destructive) { archive(target) }
                 Button("取消", role: .cancel) {}
             } message: { target in
-                Text("归档「\(target.title)」开出的 \(count(of: area.idleSubagents(of: target))) 个空闲的子代理，关闭它们的窗口，会话和数据保留在工作机上；还在运行或等你回应的留着。目前还不能在界面里查看或恢复已归档的实例。")
+                Text("归档「\(target.title)」开出的 \(count(of: area.idleSubagents(of: target))) 个空闲的子代理，会话和数据保留在工作机上；还在运行或等你回应的留着。目前还不能在界面里查看或恢复已归档的实例。")
             }
     }
 
@@ -369,7 +369,7 @@ struct ArchiveIdleSubagentsConfirmation: ViewModifier {
     }
 }
 
-/// 窗口图标和无窗口实例使用同一套实例操作；给了窗口时带关闭窗口。
+/// 停靠栏的格子和卡片的菜单使用同一套实例操作；给了 pane 时按存续方式带关闭。
 struct InstanceActions: View {
     let instance: RemotePluginInstance
     var pane: Pane?
@@ -383,7 +383,7 @@ struct InstanceActions: View {
     }
 }
 
-/// 一项实例操作。实例操作只有这一份：停靠栏的菜单（含缩成停靠形状的窗口）和会话窗口的更多菜单都从这里出；结束性的（停止、归档）用危险色。
+/// 一项实例操作。实例操作只有这一份：停靠栏的菜单（含缩成停靠形状的卡片）和会话窗口的更多菜单都从这里出；结束性的（停止、归档）用危险色。
 struct InstanceAction {
     let title: String
     let symbol: String
@@ -391,12 +391,12 @@ struct InstanceAction {
     var destructive = false
     let perform: @MainActor () -> Void
 
-    /// 打开它的各个视图，再是 managing 那几项；带着空闲子代理的代理（停靠栏里是家族格）多一项归档空闲的子代理，会话窗口的更多菜单里没有；
-    /// 给了窗口时最后是关闭窗口。
+    /// 打开它的各个视图（放上台面、换到那个视图），再是 managing 那几项；带着空闲子代理的代理（停靠栏里是家族格）多一项归档空闲的子代理，
+    /// 会话窗口的更多菜单里没有；给了 pane 且按存续方式有关闭时最后是关闭。
     @MainActor static func all(for instance: RemotePluginInstance, in area: WorkArea, model: AppModel, pane: Pane? = nil) -> [InstanceAction] {
         var actions = (area.definition(of: instance)?.views ?? []).map { view in
             InstanceAction(title: "打开\(view.title)", symbol: "macwindow") {
-                model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
+                model.showInstance(instance.id, view: view.id, in: area)
             }
         }
         actions += managing(instance, in: area, model: model)
@@ -405,19 +405,19 @@ struct InstanceAction {
                 area.archiveIdleRequest = instance
             })
         }
-        if let pane {
-            actions.append(InstanceAction(title: "关闭窗口", symbol: "xmark") { model.closeWindow(pane, in: area) })
+        if let pane, area.hasClose(pane) {
+            actions.append(InstanceAction(title: "关闭", symbol: "xmark", enabled: area.canClose(pane)) { model.close(pane, in: area) })
         }
         return actions
     }
 
-    /// 实例本身的：配置；终端与预览的进程在跑时能停止（agent 起的没有窗口，靠它），独立存续的能归档。窗口自己的更多菜单只列这些，打开、关闭由窗口管。
+    /// 实例本身的：配置；终端与预览的进程在跑时能停止（停止就是关闭这个实例，agent 起的也靠它），独立存续的能归档。会话窗口的更多菜单只列这些。
     @MainActor static func managing(_ instance: RemotePluginInstance, in area: WorkArea, model: AppModel) -> [InstanceAction] {
         var actions = [InstanceAction(title: "配置", symbol: "slider.horizontal.3") { area.settingsInstance = instance }]
-        if instance.state?.terminal?.running == true {
+        if instance.state?.terminal?.running == true, area.lifetime(of: instance) == .process {
             let title = area.previewStatus(of: instance) != nil ? "停止预览" : "停止终端"
             actions.append(InstanceAction(title: title, symbol: "stop.fill", enabled: model.isConnected(area), destructive: true) {
-                model.requestStop(instance, in: area)
+                model.closeInstance(instance.id, in: area)
             })
         }
         if area.definition(of: instance)?.lifetime == .persistent {

@@ -1,20 +1,21 @@
 import Foundation
 
+/// 实例怎么消失（docs/台面与停靠栏.md「实例与消失」）：closable 关闭即回收，persistent 归档，process 进程结束后留到关闭、停止等于关闭。
 nonisolated enum PluginLifetime: String, Decodable, Sendable {
-    case window, persistent, process
+    case closable, persistent, process
 
     var title: String {
         switch self {
-        case .window: "随窗口回收"
+        case .closable: "关闭即回收"
         case .persistent: "独立存续"
-        case .process: "随进程回收"
+        case .process: "随进程"
         }
     }
     var explanation: String {
         switch self {
-        case .window: "关闭窗口时，结束运行并回收实例和状态。"
-        case .persistent: "关闭窗口后保留实例和数据，可在侧栏重新打开；不再需要时归档。"
-        case .process: "进程运行时关闭窗口照常运行，留在停靠栏；进程结束后没有窗口就回收。"
+        case .closable: "关闭时回收实例和状态，没有要保留的数据。"
+        case .persistent: "缩小、断线都不改变实例；不再需要时归档，停止执行并保留数据。"
+        case .process: "进程在跑时一直在；进程结束后留到关闭，停止进程等于关闭。"
         }
     }
 }
@@ -141,11 +142,6 @@ nonisolated struct PluginPackagePreview: Decodable, Sendable {
     let title: String
     let lifetime: PluginLifetime
     let views: [View]?
-}
-
-struct CreatePluginInstance: Encodable {
-    let id: String
-    let definitionId: String
 }
 
 /// 一组执行许可：额外读、写路径，网络，沙箱外命令。项目、角色、实例三层共用，见 docs/Agent与插件契约.md §3.2。

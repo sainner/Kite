@@ -55,7 +55,7 @@ import UIKit
         }
     }
 
-    /// 测的一段：drag、sidebar 是一轮摆动，minimize、restore、reopen、close 是一次排布动画，enter、back 是一次切工作区，
+    /// 测的一段：drag、sidebar 是一轮摆动，minimize、restore、reopen、close 是一次排布动画（reopen、close 是从停靠栏放上台面、再缩回去），enter、back 是一次切工作区，
     /// idle 是一段静息，key、send 是一次按键、一次发送；
     /// iPhone 的见 PerfProbe+Phone（抽屉开合、手指拉抽屉、横滑、键盘升降，各是一次动作到动画走完）。
     struct Segment: Encodable {
@@ -252,12 +252,12 @@ import UIKit
                 try await Task.sleep(for: .seconds(0.8))
             }
             for id in wanted {
-                guard let pane = layout.docked.first(where: { area.thread(in: $0)?.id == id }) else { continue }
+                guard let pane = layout.offStage.first(where: { area.thread(in: $0)?.id == id }) else { continue }
                 layout.restore(pane, in: bounds)
                 try await Task.sleep(for: .seconds(0.8))
             }
         } else {
-            while (layout.shown?.panes ?? []).filter(conversation).count < 2, let pane = layout.docked.first(where: conversation) {
+            while (layout.shown?.panes ?? []).filter(conversation).count < 2, let pane = layout.offStage.first(where: conversation) {
                 layout.restore(pane, in: bounds)
                 try await Task.sleep(for: .seconds(0.8))
             }
@@ -439,7 +439,7 @@ import UIKit
             throw Failure("台面上没有两个窗口")
         }
         let bounds = CGRect(origin: .zero, size: viewport)
-        session.onFinish { if layout.docked.contains(pane) { layout.restore(pane, in: bounds) } }
+        session.onFinish { if layout.offStage.contains(pane) { layout.restore(pane, in: bounds) } }
         try await ready(session)
         for index in 0..<(number("perfPairs").map(Int.init) ?? 4) {
             session.record(try await settling("minimize", index, layout) { layout.minimize(pane) })
@@ -474,41 +474,38 @@ import UIKit
         return segment
     }
 
-    // MARK: - 打开关掉的窗口
+    // MARK: - 从停靠栏放上台面、再缩回去
 
-    /// 工作区里没开窗口的代理：经停靠栏打开（同点它的小头像，真的请工作机建窗口），过一会儿再关掉，-perfPairs 次（默认 4）；
-    /// 每次从动作起逐帧记到排布动画走完。测完窗口关着，同测之前。
+    /// 工作区里不在台面上的代理：从停靠栏放上台面（同点它那一格；新模型里这只是本机的排布动作，不请工作机建窗口），
+    /// 过一会儿再缩回停靠栏，-perfPairs 次（默认 4）；每次从动作起逐帧记到排布动画走完。量的是卡片从格子展开、正文建出来并读历史，
+    /// 和缩回格子这两段排布动画。测完实例仍在停靠栏里，同测之前。
     private static func reopen(_ session: Session) async throws {
         let model = session.model, area = session.area, layout = area.layout
-        func window(_ instance: RemotePluginInstance) -> Pane? {
-            area.window(of: instance.id).map { Pane($0.id) }
-        }
         guard let instance = area.instances.first(where: { instance in
-            instance.status == .open && area.isAgent(instance) && window(instance) == nil && area.definition(of: instance)?.views.isEmpty == false
-        }) else { throw Failure("工作区里没有没开窗口的代理") }
-        session.onFinish { if let pane = window(instance) { model.closeWindow(pane, in: area) } }
+            instance.status == .open && area.isAgent(instance) && !area.isOnStage(instance.id) && area.definition(of: instance)?.views.isEmpty == false
+        }) else { throw Failure("工作区里没有不在台面上的代理") }
+        let pane = Pane(instance.id)
+        session.onFinish { if layout.shown?.panes.contains(pane) == true { layout.minimize(pane) } }
         try await ready(session)
         for index in 0..<(number("perfPairs").map(Int.init) ?? 4) {
-            try await windowsIdle(area)
+            try await instancesIdle(area)
             session.record(try await settling("reopen", index, layout) { model.openDockInstance(instance, in: area) })
             if index == 0 { await capture("reopen-opened") }
             // 历史读完、排好
             try await Task.sleep(for: .seconds(1.5))
-            try await windowsIdle(area)
-            guard let pane = window(instance) else { throw Failure("窗口没有打开：\(area.windowError ?? "没有报错")") }
-            session.record(try await settling("close", index, layout) { model.closeWindow(pane, in: area) })
+            guard layout.shown?.panes.contains(pane) == true else { throw Failure("实例没有放上台面：\(area.windowError ?? "没有报错")") }
+            session.record(try await settling("close", index, layout) { layout.minimize(pane) })
             try await Task.sleep(for: .seconds(1.2))
         }
-        try await windowsIdle(area)
     }
 
-    /// 等窗口请求都回来，最多 10 秒。
-    private static func windowsIdle(_ area: WorkArea) async throws {
+    /// 等实例请求都回来，最多 10 秒。
+    private static func instancesIdle(_ area: WorkArea) async throws {
         for _ in 0..<100 {
-            if area.windowsSettled { return }
+            if area.instancesSettled { return }
             try await Task.sleep(for: .milliseconds(100))
         }
-        throw Failure("10 秒内窗口请求没有回来")
+        throw Failure("10 秒内实例请求没有回来")
     }
 
     // MARK: - 切工作区

@@ -1,53 +1,54 @@
 import SwiftUI
 
-/// 工作机拥有窗口集合；当前设备保留布局、草稿及尚未确认的窗口操作。
+/// 工作机拥有实例集合与各实例的当前视图；当前设备保留台面（哪些实例在台面上、怎么摆、焦点）、草稿及尚未确认的实例操作。
+/// 停靠栏里一格就是一个实例，Pane 的 ID 就是实例 ID；代理草稿与新建实例的选择页是只在本机的两个特殊 pane（见 draftPane、chooserPane）。
 @Observable
 final class WorkArea: Identifiable {
     let id: String
     var remote: RemoteWorkspace
     var threads: [WorkThread] = []
-    var windows: [RemoteWorkspaceWindow] = []
     var instances: [RemotePluginInstance] = []
     var files: [String: FileBrowser] = [:]
     var definitions: [RemotePluginDefinition] = []
+    /// 这个项目的布局（配方），随项目读、library.changed 时重读，见 AppModel.refreshLayouts。
+    var layouts: [ProjectLayout] = []
     private(set) var pluginClient: KitedClient?
     private(set) var pluginConnection: UUID
     /// 新代理草稿。已有工作区里的草稿只在本机打开，不同步到其他设备；关闭即丢弃，工作机上不留实例。
-    /// 发出第一条消息、工作机建好实例后，这个对象原地变成那个代理、进入 threads，这里换上新的草稿对象（见 update）。
+    /// 草稿的 ID 由本机生成，就是工作机要为这个代理建的实例 ID：发出第一条消息、工作机建好实例后，这个对象原地变成那个代理、
+    /// 进入 threads，排布和卡片都不动，这里换上新的草稿对象（见 update）。
     private(set) var draftThread: WorkThread
-    /// 草稿窗口的 ID，没打开草稿时为 nil。由本机生成，就是工作机要为这个代理建的窗口 ID，建好后排布和卡片都不动。
-    private(set) var draftWindow: String?
-    /// 新建窗口的 ID：点添加当场打开的本机窗口，里面选插件，选好后原地变成那个插件的窗口，ID 不换（见 AppModel.choose）。
-    /// 同草稿一样只在本机、不同步，关掉就丢掉；没开着时为 nil。
-    private(set) var chooserWindow: String?
-    /// 新建窗口选了只在后台的插件、自己关掉时交给的实例：关闭的卡片飞进它在停靠栏的那一格（见 instance(of:)）。
+    /// 草稿 pane 的 ID（就是 draftThread.id），没打开草稿时为 nil。
+    private(set) var draftPane: String?
+    /// 新建实例的选择页的 ID：台面空着时它是垫底的窗口（见 WindowLayout.floor），点添加时当场打开成普通窗口（chooserOpen）。
+    /// 选好插件后原地变成那个实例，ID 不换（见 AppModel.choose），这里换一个新 ID 给下一次。同草稿一样只在本机、不同步。
+    private(set) var chooserPane: String = WorkArea.newPaneID()
+    /// 新建页是点添加打开的普通窗口（关掉就丢）；为 false 时它只在台面空着时垫底。
+    private(set) var chooserOpen = false
+    /// 新建页选了只在后台的插件、自己关掉时交给的实例：关闭的卡片飞进它在停靠栏的那一格（见 instance(of:)）。
     @ObservationIgnored private(set) var handedOff: [String: String] = [:]
-    /// 换下新建窗口、本机先开的窗口：工作机明确拒绝时换回新建窗口（见 settleOpening）。
+    /// 换下新建页、本机先建的实例：工作机明确拒绝时换回新建页（见 settleInstance）。
     @ObservationIgnored private var replacedChooser: String?
-    /// 新建窗口刚变成会话的窗口：会话的原生外框接上时淡入，和淡出的新建窗口正文交叠（见 takeFadeIn）。
+    /// 新建页刚变成会话的草稿：会话的原生外框接上时淡入，和淡出的新建页正文交叠（见 takeFadeIn）。
     @ObservationIgnored private var fadingIn: Set<String> = []
     let layout: WindowLayout
-    /// 正在发出的草稿窗口：期间输入区禁用，草稿不能关。
-    var creatingWindow: String?
-    /// 本机打开、工作机还没建好的窗口：点下去就放上台面，和工作机的窗口一起排（见 rebuildWindows）。
-    /// 工作机按同一个 ID 建好后由它的列表接上，建不成就收回（见 AppModel.sendWindowRequest）。
-    private(set) var openingWindows: [RemoteWorkspaceWindow] = []
-    /// 本机新建、工作机还没建好的实例（新建工具窗口、后台实例）：当场放进实例集合，窗口和停靠栏先按它排；
-    /// 正文要用工作机上的实例，等建好再出来（见 isOpening(instance:)）。
+    /// 正在发出的草稿：期间输入区禁用，草稿不能关。
+    var creatingInstance: String?
+    /// 本机新建、工作机还没建好的实例：当场放进实例集合、放上台面（见 openLocally），正文要用工作机上的实例，等建好再出来（见 isOpening(instance:)）。
+    /// 工作机按同一个 ID 建好后由它的列表接上，建不成就收回（见 AppModel.createInstance）。
     private(set) var openingInstances: [RemotePluginInstance] = []
-    /// 本机关掉、工作机还没关的窗口：点下去就飞回停靠栏，工作机的列表还有它也不放回来，关不掉再放回来（见 AppModel.closeWindow）。
-    private(set) var closingWindows: Set<String> = []
+    /// 本机关掉、工作机还没回收的实例：点下去就从台面和停靠栏去掉，关不掉再放回来（见 AppModel.closeInstance）。
+    private(set) var closingInstances: Set<String> = []
     /// 正在停的终端、预览进程：各窗口标题栏的停止按钮转圈（见 WorkArea.stop）。
     var stoppingProcesses: Set<String> = []
-    /// 本机换了视图、工作机还没确认的窗口：窗口 ID 到视图和那次请求，当场按它显示；请求有了结果就去掉，以工作机的列表为准（见 AppModel.sendWindowRequest）。
+    /// 本机换了视图、工作机还没确认的实例：实例 ID 到视图和那次请求，当场按它显示；请求有了结果就去掉，以工作机的实例为准（见 AppModel.showInstance）。
     @ObservationIgnored private var switchingViews: [String: (view: String, request: String)] = [:]
-    /// 本机归档、工作机还没归档的实例：当场按已归档排，它的窗口一起收掉；归档不成再放回来（见 AppModel.archiveInstances）。
+    /// 本机归档、工作机还没归档的实例：当场按已归档排，它的卡片一起收掉；归档不成再放回来（见 AppModel.archiveInstances）。
     private(set) var archivingInstances: Set<String> = []
-    /// 在路上的关窗口请求。之后打开窗口的请求等它们回来再发：工作机先收到打开的话，会把还没关的那个窗口交回来。
+    /// 在路上的关闭请求，按实例。
     @ObservationIgnored var closeRequests: [String: Task<Void, Never>] = [:]
-    /// 网络中断、没得到确认的开窗口和建实例请求：保留同一个 ID 重试，工作机已经建好的不会再建一份（见 AppModel.retryRequests）。
-    var failedWindowRequests: [OpenWindowRequest] = []
-    var failedInstanceRequests: [CreatePluginInstance] = []
+    /// 网络中断、没得到确认的建实例请求：保留同一个 ID 重试，工作机已经建好的不会再建一份（见 AppModel.retryRequests）。
+    var failedInstanceRequests: [CreateInstanceRequest] = []
     var windowError: String?
     var archiveError: String?
     var settingsInstance: RemotePluginInstance?
@@ -57,14 +58,16 @@ final class WorkArea: Identifiable {
     /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
     private(set) var activities: [String: ThreadActivity] = [:]
     @ObservationIgnored private var activityCursors: [String: EventCursor] = [:]
-    /// 本机看过的回合收尾时间，按实例 ID；收尾时间比它新、窗口又不在本机台面上的，停靠栏标「完成待查看」。不跨设备同步。
+    /// 本机看过的回合收尾时间，按实例 ID；收尾时间比它新、实例又不在本机台面上的，停靠栏标「完成待查看」。不跨设备同步。
     private(set) var seenTurns: [String: Double] = [:]
     @ObservationIgnored private var visibleInstances: Set<String> = []
     /// 为打开引用新建、工作机还没建好的文件实例：浏览器建出来就收着目录，见 AppModel.openFileReference。
     @ObservationIgnored var referencedFiles: Set<String> = []
     /// 消息里点的本机网页链接、网页地址栏里输入的路径，按预览实例 ID：网页预览打开到链接的路径。页面里的跳转按设备各自保存，这个也只在本机。
     var webLinks: [String: WebLink] = [:]
-    /// 停靠栏里展开的「更多」或家族格，外层在前；只在本机，不保存。
+    /// 代理请用户看、本机还没列出来的实例（instance.show 比目录快一步到）：实例一到就放上台面，见 AppModel.showRequested。
+    @ObservationIgnored var pendingShow: String?
+    /// 停靠栏里展开的家族格，外层在前；只在本机，不保存。
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
     var dockHover: DockHover?
@@ -85,13 +88,12 @@ final class WorkArea: Identifiable {
         pluginConnection = connection
         self.remote = remote
         self.definitions = definitions
-        draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name)
-        let openWindows = remote.windows.filter { $0.state == .open }
-        windows = openWindows
+        draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name, id: Self.newPaneID())
         instances = remote.instances
-        layout = WindowLayout(panes: openWindows.map { Pane($0.id) },
+        layout = WindowLayout(panes: Self.panes(of: remote.instances, definitions: definitions, draft: nil, chooser: nil),
                               storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
                               reconcileOnLoad: client != nil)
+        layout.floor = Pane(chooserPane)
         seenTurns = UserDefaults.standard.dictionary(forKey: seenKey) as? [String: Double] ?? [:]
         if let client { update(remote, client: client, connection: connection, cursor: cursor) }
     }
@@ -104,8 +106,8 @@ final class WorkArea: Identifiable {
         pluginConnection = connection
         let previous = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
         let instancesByID = Dictionary(uniqueKeysWithValues: remote.instances.map { ($0.id, $0) })
-        // 工作机建好了草稿的窗口：窗口指向的实例就是草稿变成的代理，由草稿对象接着当，不另建
-        let drafted = draftWindow.flatMap { id in remote.windows.first { $0.id == id && $0.state == .open } }?.target.instanceId
+        // 工作机建好了草稿的代理（同一个 ID）：由草稿对象接着当，不另建
+        let drafted = draftPane.flatMap { id in instancesByID[id]?.status == .open ? id : nil }
         threads = remote.threads.compactMap { value in
             guard let instance = instancesByID[value.instanceId], instance.status == .open else { return nil }
             if let thread = previous[value.instanceId] ?? (value.instanceId == drafted ? draftThread : nil) {
@@ -118,10 +120,10 @@ final class WorkArea: Identifiable {
         }
         // 草稿已经变成代理，留一个新的草稿对象，免得之后按草稿改它的连接状态
         if drafted != nil, !draftThread.isDraft {
-            draftWindow = nil
-            draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name)
+            draftPane = nil
+            draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name, id: Self.newPaneID())
         }
-        rebuildWindows()
+        rebuild()
         if let settingsInstance, !instances.contains(where: { $0.id == settingsInstance.id && $0.status == .open }) {
             self.settingsInstance = nil
         }
@@ -133,7 +135,7 @@ final class WorkArea: Identifiable {
     func updateFiles(client: KitedClient? = nil) {
         let confirmed = instances.filter { $0.definitionId == AppModel.filesDefinition && $0.status == .open && !isOpening(instance: $0.id) }
         files = Dictionary(uniqueKeysWithValues: confirmed.map { instance in
-            // 为引用或网页打开的窗口一出来就是内容，目录收着
+            // 为引用或网页打开的实例一出来就是内容，目录收着
             let browser = files[instance.id] ?? FileBrowser(instanceID: instance.id, workspaceID: id, client: client,
                                                             showDirectory: !referencedFiles.contains(instance.id) && instance.state?.selection.showsPage != true)
             browser.update(instance, client: client)
@@ -162,26 +164,23 @@ final class WorkArea: Identifiable {
         availableSkillsReading = nil
     }
 
-    func files(in pane: Pane) -> FileBrowser? {
-        guard let target = windows.first(where: { $0.id == pane.id })?.target else { return nil }
-        return files[target.instanceId]
-    }
+    func files(in pane: Pane) -> FileBrowser? { files[pane.id] }
 
     func thread(in pane: Pane) -> WorkThread? {
-        guard let target = windows.first(where: { $0.id == pane.id })?.target else { return nil }
-        if target.instanceId == draftThread.id { return draftThread }
+        if pane.id == draftThread.id { return draftThread }
         guard view(in: pane)?.renderer == "conversation" else { return nil }
-        return threads.first { $0.id == target.instanceId }
+        return threads.first { $0.id == pane.id }
     }
 
     func definition(of instance: RemotePluginInstance) -> RemotePluginDefinition? {
         definitions.first { $0.id == instance.definitionId }
     }
 
-    /// 打开实例时先显示哪个视图：默认视图。
-    func openingView(of instance: RemotePluginInstance) -> String? {
-        guard let definition = definition(of: instance) else { return nil }
-        return (definition.views.first { $0.id == definition.defaultView } ?? definition.views.first)?.id
+    /// 实例当前显示的视图：本机刚换、工作机还没确认的先按本机的；没有视图的实例为 nil。
+    func currentView(of instance: RemotePluginInstance) -> String? {
+        guard let definition = definition(of: instance), !definition.views.isEmpty else { return nil }
+        let id = switchingViews[instance.id]?.view ?? instance.view ?? definition.defaultView
+        return (definition.views.first { $0.id == id } ?? definition.views.first)?.id
     }
 
     /// 本工作区运行中终端与预览监听的端口，按端口号排；同一个端口在几个实例里时算一个，能用 HTTP 打开的那个为准。
@@ -205,10 +204,15 @@ final class WorkArea: Identifiable {
         if webLinks[instance]?.target.port != port { webLinks[instance] = nil }
     }
 
-    /// 符合条件、打开着的实例，台面上有窗口的优先：消息里的链接和引用找窗口打开时用。
+    /// 符合条件、打开着的实例，台面上的优先：消息里的链接和引用找实例打开时用。
     func preferredInstance(where matches: (RemotePluginInstance) -> Bool) -> RemotePluginInstance? {
         let candidates = instances.filter { $0.status == .open && matches($0) }
-        return candidates.first { window(of: $0.id) != nil } ?? candidates.first
+        return candidates.first { isOnStage($0.id) } ?? candidates.first
+    }
+
+    /// 实例在本机台面上（宽屏的排布里、紧凑布局是当前窗口）。
+    func isOnStage(_ instance: String) -> Bool {
+        layout.presentation == .compact ? layout.focused?.id == instance : layout.shown?.panes.contains(Pane(instance)) == true
     }
 
     /// 预览实例的画面；不是预览时为 nil。
@@ -228,40 +232,52 @@ final class WorkArea: Identifiable {
         return "\(name) \(number)"
     }
 
-    /// 停下终端或预览的进程：停的期间各窗口的停止按钮转圈（stoppingProcesses），失败交给 report。
+    /// 停下终端或预览的进程就是关闭这个实例（进程实例的存续方式，见 docs/台面与停靠栏.md）：先在本机去掉，关不掉再放回来，失败交给 report。
     func stop(_ instance: RemotePluginInstance, model: AppModel, report: @escaping (String?) -> Void) {
-        stoppingProcesses.insert(instance.id)
         report(nil)
-        Task {
-            defer { stoppingProcesses.remove(instance.id) }
-            do { try await model.stopProcess(instance, in: self) }
-            catch { report(error.localizedDescription) }
-        }
+        model.closeInstance(instance.id, in: self)
     }
 
-    /// 关掉窗口后实例还在：独立存续的，或者进程还在跑的终端。
-    func survivesWindowClose(_ instance: RemotePluginInstance) -> Bool {
-        switch definition(of: instance)?.lifetime {
-        case .persistent: true
-        case .process: instance.state?.terminal?.running == true
-        default: false
-        }
+    /// 实例的存续方式：关闭即回收、归档，还是进程结束后留到关闭；定义没读到时按归档的算，免得把实例关掉。
+    func lifetime(of instance: RemotePluginInstance) -> PluginLifetime {
+        definition(of: instance)?.lifetime ?? .persistent
     }
 
-    /// 停靠栏要放下添加入口、每一格和两组之间的分隔；家族格更长，无窗口的代理每四个小头像占一格，最多两格。
+    /// 标题栏上这个 pane 有没有「关闭」：closable、process 的实例有，persistent 的只有归档（放菜单里）；草稿有，新建页打开着（没垫底）时有。
+    func hasClose(_ pane: Pane) -> Bool {
+        if pane.id == draftPane { return true }
+        if pane.id == chooserPane { return chooserOpen && !chooserIsFloor }
+        guard let instance = instance(of: pane) else { return false }
+        return lifetime(of: instance) != .persistent
+    }
+
+    /// 此刻能不能关：正在发出的草稿、本机先建还没建好的实例要等。
+    func canClose(_ pane: Pane) -> Bool {
+        guard hasClose(pane) else { return false }
+        if pane.id == draftPane { return creatingInstance == nil }
+        return !isOpening(instance: pane.id)
+    }
+
+    /// 新建页此刻是台面的底：台面上没有别的实例（紧凑布局是没有别的窗口），它关不掉。
+    var chooserIsFloor: Bool {
+        let others = layout.panes.filter { $0.id != chooserPane }
+        if layout.presentation == .compact { return others.isEmpty }
+        return (layout.root?.panes ?? []).allSatisfy { $0.id == chooserPane }
+    }
+
+    /// 停靠栏要放下添加入口、每一格和两组之间的分隔。
     var minimumSize: CGSize {
         let content = layout.minimumSize
-        let dock = DockGeometry.length(of: dockModel(docked: layout.docked, onStage: []))
+        let dock = DockGeometry.length(of: dockModel(onStage: []))
         return CGSize(width: content.width, height: max(content.height, 2 * Metrics.padding + dock))
     }
 
     func view(in pane: Pane) -> RemotePluginDefinition.PluginView? {
-        guard let target = windows.first(where: { $0.id == pane.id })?.target,
-              let instance = instances.first(where: { $0.id == target.instanceId }) else { return nil }
-        return definition(of: instance)?.views.first { $0.id == target.viewId }
+        guard let instance = instance(of: pane), let current = currentView(of: instance) else { return nil }
+        return definition(of: instance)?.views.first { $0.id == current }
     }
 
-    /// 插件实例的外观：一个实例一个窗口，窗口和它在停靠栏的小头像同一个样子，不随视图换。预览按画面是网页、模拟器还是 App 窗口。
+    /// 插件实例的外观：一个实例一张卡片，卡片和它在停靠栏的头像同一个样子，不随视图换。预览按画面是网页、模拟器还是 App 窗口。
     func appearance(of instance: RemotePluginInstance) -> WindowAppearance {
         switch previewStatus(of: instance)?.screen {
         case .simulator: return .init(name: "模拟器", icon: "iphone")
@@ -273,10 +289,9 @@ final class WorkArea: Identifiable {
     }
 
     func appearance(of pane: Pane) -> WindowAppearance {
-        if pane.id == chooserWindow { return .init(name: "新建窗口", icon: "plus") }
+        if pane.id == chooserPane { return .init(name: "新建窗口", icon: "plus") }
         if let thread = thread(in: pane) { return .init(name: thread.title, icon: WindowAppearance.agentIcon, tint: thread.tint, isAgent: true) }
-        if let target = windows.first(where: { $0.id == pane.id })?.target,
-           let instance = instances.first(where: { $0.id == target.instanceId }) {
+        if let instance = instance(of: pane) {
             var result = appearance(of: instance)
             result.name = instance.title
             return result
@@ -310,7 +325,7 @@ final class WorkArea: Identifiable {
         markSeen()
     }
 
-    /// 本机台面上的实例：宽屏是排布里显示的窗口，紧凑布局是当前窗口。
+    /// 本机台面上的实例：宽屏是排布里显示的，紧凑布局是当前窗口。
     func noteVisible(_ ids: Set<String>) {
         visibleInstances = ids
         markSeen()
@@ -318,7 +333,7 @@ final class WorkArea: Identifiable {
 
     func isVisible(instance id: String) -> Bool { visibleInstances.contains(id) }
 
-    /// 回合收尾时窗口在台面上，或之后打开了窗口，都算看过。子代理不算未查看：交代给它的回合结束时会回报给父代理。
+    /// 回合收尾时实例在台面上，或之后放上了台面，都算看过。子代理不算未查看：交代给它的回合结束时会回报给父代理。
     func unseen(_ id: String) -> Bool {
         guard let settled = activities[id]?.settledAt, !visibleInstances.contains(id), !isSubagent(id) else { return false }
         return settled > seenTurns[id] ?? 0
@@ -336,72 +351,100 @@ final class WorkArea: Identifiable {
 
     private var seenKey: String { "KiteSeenTurns.\(remote.machine.id).\(remote.id)" }
 
-    /// 实例的窗口，一个实例最多一个。
-    func window(of instance: String) -> RemoteWorkspaceWindow? {
-        windows.first { $0.target.instanceId == instance }
-    }
-
-    /// 实例集合是工作机上的实例，本机正归档的按已归档算，加上本机正建的；窗口集合是工作机上打开的窗口，
-    /// 减去本机正关的和正归档的实例的，加上本机正开的和草稿。
-    private func rebuildWindows() {
-        // 工作机列出了本机正开的窗口、正建的实例（开着或已经关了），就以它为准
-        let listed = Set(remote.windows.map(\.id))
-        if openingWindows.contains(where: { listed.contains($0.id) }) { openingWindows.removeAll { listed.contains($0.id) } }
+    /// 实例集合是工作机上的实例，减去本机正关的，本机正归档的按已归档算，加上本机正建的；排布里的窗口随之重算。
+    private func rebuild() {
+        // 工作机列出了本机正建的实例（开着或已经归档），就以它为准
         let known = Set(remote.instances.map(\.id))
-        if openingInstances.contains(where: { known.contains($0.id) }) { openingInstances.removeAll { known.contains($0.id) } }
-        // 工作机已经归档了的不再算正归档，已经关了的不再算正关
-        let stillArchiving = archivingInstances.intersection(remote.instances.filter { $0.status == .open }.map(\.id))
+        if openingInstances.contains(where: { known.contains($0.id) }) {
+            openingInstances.removeAll { known.contains($0.id) }
+            replacedChooser = nil
+        }
+        // 工作机已经归档了的不再算正归档，已经回收了的不再算正关
+        let open = remote.instances.filter { $0.status == .open }.map(\.id)
+        let stillArchiving = archivingInstances.intersection(open)
         if stillArchiving != archivingInstances { archivingInstances = stillArchiving }
-        instances = remote.instances.map { archivingInstances.contains($0.id) ? $0.archived : $0 } + openingInstances
-        let open = remote.windows.filter { $0.state == .open && $0.id != draftWindow }
-        let stillOpen = closingWindows.intersection(open.map(\.id))
-        if stillOpen != closingWindows { closingWindows = stillOpen }
-        windows = open.filter { !closingWindows.contains($0.id) && !archivingInstances.contains($0.target.instanceId) }
-            .map { window in switchingViews[window.id].map { window.showing($0.view) } ?? window } + openingWindows
-            + (chooserWindow.map { [Self.chooserWindow($0, workspace: id)] } ?? [])
-            + (draftWindow.map { [Self.draftWindow($0, workspace: id, thread: draftThread)] } ?? [])
-        layout.reconcile(windows.map { Pane($0.id) })
+        let stillClosing = closingInstances.intersection(open)
+        if stillClosing != closingInstances { closingInstances = stillClosing }
+        instances = remote.instances.filter { !closingInstances.contains($0.id) }
+            .map { archivingInstances.contains($0.id) ? $0.archived : $0 } + openingInstances
+        layout.reconcile(Self.panes(of: instances, definitions: definitions, draft: draftPane, chooser: chooserOpen ? chooserPane : nil))
+        if let pendingShow, layout.panes.contains(Pane(pendingShow)) {
+            self.pendingShow = nil
+            layout.activate(Pane(pendingShow))
+        }
     }
 
-    /// 先在本机打开窗口，当场放上台面，见 openingWindows。ID 是新建窗口的，就原地换下它（见 chooserWindow）。
-    func openLocally(_ window: RemoteWorkspaceWindow) {
-        let replacing = chooserWindow == window.id
-        if replacing {
-            chooserWindow = nil
-            replacedChooser = window.id
-        }
-        if replacing || !windows.contains(where: { $0.id == window.id }) {
-            openingWindows.append(window)
-            rebuildWindows()
-        }
-        layout.activate(Pane(window.id))
+    /// 打开布局时先建的实例、草稿都放进排布，再一起摆（见 openLayout）。
+    func rebuildForLayout() { rebuild() }
+
+    /// 停靠栏的顺序，就是排布知道的全部窗口：代理在前（含子代理）、工具在后，各按创建先后；草稿排在代理末尾，打开着的新建页排在最后。
+    /// 没有视图的实例只在停靠栏占格（见 DockModel），不进排布。
+    private static func panes(of instances: [RemotePluginInstance], definitions: [RemotePluginDefinition], draft: String?, chooser: String?) -> [Pane] {
+        func definition(_ instance: RemotePluginInstance) -> RemotePluginDefinition? { definitions.first { $0.id == instance.definitionId } }
+        let open = instances.filter { $0.status == .open && !(definition($0)?.views.isEmpty ?? true) }
+            .sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
+        let agents = open.filter { definition($0)?.agent != nil }, tools = open.filter { definition($0)?.agent == nil }
+        return agents.map { Pane($0.id) } + (draft.map { [Pane($0)] } ?? []) + tools.map { Pane($0.id) } + (chooser.map { [Pane($0)] } ?? [])
     }
 
-    /// 本机打开的这个窗口不再按本机的算：工作机建不成，或交回了这个实例原有的窗口。还在不在以工作机的列表为准。
-    /// rejected 是工作机明确拒绝、没有建：换下新建窗口的，换回新建窗口，好另选一个。
-    func settleOpening(_ id: String, rejected: Bool = false) {
-        guard openingWindows.contains(where: { $0.id == id }) else { return }
-        openingWindows.removeAll { $0.id == id }
+    /// 先在本机建实例并放上台面，见 openingInstances。ID 是新建页的，就原地换下它（卡片不换），新建页换一个新 ID 给下一次。
+    func openLocally(_ instance: RemotePluginInstance) {
+        let replacing = chooserPane == instance.id
+        if !instances.contains(where: { $0.id == instance.id }) {
+            openingInstances.append(instance)
+            if replacing {
+                replacedChooser = instance.id
+                chooserOpen = false
+            }
+            rebuild()
+        }
+        layout.activate(Pane(instance.id))
+        if replacing { renewChooser() }
+    }
+
+    /// 新建页变成了实例或草稿、或者关掉了：下一次新建页用一个新 ID。放在那个窗口接上以后调，台面空着时垫底的才换成新的。
+    private func renewChooser() {
+        chooserPane = Self.newPaneID()
+        layout.floor = Pane(chooserPane)
+    }
+
+    /// 先在本机建实例、只放进停靠栏（后台实例，不放上台面），见 openingInstances。
+    func createLocally(_ instance: RemotePluginInstance) {
+        guard !instances.contains(where: { $0.id == instance.id }) else { return }
+        openingInstances.append(instance)
+        rebuild()
+    }
+
+    /// 本机建的这个实例不再按本机的算：工作机建不成，或建的是别的实例（预览认出同一目标与设备）。还在不在以工作机的列表为准。
+    /// rejected 是工作机明确拒绝、没有建：换下新建页的，换回新建页（同一个 ID，卡片不动），好另选一个。
+    func settleInstance(_ id: String, rejected: Bool = false) {
+        guard openingInstances.contains(where: { $0.id == id }) else { return }
+        openingInstances.removeAll { $0.id == id }
         if replacedChooser == id {
             replacedChooser = nil
-            if rejected, chooserWindow == nil { chooserWindow = id }
+            if rejected, !chooserOpen {
+                chooserPane = id
+                chooserOpen = true
+                layout.floor = Pane(id)
+            }
         }
-        rebuildWindows()
+        rebuild()
+        if rejected, chooserOpen, chooserPane == id { layout.activate(Pane(id)) }
     }
 
-    func isOpening(_ pane: Pane) -> Bool { openingWindows.contains { $0.id == pane.id } }
+    func isOpening(instance id: String) -> Bool { openingInstances.contains { $0.id == id } }
 
-    /// 先在本机给窗口换视图，见 switchingViews。
-    func switchLocally(_ window: String, to view: String, request: String) {
-        switchingViews[window] = (view, request)
-        rebuildWindows()
+    /// 先在本机给实例换视图，见 switchingViews。
+    func switchLocally(_ instance: String, to view: String, request: String) {
+        switchingViews[instance] = (view, request)
+        rebuild()
     }
 
-    /// 这次换视图的请求有了结果：之后按工作机的列表显示；后来又换了一次的，等后来那次。
-    func settleSwitch(_ window: String, request: String) {
-        guard switchingViews[window]?.request == request else { return }
-        switchingViews[window] = nil
-        rebuildWindows()
+    /// 这次换视图的请求有了结果：之后按工作机的实例显示；后来又换了一次的，等后来那次。
+    func settleSwitch(_ instance: String, request: String) {
+        guard switchingViews[instance]?.request == request else { return }
+        switchingViews[instance] = nil
+        rebuild()
     }
 
     /// 先在本机改名，见 pendingName。
@@ -416,23 +459,7 @@ final class WorkArea: Identifiable {
         if pendingName?.request == request { pendingName = nil }
     }
 
-    /// 先在本机建实例，见 openingInstances。
-    func createLocally(_ instance: RemotePluginInstance) {
-        guard !instances.contains(where: { $0.id == instance.id }) else { return }
-        openingInstances.append(instance)
-        rebuildWindows()
-    }
-
-    /// 本机建的这个实例工作机建不成：收回。
-    func settleInstance(_ id: String) {
-        guard openingInstances.contains(where: { $0.id == id }) else { return }
-        openingInstances.removeAll { $0.id == id }
-        rebuildWindows()
-    }
-
-    func isOpening(instance id: String) -> Bool { openingInstances.contains { $0.id == id } }
-
-    /// 本机新建实例时用的标题，和工作机起的一样：代理叫「新代理」，带窗口的按同一插件已有的标题往后编号，后台实例用插件名。
+    /// 本机新建实例时用的标题，和工作机起的一样：代理叫「新代理」，带视图的按同一插件已有的标题往后编号，后台实例用插件名。
     func newInstanceTitle(_ definition: RemotePluginDefinition) -> String {
         if definition.agent != nil { return "新代理" }
         guard !definition.views.isEmpty else { return definition.title }
@@ -443,44 +470,39 @@ final class WorkArea: Identifiable {
     func archiveLocally(_ ids: [String]) {
         guard !archivingInstances.isSuperset(of: ids) else { return }
         archivingInstances.formUnion(ids)
-        rebuildWindows()
+        rebuild()
     }
 
     /// 工作机没归档：放回来。
     func restoreArchiving(_ ids: [String]) {
         guard !archivingInstances.isDisjoint(with: ids) else { return }
         archivingInstances.subtract(ids)
-        rebuildWindows()
+        rebuild()
     }
 
-    /// 窗口操作都有了着落：本机先开、先关、先建、先归档的都等到了工作机的列表。
-    var windowsSettled: Bool {
-        openingWindows.isEmpty && closingWindows.isEmpty && openingInstances.isEmpty && archivingInstances.isEmpty
+    /// 实例操作都有了着落：本机先建、先关、先归档的都等到了工作机的列表。
+    var instancesSettled: Bool {
+        openingInstances.isEmpty && closingInstances.isEmpty && archivingInstances.isEmpty
     }
 
-    /// 先在本机关掉窗口，当场飞回停靠栏，见 closingWindows。
+    /// 先在本机关掉实例，当场从台面和停靠栏去掉，见 closingInstances。
     func closeLocally(_ id: String) {
-        guard !closingWindows.contains(id) else { return }
-        closingWindows.insert(id)
-        rebuildWindows()
+        guard !closingInstances.contains(id) else { return }
+        closingInstances.insert(id)
+        rebuild()
     }
 
     /// 工作机没关掉：放回来。
     func reopenClosing(_ id: String) {
-        guard closingWindows.contains(id) else { return }
-        closingWindows.remove(id)
-        rebuildWindows()
+        guard closingInstances.contains(id) else { return }
+        closingInstances.remove(id)
+        rebuild()
     }
 
-    private static func newWindowID() -> String { UUID().uuidString.lowercased() }
+    static func newPaneID() -> String { UUID().uuidString.lowercased() }
 
-    private static func draftWindow(_ id: String, workspace: String, thread: WorkThread) -> RemoteWorkspaceWindow {
-        RemoteWorkspaceWindow(id: id, workspaceId: workspace,
-                              target: WindowTarget(instanceId: thread.id, viewId: "conversation"), state: .open, createdAt: 0)
-    }
-
-    private func makeDraftThread() -> WorkThread {
-        let thread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name)
+    private func makeDraftThread(id: String) -> WorkThread {
+        let thread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name, id: id)
         thread.draftChoice = DraftAgentChoice()
         thread.connected = remote.workspace.status == .open
         return thread
@@ -489,71 +511,78 @@ final class WorkArea: Identifiable {
     /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
     /// 每次新开一个草稿对象：关掉的草稿淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
     func openDraft() {
-        if draftWindow == nil {
-            draftThread = makeDraftThread()
-            draftWindow = Self.newWindowID()
-            rebuildWindows()
+        if draftPane == nil {
+            draftThread = makeDraftThread(id: Self.newPaneID())
+            draftPane = draftThread.id
+            rebuild()
         }
-        if let draftWindow { layout.activate(Pane(draftWindow)) }
+        if let draftPane { layout.activate(Pane(draftPane)) }
+    }
+
+    /// 打开布局时要一个这个角色的草稿：没有草稿就新开一个，有就换上这个角色；不放上台面，整组一起摆。返回草稿 pane 的 ID。
+    func prepareDraft(role: AgentRole) -> String {
+        if draftPane == nil {
+            draftThread = makeDraftThread(id: Self.newPaneID())
+            draftPane = draftThread.id
+        }
+        draftThread.role = role
+        return draftThread.id
     }
 
     /// 正在发出的草稿不能关：工作机可能已经建好了代理。
     func closeDraft() {
-        guard draftWindow != nil, creatingWindow == nil else { return }
-        draftWindow = nil
-        rebuildWindows()
+        guard draftPane != nil, creatingInstance == nil else { return }
+        draftPane = nil
+        rebuild()
     }
 
-    /// 点添加：当场打开新建窗口，已经开着一个就调到前面，见 chooserWindow。
+    /// 点添加：当场打开新建页，已经开着一个（或垫着底）就调到前面，见 chooserPane。
     func openChooser() {
-        if chooserWindow == nil {
+        if !chooserOpen {
             handedOff = [:]
-            chooserWindow = Self.newWindowID()
-            rebuildWindows()
+            chooserOpen = true
+            rebuild()
         }
-        if let chooserWindow { layout.activate(Pane(chooserWindow)) }
+        layout.activate(Pane(chooserPane))
     }
 
-    /// 关掉新建窗口；instance 是刚建的后台实例，关闭的卡片飞进它那一格。
+    /// 关掉新建页；垫底的关不掉。instance 是刚建的后台实例，关闭的卡片飞进它那一格。
     func closeChooser(into instance: String? = nil) {
-        guard let chooserWindow else { return }
-        if let instance { handedOff[chooserWindow] = instance }
-        self.chooserWindow = nil
-        rebuildWindows()
+        guard chooserOpen, instance != nil || !chooserIsFloor else { return }
+        if let instance { handedOff[chooserPane] = instance }
+        chooserOpen = false
+        renewChooser()
+        rebuild()
     }
 
-    /// 新建窗口里选了代理：原地变成新代理的草稿。已经有草稿窗口的，关掉新建窗口、调出那个草稿：一份草稿不同时摆在两个窗口里。
+    /// 新建页里选了代理：原地变成新代理的草稿，草稿的 ID 就是新建页的。已经有草稿的，关掉新建页、调出那个草稿：一份草稿不同时摆在两个窗口里。
     func chooseAgent() {
-        guard let chooser = chooserWindow else { return }
-        guard draftWindow == nil else {
+        let chooser = chooserPane
+        guard draftPane == nil else {
             closeChooser()
             openDraft()
             return
         }
-        draftThread = makeDraftThread()
-        chooserWindow = nil
-        draftWindow = chooser
+        draftThread = makeDraftThread(id: chooser)
+        draftPane = chooser
+        chooserOpen = false
         fadingIn.insert(chooser)
-        rebuildWindows()
+        rebuild()
+        layout.activate(Pane(chooser))
+        renewChooser()
     }
 
     /// 这个窗口的会话外框接上时要不要淡入，问过一次就不再算，见 fadingIn。
     func takeFadeIn(_ pane: Pane) -> Bool { fadingIn.remove(pane.id) != nil }
 
-    /// 新建窗口还没有实例和视图，按这个固定的目标排（见 PaneBody）。
-    static let chooserInstance = "new-window"
-
-    private static func chooserWindow(_ id: String, workspace: String) -> RemoteWorkspaceWindow {
-        RemoteWorkspaceWindow(id: id, workspaceId: workspace, target: WindowTarget(instanceId: chooserInstance, viewId: "chooser"),
-                              state: .open, createdAt: 0)
-    }
+    func isChooser(_ pane: Pane) -> Bool { pane.id == chooserPane }
 }
 
 extension RemotePluginInstance {
     /// 本机先按已归档算的样子，见 WorkArea.archivingInstances。
     var archived: Self {
-        Self(id: id, workspaceId: workspaceId, definitionId: definitionId, title: title, status: .archived, presentation: presentation,
-             createdAt: createdAt, state: state, config: config, origin: origin)
+        Self(id: id, workspaceId: workspaceId, definitionId: definitionId, title: title, status: .archived,
+             createdAt: createdAt, view: view, state: state, config: config, origin: origin)
     }
 }
 

@@ -21,12 +21,12 @@ struct TilesLayer: View {
     }
 }
 
-/// 宽屏停靠栏：添加入口固定在最上面，然后是代理组（有子代理的在前）、分隔线、工具组；没有窗口的代理和工具排成小头像，贴着底边。
-/// 最小化的窗口由卡片自己画在格子上；脉冲画在卡片上面，见 DockOverlay；家族格与「更多」各占一层，见 DockUnfold。
+/// 宽屏停靠栏：添加入口固定在最上面，然后是代理组、分隔线、工具组，每个实例一格。
+/// 有视图的实例由它的卡片自己画在格子上，没有视图的由这里画；脉冲画在卡片上面，见 DockOverlay；家族格各占一层，见 DockUnfold。
 struct DockRail: View {
     let geometry: DockGeometry
     var hiddenInstances: Set<String> = []
-    /// 点了开着窗口的实例：同 DockUnfold.showPane。
+    /// 点了有视图的实例：同 DockUnfold.showPane。
     var showPane: (Pane) -> Void = { _ in }
     @Environment(WindowLayout.self) private var workspace
     @Environment(WorkArea.self) private var area
@@ -46,13 +46,6 @@ struct DockRail: View {
                         .modifier(DockDimmed(dimmed: dimmed))
                         .transition(.scale(0.6, placedIn: cell.frame).combined(with: .opacity))
                 }
-            }
-            ForEach(geometry.minis.filter { !$0.entry.expands }, id: \.entry.id) { mini in
-                DockCellButton(entry: mini.entry, depth: 0, mini: true, hoverFrame: geometry.hoverFrame(of: mini.entry, cell: mini.frame, mini: true), showPane: showPane)
-                    .placed(mini.frame)
-                    .opacity(hidden(mini.entry) ? 0 : 1)
-                    .modifier(DockDimmed(dimmed: dimmed))
-                    .transition(.scale(0.6, placedIn: mini.frame).combined(with: .opacity))
             }
             if let divider = geometry.divider {
                 DockDivider(x: geometry.add.midX, y: divider)
@@ -100,7 +93,7 @@ struct DockDivider: View {
     }
 }
 
-/// 画在卡片上面的一层：最小化窗口的脉冲，展开时点空白处收起。悬停标签由台面算好往上报（见 StageView.hoverTips）。
+/// 画在卡片上面的一层：不在台面上的实例的脉冲，展开时点空白处收起。悬停标签由台面算好往上报（见 StageView.hoverTips）。
 struct DockOverlay: View {
     let geometry: DockGeometry
     let bounds: CGRect
@@ -152,7 +145,7 @@ struct DockOverlay: View {
     }
 }
 
-/// 宽屏停靠栏里能展开的一格（家族格、「更多」）：收着和展开是同一个 DockGroup，openness 从 0 到 1 逐帧插值，
+/// 宽屏停靠栏里能展开的一格（家族格）：收着和展开是同一个 DockGroup，openness 从 0 到 1 逐帧插值，
 /// 从格子原地拉长成面板，收起时原路叠回。台面给每个这样的格子单独一层（见 StageView.unfolds）：收着时同停靠栏压在卡片下面，
 /// 最小化的父代理由卡片画在胶囊最上面；展开到收回之前这一层抬到卡片和停靠栏上面那一层的上面（lift），父代理的头像连同脉冲
 /// 由它自己画、盖住底下的卡片，停靠栏上面那一层不画这一格的脉冲。抬起在已经画出父代理以后，放下在不画以前，底下的卡片不会露出来。
@@ -185,10 +178,9 @@ struct DockUnfold: View {
         let expanded = area.dockExpansion.first == id
         ZStack(alignment: .topLeading) {
             if shown, let cell = geometry.allCells.first(where: { $0.entry.id == id }) {
-                let mini = geometry.minis.contains { $0.entry.id == id }
                 DockUnfolding(entry: cell.entry, cell: cell.frame, regions: regions, expanded: expanded, openness: openness,
                               drawsParent: expanded || lifted || drawsParent(cell.entry),
-                              hoverFrame: geometry.hoverFrame(of: cell.entry, cell: cell.frame, mini: mini), showPane: showPane)
+                              hoverFrame: geometry.hoverFrame(of: cell.entry, cell: cell.frame), showPane: showPane)
                 .transition(.scale(0.6, placedIn: cell.frame).combined(with: .opacity))
             }
         }
@@ -218,7 +210,7 @@ struct DockUnfold: View {
         }
     }
 
-    /// 收着时家族格里的父代理：最小化的窗口卡片画在胶囊最上面（脉冲见 DockOverlay），关掉的窗口正飞回来时也先不画。
+    /// 收着时家族格里的父代理：不在台面上时它的卡片画在胶囊最上面（脉冲见 DockOverlay），关掉的新建页正飞回来时也先不画。
     private func drawsParent(_ entry: DockEntry) -> Bool {
         guard case .family(let family) = entry else { return true }
         return !(family.pane != nil && !family.onStage) && !hiddenInstances.contains(family.parent.id)
@@ -284,56 +276,6 @@ private struct DockUnfolding: View, Animatable {
             withTransaction(Transaction(animation: nil)) {
                 position.scrollTo(edge: .top)
                 offset = 0
-            }
-        }
-    }
-}
-
-/// 台面上没有窗口时的画板。它把场景图形摆到整个 App 的点阵上，点阵不参与过渡（见 WindowLayout.transitioning）：
-/// 空台面的画板。缩小最后一个窗口时等它落进停靠栏再出现，不然飞行中整窗点阵逐帧长出图形。过渡状态在这一层读，同 PausedInTransition。
-/// 打开窗口时画板的实色底和文字随窗口展开淡出，图形不淡、逐格收回；窗口展开完盖住它以后再移除（2026-10-12 用户确定）。
-/// 台面变空、打开窗口的那次更新里卡片还没报上自己在动，这时就当作已经停下，画板会提前出场、提前移除
-/// （2026-10-12 用户看到图形先退场、停下后再随画板出场）；所以先不动，等这次更新走完再看还在不在过渡中。
-struct SettledWindowlessStage: View {
-    let layout: WindowLayout
-    let canvas: CGRect
-    /// 台面上没有窗口，也没在拖窗口。
-    let wanted: Bool
-    @State private var mounted = false
-    @State private var shown = false
-
-    var body: some View {
-        let settled = !layout.transitioning
-        // 不要了的那次排布更新里直接变成 false，淡出跟着排布的动画走
-        let visible = shown && wanted
-        ZStack {
-            if mounted {
-                WindowlessStage(dock: "右侧停靠栏")
-                    .environment(\.stageCardOpacity, visible ? 1 : 0)
-                    .modifier(DotsPresence(presented: visible))
-                    .allowsHitTesting(visible)
-            }
-        }
-        .placed(canvas)
-        .task(id: [wanted, settled]) {
-            guard settled else {
-                if !wanted { shown = false }
-                return
-            }
-            await Task.yield()
-            guard !Task.isCancelled, !layout.transitioning else { return }
-            if wanted {
-                guard !shown else { return }
-                if !mounted {
-                    mounted = true
-                    // 先按透明摆上去，下一拍再淡入
-                    await Task.yield()
-                    guard !Task.isCancelled else { return }
-                }
-                withAnimation(.easeOut(duration: 0.25)) { shown = true }
-            } else {
-                shown = false
-                mounted = false
             }
         }
     }
@@ -443,11 +385,11 @@ struct PaneHeaderReports: ViewModifier {
 @MainActor func paneWindowActions(group: PaneGroup, pane: Pane, model: AppModel) -> PaneWindowActions? {
     guard let area = group.workspace else { return nil }
     let layout = group.layout
-    return PaneWindowActions(pinned: layout.pinned.contains(pane), togglePin: { layout.togglePin(pane) },
-                             minimize: { layout.minimize(pane) }, expansion: layout.expansion(of: pane),
+    var close: (@MainActor () -> Void)?
+    if area.hasClose(pane) { close = { model.close(pane, in: area) } }
+    return PaneWindowActions(minimize: { layout.minimize(pane) }, expansion: layout.expansion(of: pane),
                              expand: { layout.expand(pane) }, collapse: { layout.collapse(pane) },
-                             close: { model.closeWindow(pane, in: area) },
-                             canClose: !area.isOpening(pane) && area.creatingWindow != pane.id)
+                             close: close, canClose: area.canClose(pane))
 }
 
 /// 卡片标题栏的悬停和几项实际尺寸，由外框、按钮组和正文报上来，只有读它们的几层随之更新。
@@ -462,10 +404,8 @@ struct PaneHeaderReports: ViewModifier {
     /// 藏到右组按 Animation.paneHeaderActions 伸缩完，同窗口在动时不接悬停；给它们留的地方照留，标题不跟着来回让。
     private(set) var actionsResizing = false
     @ObservationIgnored private var actionsSettle: Task<Void, Never>?
-    /// 窗口按钮组（缩小、展开、关闭、固定）的实际尺寸。
+    /// 窗口按钮组（缩小、展开、关闭）的实际尺寸。
     var controlsSize = CGSize.zero
-    /// 固定的窗口按钮组藏着时单独露出来的图钉的尺寸，见 PaneHeaderControls.pinShown。
-    var pinSize = CGSize.zero
     /// 正文标题栏的实际高度。
     var height: CGFloat = 0
     /// 卡片报来的几项，正文标题栏按它们算让出多少（见 PaneHeaderControlsSpace）。
@@ -475,9 +415,8 @@ struct PaneHeaderReports: ViewModifier {
     var inset: CGFloat {
         guard let layout else { return 0 }
         let controls = PaneHeaderControls(header: self, layout: layout, minimized: placement.minimized, width: placement.width,
-                                          hasThread: placement.hasThread, pinned: placement.pinned)
-        if controls.revealed { return controlsSize.width + Metrics.paneButtonGap }
-        return controls.pinRevealed ? pinSize.width + Metrics.paneButtonGap : 0
+                                          hasThread: placement.hasThread)
+        return controls.revealed ? controlsSize.width + Metrics.paneButtonGap : 0
     }
 
     var minHeight: CGFloat { controlsSize.height }
@@ -498,7 +437,6 @@ struct HeaderPlacement: Equatable {
     var minimized = false
     var width: CGFloat = 0
     var hasThread = false
-    var pinned = false
 }
 
 /// 窗口按钮放在哪：标题栏上露出来、藏着，还是收进正文的更多菜单。读 PaneCardHeader 的几层各自用它算。
@@ -508,7 +446,6 @@ struct PaneHeaderControls {
     let minimized: Bool
     let width: CGFloat
     let hasThread: Bool
-    let pinned: Bool
 
     /// 按完整控制组计算，不能随悬停显隐改变判断；圆环占一个按钮宽，标题至少保留两个按钮宽。
     var inMenu: Bool {
@@ -525,14 +462,6 @@ struct PaneHeaderControls {
     }
 
     var shown: Bool { revealed && !header.actionsResizing }
-
-    /// 固定的窗口按钮组藏着时（Mac 上指针不在卡片上）单独露出图钉，看得出固定了；指针一到卡片上就换成整组。
-    /// 收进更多菜单、缩成停靠形状、拖动和拖缝时不露。
-    var pinRevealed: Bool {
-        pinned && !revealed && !layout.isFixed && !inMenu && !minimized && layout.drag == nil && layout.resizing == nil
-    }
-
-    var pinShown: Bool { pinRevealed && !header.actionsResizing }
 }
 
 /// 正文标题栏按窗口按钮让位（见 PaneHeaderControlsSpace）、收进菜单；在正文的托管视图里读，卡片不跟着重算。
@@ -546,7 +475,7 @@ struct PaneHeaderEnvironment: ViewModifier {
     func body(content: Content) -> some View {
         let placement = header.placement
         let controls = PaneHeaderControls(header: header, layout: group.layout, minimized: placement.minimized,
-                                          width: placement.width, hasThread: placement.hasThread, pinned: placement.pinned)
+                                          width: placement.width, hasThread: placement.hasThread)
         content
             .environment(\.paneOverflowActions, controls.inMenu ? paneWindowActions(group: group, pane: pane, model: model) : nil)
             .environment(\.paneHeaderControlsSpace, header)
@@ -585,8 +514,8 @@ struct WindowSurfaceDots: View {
     }
 }
 
-/// 新建窗口的正文（见 WorkArea.chooserWindow），由停靠栏的加号打开：内置插件两列卡片，项目的预览目标和自定义插件列在下面；
-/// 点一项，这个窗口原地变成它，目标变成以它起的预览，装到「设备」里选的那台。打开时重新读一次定义、目标与设备候选，
+/// 新建实例的选择页（见 WorkArea.chooserPane）：台面空着时垫底，也由停靠栏的加号打开。内置插件两列卡片，项目的预览目标和自定义插件列在下面；
+/// 点一项，这一格原地变成它（ID 与位置不换），目标变成以它起的预览，装到「设备」里选的那台。打开时重新读一次定义、目标与设备候选，
 /// 别处新装的插件、工作区里新加的目标、刚配对的设备也能列出。上次创建没成功时标题栏有重试。
 struct NewWindowChooser: View {
     @Environment(AppModel.self) private var model
@@ -722,7 +651,7 @@ struct NewWindowChooser: View {
     }
 
     private var actions: PaneHeaderActions {
-        guard !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty else { return PaneHeaderActions() }
+        guard !area.failedInstanceRequests.isEmpty else { return PaneHeaderActions() }
         return PaneHeaderActions(groups: [[PaneHeaderAction(title: "重试创建", systemImage: "arrow.clockwise") { model.retryRequests(in: area) }]])
     }
 
@@ -745,13 +674,13 @@ struct NewWindowChooser: View {
 }
 
 extension WorkArea {
-    /// 工作区在线且未归档时才能加窗口；别的窗口请求还在路上不妨碍。
+    /// 工作区在线且未归档时才能新建实例；别的请求还在路上不妨碍。
     func canAddWindows(connected: Bool) -> Bool {
         connected && remote.workspace.status == .open
     }
 }
 
-/// 窗口操作失败时的提示，可以重试。
+/// 实例操作失败时的提示，可以重试。
 struct WindowErrorAlert: ViewModifier {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
@@ -759,7 +688,7 @@ struct WindowErrorAlert: ViewModifier {
     func body(content: Content) -> some View {
         content
             .alert("窗口操作失败", isPresented: Binding(get: { area.windowError != nil }, set: { if !$0 { area.windowError = nil } })) {
-                if !area.failedWindowRequests.isEmpty || !area.failedInstanceRequests.isEmpty {
+                if !area.failedInstanceRequests.isEmpty {
                     Button("重试添加") { model.retryRequests(in: area) }
                 }
                 Button("好", role: .cancel) { area.windowError = nil }

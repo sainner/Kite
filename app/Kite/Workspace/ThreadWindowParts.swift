@@ -68,9 +68,7 @@ struct ThreadIslandEnvironment: ViewModifier {
             .environment(\.workingDirectory, thread.transcriptRoot)
             .environment(\.attachmentSource, thread.attachmentSource)
             .modifier(PaneHeaderEnvironment(header: header, group: group, pane: pane))
-            .environment(\.paneInstance, area.windows.first(where: { $0.id == pane.id }).flatMap { window in
-                area.instances.first { $0.id == window.target.instanceId }
-            })
+            .environment(\.paneInstance, area.instance(of: pane))
             .environment(\.paneConnectionNotice, app.connectionNotice(app.connection(for: area)))
     }
 }

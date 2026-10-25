@@ -20,6 +20,7 @@ struct KiteApp: App {
         #endif
         let model = AppModel()
         _model = State(initialValue: model)
+        model.followShowRequests()
         LineAttention.shared.install(model: model)
         LineNotifications.shared.install(model: model)
         #if os(macOS)
@@ -89,7 +90,7 @@ struct KiteCommands: Commands {
         // 占了快捷键的系统项（Mac 的关闭、最小化）SwiftUI 会摘掉它们的快捷键，菜单里照旧点得到
         CommandGroup(after: .newItem) {
             Button("关闭窗口") {
-                onFocusedPane { area, pane in model.closeWindow(pane, in: area) } otherwise: {
+                onFocusedPane { area, pane in model.close(pane, in: area) } otherwise: {
                     #if os(macOS)
                     NSApp.keyWindow?.performClose(nil)
                     #endif
@@ -128,7 +129,7 @@ struct KiteCommands: Commands {
             .disabled(area == nil)
             Divider()
             // 第几格、第几个工作区按下时才数，菜单不随停靠栏、工作区列表重建
-            Menu("打开停靠栏里的窗口") {
+            Menu("打开停靠栏里的实例") {
                 ForEach(1...9, id: \.self) { number in
                     Button("第 \(number) 格") {
                         guard let area else { return }

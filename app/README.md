@@ -51,7 +51,7 @@ App 内嵌组网节点用的 `Vendor/TailscaleKit.xcframework` 不入库，由 `
 
 改界面时用 `app/scripts/preview-mac.sh` 快速预览：增量编译 Mac Debug 版，只退出本检出上次打开的预览，再另起一个实例打开新 build，主线和各工作树的预览可以同时开着；也可以在 Xcode 里直接运行 Debug。Debug 版不带 kited，直接连本机已安装的服务，不会重装或重启它，所以要先用 `./install.command` 装好一次。交付确认仍完整安装 Release。
 
-`preview-mac.sh` 的参数原样传给 App。带 `--dock-preview` 打开停靠栏预览：用真实的停靠栏组件画各种窗口与活动状态下的头像，不建工作区、不发请求，头像签名取已连接工作机上的角色。
+`preview-mac.sh` 的参数原样传给 App。带 `--dock-preview` 打开停靠栏预览：用真实的停靠栏组件画各种实例与活动状态下的头像，不建工作区、不发请求，头像签名取已连接工作机上的角色。带 `--kited http://127.0.0.1:5484` 让 Debug 版把「本机 kited」的地址换成给的（`KitedClient.local`）：验证时对着临时目录里跑的开发版 kited，不碰用户装着的服务；账号目录里这台设备作为工作机的地址随之换，别的工作机照常按目录连。
 
 iPhone、iPad 的原生对话列表拖缝时，正文、折着的长消息和折了行的事件在列宽差得不多时先不按新宽重排，停下后再排准（`PhoneProseRowSlot.keptHeight`、`PhoneTextLine.wrapWidth`）；`--exact-resize` 让它们照旧每步按新宽重排，对照外观或测量。
 

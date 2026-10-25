@@ -34,7 +34,7 @@ struct PaneBody: View {
     }
 }
 
-/// 每个工作区窗口按目标引用取得自己的线程或插件实例，不共享“当前线程”槽位。
+/// 每个工作区的 pane 就是一个实例（ID 相同），各取自己的线程或插件实例，不共享“当前线程”槽位。
 private struct WorkspacePaneBody: View {
     let pane: Pane
     let retainForExit: Bool
@@ -45,15 +45,15 @@ private struct WorkspacePaneBody: View {
 
     var body: some View {
         if retainForExit {
-            retained.content(present: area.windows.contains { $0.id == pane.id }, current: AnyView(resolved))
+            retained.content(present: area.layout.panes.contains(pane), current: AnyView(resolved))
         } else {
             resolved
         }
     }
 
-    /// 新建窗口原地变成插件窗口时，正文淡过去（见 WorkArea.chooserWindow）。
+    /// 新建页原地变成实例的卡片时，正文淡过去（见 WorkArea.chooserPane）。
     @ViewBuilder private var resolved: some View {
-        let choosing = pane.id == area.chooserWindow
+        let choosing = area.isChooser(pane)
         Group {
             if choosing { NewWindowChooser().transition(.opacity) }
             else { content.transition(.opacity) }
@@ -62,9 +62,9 @@ private struct WorkspacePaneBody: View {
     }
 
     @ViewBuilder private var content: some View {
-        let target = area.windows.first(where: { $0.id == pane.id })?.target
         let instance = area.instance(of: pane)
-        // 按实例的定义分派，不按窗口当前的视图：窗口在实例的几个视图之间切换，正文由同一个视图接着显示
+        let viewID = instance.flatMap(area.currentView(of:))
+        // 按实例的定义分派，不按当前的视图：实例在几个视图之间切换，正文由同一个视图接着显示
         let renderer = instance.flatMap(area.definition(of:))?.defaultRenderer
         // 本机先建、工作机还没建好的实例：正文要读工作机上的实例，先只有标题栏
         let opening = instance.map { area.isOpening(instance: $0.id) } ?? false
@@ -72,7 +72,7 @@ private struct WorkspacePaneBody: View {
             if opening {
                 PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name, filled: false)
             } else if let thread = area.thread(in: pane) {
-                // 不按线程 id 区分身份：草稿发出后同一个会话对象变成真实代理，id 随之改变，窗口内容不能跟着重建。
+                // 不按线程 id 区分身份：草稿发出后同一个会话对象变成真实代理，窗口内容不能跟着重建。
                 // 台面和 iPhone、iPad 的紧凑布局里会话窗口的外框是原生的（ThreadWindowView、PhoneThreadWindowView），
                 // 这里只留不占地方的那几样，见 ThreadPaneBridge；Mac 窄窗口是 SwiftUI 的 ThreadPane
                 #if os(macOS)
@@ -89,26 +89,26 @@ private struct WorkspacePaneBody: View {
                 TerminalPane(instance: instance, client: client, connection: area.pluginConnection).id(pane.id)
             } else if renderer == "preview", let instance, let client = area.pluginClient {
                 PreviewPane(instance: instance, client: client, connection: area.pluginConnection, renderer: area.view(in: pane)?.renderer).id(pane.id)
-            } else if renderer == "web", let target, let instance, let client = area.pluginClient {
+            } else if renderer == "web", let viewID, let instance, let client = area.pluginClient {
                 // 换了视图是另一份插件页面，重新加载
-                PluginPane(target: target, title: area.appearance(of: pane).name, client: client,
+                PluginPane(target: WindowTarget(instanceId: instance.id, viewId: viewID), title: area.appearance(of: pane).name, client: client,
                            state: instance.state?.plugin, connection: area.pluginConnection)
-                    .id("\(pane.id) \(target.viewId)")
+                    .id("\(pane.id) \(viewID)")
             } else {
                 PlaceholderPane(appearance: area.appearance(of: pane), kind: WindowAppearance.renderer(renderer ?? "").name)
             }
         }
         .environment(\.paneInstance, opening ? nil : instance)
-        .environment(\.paneViewSwitcher, opening ? nil : viewSwitcher(instance, showing: target?.viewId))
+        .environment(\.paneViewSwitcher, opening ? nil : viewSwitcher(instance, showing: viewID))
         .modifier(ReferenceNavigation())
     }
 
-    /// 实例有几个视图时的切换器：点另一个视图，窗口原地换过去（见 AppModel.openWindow）。
+    /// 实例有几个视图时的切换器：点另一个视图，实例原地换过去、各端同步（见 AppModel.showInstance）。
     private func viewSwitcher(_ instance: RemotePluginInstance?, showing current: String?) -> PaneViewSwitcher? {
         guard let instance, let current, let views = area.definition(of: instance)?.views, views.count > 1 else { return nil }
         let items = views.map { PaneViewSwitcher.Item(id: $0.id, title: $0.title, systemImage: WindowAppearance.renderer($0.renderer).icon) }
         return PaneViewSwitcher(items: items, current: current) { view in
-            model.openWindow(.open(.init(instanceId: instance.id, viewId: view)), in: area)
+            model.showInstance(instance.id, view: view, in: area)
         }
     }
 }

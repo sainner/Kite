@@ -28,7 +28,6 @@ final class PhoneCardView: UIView {
         let header: HeaderState
         /// 窗口按钮里展开那一格是展开、还原还是没有。
         let expansion: PaneExpansion
-        let pinned: Bool
     }
 
     /// 标题栏一层要读的卡片状态：正文报的标题栏高、右边菜单宽、窗口按钮的尺寸、挖空的范围，和窗口按钮露不露。
@@ -41,9 +40,8 @@ final class PhoneCardView: UIView {
         let buttonsShown: Bool
     }
 
-    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool, pinned: Bool) -> HeaderState {
-        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread,
-                                          pinned: pinned)
+    func headerState(layout: WindowLayout, minimized: Bool, width: CGFloat, hasThread: Bool) -> HeaderState {
+        let controls = PaneHeaderControls(header: header, layout: layout, minimized: minimized, width: width, hasThread: hasThread)
         return HeaderState(height: header.height, menuWidth: header.menuWidth, controlsSize: header.controlsSize,
                            excluded: headerRegions.settled, buttonsShown: controls.shown)
     }
@@ -293,7 +291,6 @@ final class PhoneCardView: UIView {
         if content.minimized != minimized { content.minimized = minimized }
         // 窗口按钮飞行中看不见（见 updateButtons），「展开」的有无等停下再换：动画开始的这一轮不重排按钮组和让位的标题栏
         if content.expansion == nil || !placed.motion.moving && (placed.motion.target == target || kind.duration == 0) { updateExpands() }
-        if content.pinned != arrangement.pinned { content.pinned = arrangement.pinned }
         if (content.openSidebar == nil) != (arrangement.openSidebar == nil) { content.openSidebar = arrangement.openSidebar }
         if contentPending == nil { placePendingContent() } else if minimized, presence.onScreen { presence.onScreen = false }
 
@@ -416,8 +413,7 @@ final class PhoneCardView: UIView {
 
     /// 正文标题栏按这几项算给窗口按钮让出多少，见 PaneHeaderControlsSpace。
     private func headerPlacement(_ placed: CardPresentation.Placement, arrangement: Arrangement) -> HeaderPlacement {
-        HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread,
-                        pinned: arrangement.pinned)
+        HeaderPlacement(minimized: placed.minimized, width: placed.target.frame.width, hasThread: arrangement.hasThread)
     }
 
     /// 动画开始的那一轮可以推迟的几项（见 arrange）：标题栏的让位、正文在不在台面上。
@@ -754,12 +750,10 @@ final class PhoneCardView: UIView {
         else { stage.group.layout.focus(pane) }
     }
 
-    /// 长按（指针右键）菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作（含关闭窗口）。
+    /// 长按（指针右键）菜单只在缩成停靠形状时有（这时它就是停靠栏里那一格，同 DockEntryMenu）：先写名字与状态，再是实例操作。
     /// 标题栏上没有，长按直接拿起卡片。
     private func menu() -> UIMenu? {
-        guard let stage, let placed, placed.minimized, let area = stage.group.workspace,
-              let target = area.windows.first(where: { $0.id == pane.id })?.target,
-              let instance = area.instances.first(where: { $0.id == target.instanceId }) else { return nil }
+        guard let stage, let placed, placed.minimized, let area = stage.group.workspace, let instance = area.instance(of: pane) else { return nil }
         var items: [UIMenuElement] = [UIAction(title: area.dockLabel(.pane(pane)), attributes: .disabled) { _ in }]
         let model = stage.model
         for action in InstanceAction.all(for: instance, in: area, model: model, pane: pane) {

@@ -23,6 +23,11 @@ final class AudioLevel {
     func level(at date: Date) -> Double { 0 }
 }
 
+/// 指针下是不是网页，真实定义在 UI/WebPreview.swift，连着 WebKit；排布合同没有网页，给最小定义。
+extension NSView {
+    func webViewUnderPointer() -> Bool { false }
+}
+
 /// 等待呼吸用的逐帧时钟，真实定义在 Workspace/PaneWindow.swift，连着整个窗口视图；排布合同不渲染，给最小定义。
 struct PaneTimeline<Content: View>: View {
     @ViewBuilder let content: (TimelineViewDefaultContext) -> Content
@@ -46,6 +51,18 @@ private final class MemoryDefaults: UserDefaults, @unchecked Sendable {
     override func data(forKey key: String) -> Data? { object(forKey: key) as? Data }
     override func set(_ value: Any?, forKey key: String) { Self.suites[suite, default: [:]][key] = value }
     override func removeObject(forKey key: String) { Self.suites[suite]?[key] = nil }
+}
+
+/// 合同里沿用的两个说法：docked 是已提交的台面之外的窗口（按停靠栏顺序，不再有自己的顺序），shownDock 是正在显示的排布之外的。
+private extension WindowLayout {
+    var docked: [Pane] { panes.filter { !(root?.panes ?? []).contains($0) } }
+    var shownDock: [Pane] { offStage }
+}
+
+/// 停靠栏里任一点：拖到这里就是缩小，没有序号。
+private func dockPoint(in bounds: CGRect) -> CGPoint {
+    let dock = WindowRegions(in: bounds).dock
+    return CGPoint(x: dock.midX, y: dock.minY + Metrics.dragBubble * 1.5)
 }
 
 private struct LayoutState {
@@ -99,8 +116,7 @@ private func requireProjectionComplete(_ layout: WindowLayout, _ step: String) t
 }
 
 private func dock(_ pane: Pane, layout: WindowLayout, in bounds: CGRect) {
-    let frame = WindowRegions(in: bounds).dockFrame(at: layout.docked.count)
-    layout.drag(pane, to: frame.center, in: bounds)
+    layout.drag(pane, to: dockPoint(in: bounds), in: bounds)
     layout.drop(in: bounds)
 }
 
@@ -547,8 +563,7 @@ private struct WindowDockContract {
                     "恢复暂时停靠的窗口后没有展开并聚焦它")
         try requireProjectionComplete(layout, "恢复暂时停靠的窗口后")
 
-        let dockFrame = WindowRegions(in: tight).dockFrame(at: layout.shownDock.count)
-        layout.drag(restored, to: dockFrame.center, in: tight)
+        layout.drag(restored, to: dockPoint(in: tight), in: tight)
         layout.drop(in: tight)
         try require(layout.docked.contains(restored) && !(layout.root?.panes ?? []).contains(restored),
                     "用户主动拖进停靠栏的窗口没有从保存排布中移出")
@@ -739,12 +754,6 @@ private struct WindowDockContract {
         for pane in firstTwo { dock(pane, layout: layout, in: bounds) }
         try require(layout.root == nil, "两张卡片都停靠后内容树应为空")
 
-        let secondFrame = WindowRegions(in: bounds).dockFrame(at: 1)
-        layout.drag(firstTwo[0], to: CGPoint(x: secondFrame.maxX - 1, y: secondFrame.midY), in: bounds)
-        layout.drop(in: bounds)
-        try require(layout.docked == [firstTwo[1], firstTwo[0]], "dock 圆未按拖放位置重排")
-        try requireComplete(layout, "dock 重排后")
-
         let beforeInvalidDrop = LayoutState(layout, in: bounds)
         layout.drag(layout.docked[0], to: CGPoint(x: bounds.minX - 80, y: bounds.minY - 80), in: bounds)
         layout.drop(in: bounds)
@@ -765,7 +774,7 @@ private struct WindowDockContract {
 
         let allOpen = layout.panes
         guard let active = layout.root?.panes.first else { throw DockContractError.failed("较大的预设没有活动卡片") }
-        layout.drag(active, to: WindowRegions(in: bounds).dockFrame(at: layout.docked.count).center, in: bounds)
+        layout.drag(active, to: dockPoint(in: bounds), in: bounds)
         layout.arrange(.sideBySide)
         try require(allOpen.allSatisfy { layout.panes.contains($0) }, "较小预设丢失已打开窗口")
         let omitted = allOpen.filter { !(layout.root?.panes ?? []).contains($0) }
@@ -832,7 +841,7 @@ private struct WindowDockContract {
     // 其余窗口照旧排、让出这一边放不下，这条边被判成没有落点，排布不换成沿这一边贴满的预览，只有卡片里的局部分栏在变。
     // 修法是挤不下时把离这条边远的那扇收进停靠栏。这里用 Mac 的最小宽 168 取窄内容区（放得下两列、放不下三列），
     // 同时验 Mac 窗口窄时也走这条路：落点判断、预览排布（shown、shownDock）与松手提交的状态交接，
-    // 占位帧等于松手后的窗口帧，被腾出的窗口留在停靠栏末尾，树与停靠栏的窗口集合完整不重复。
+    // 占位帧等于松手后的窗口帧，被腾出的窗口离开台面，树与停靠栏的窗口集合完整不重复。
     private static func narrowCanvasEdgeDocksFarthestPane() throws {
         let minimum = Metrics.minPane, gap = Metrics.gap
         let bounds = placementBounds(canvasWidth: 450, canvasHeight: 500)
@@ -860,10 +869,10 @@ private struct WindowDockContract {
             try requireSpansCanvas(placeholder, along: edge, canvas: canvas)
             try require(Array(preview.panes.keys) == [kept],
                         "窄内容区 \(edge) 的预览台面上应只留离这条边近的 \(kept.id)，实际 \(preview.panes.keys.map(\.id))")
-            try require(layout.shownDock.contains(pushed) && layout.shownDock.contains(waiting)
-                        && !layout.shownDock.contains(kept) && !layout.shownDock.contains(floating),
+            // 拖着的那张也不在台面上（缩成停靠形状跟着指针），预览的停靠栏里算它一格
+            try require(layout.shownDock.contains(pushed) && layout.shownDock.contains(waiting) && !layout.shownDock.contains(kept),
                         "窄内容区 \(edge) 的预览停靠栏应有被腾出的 \(pushed.id)，实际 \(layout.shownDock.map(\.id))")
-            let previewed = Array(preview.panes.keys) + layout.shownDock + [floating]
+            let previewed = Array(preview.panes.keys) + layout.shownDock
             try require(previewed.count == panes.count && Set(previewed) == Set(panes),
                         "窄内容区 \(edge) 的预览遗漏或重复了窗口")
 
@@ -877,8 +886,8 @@ private struct WindowDockContract {
                         "窄内容区 \(edge) 留在台面上的 \(kept.id) 松手后和预览位置不一致")
             try require(Set(committed.keys) == [floating, kept] && Set(layout.root?.panes ?? []) == [floating, kept],
                         "窄内容区 \(edge) 松手后台面应是放进去的窗口和 \(kept.id)")
-            try require(layout.docked == [waiting, pushed],
-                        "窄内容区 \(edge) 被腾出的 \(pushed.id) 没有追加到停靠栏末尾，实际 \(layout.docked.map(\.id))")
+            try require(Set(layout.docked) == [waiting, pushed],
+                        "窄内容区 \(edge) 被腾出的 \(pushed.id) 没有收进停靠栏，实际 \(layout.docked.map(\.id))")
             try requireProjectionComplete(layout, "窄内容区 \(edge) 松手后")
         }
     }
@@ -923,40 +932,42 @@ private struct WindowDockContract {
         let expanded = activeBefore[1]
         let restored = activeBefore[0]
 
-        layout.drag(restored, to: WindowRegions(in: bounds).dockFrame(at: layout.docked.count).center, in: bounds)
+        layout.drag(restored, to: dockPoint(in: bounds), in: bounds)
         try require(layout.drag != nil, "展开前没有形成待提交拖动")
         layout.expand(expanded)
         try require(layout.drag == nil, "展开没有取消旧拖动")
         try require(layout.root?.panes == [expanded], "展开没有让目标窗口独占内容区")
-        try require(layout.docked == [initiallyDocked] + activeBefore.filter { $0 != expanded },
-                    "展开没有按原树顺序把其余窗口追加到 dock")
+        try require(Set(layout.docked) == Set([initiallyDocked] + activeBefore.filter { $0 != expanded }),
+                    "展开没有让其余窗口离开台面")
         try require(layout.focused == expanded, "展开后焦点没有指向目标窗口")
+        try require(layout.expansion(of: expanded) == .restore, "展开后按钮没有换成还原")
         let afterExpand = LayoutState(layout, in: bounds)
         layout.drop(in: bounds)
         try requireSame(layout, as: afterExpand, in: bounds, "展开后松开旧拖动")
         try requireComplete(layout, "展开后")
 
+        // 展开中打开别的窗口：先还原到展开前的排布（它已在其中），不另开
         layout.restore(restored, in: bounds)
-        try require((layout.root?.panes ?? []).count == 2
-                    && (layout.root?.panes ?? []).contains(expanded)
-                    && (layout.root?.panes ?? []).contains(restored),
-                    "恢复没有从单窗口布局加入目标卡片")
+        try require(layout.root?.panes == activeBefore, "展开中打开别的窗口没有先还原到展开前的排布")
         try require(!layout.docked.contains(restored), "恢复的窗口仍在 dock")
+        try require(layout.expansion(of: expanded) == .expand, "还原后按钮没有换回展开")
         try requireComplete(layout, "展开后恢复一张卡片")
 
         let dockBeforeMinimize = layout.docked
-        layout.drag(expanded, to: WindowRegions(in: bounds).dockFrame(at: layout.docked.count).center, in: bounds)
+        layout.drag(expanded, to: dockPoint(in: bounds), in: bounds)
         try require(layout.drag != nil, "缩小前没有形成待提交拖动")
         layout.minimize(expanded)
         try require(layout.drag == nil, "缩小没有取消旧拖动")
-        try require(layout.root?.panes == [restored], "缩小后内容区没有保留其余卡片")
-        try require(layout.docked == dockBeforeMinimize + [expanded], "缩小没有把窗口追加到 dock 一次")
+        try require(layout.root?.panes == activeBefore.filter { $0 != expanded }, "缩小后内容区没有保留其余卡片")
+        try require(Set(layout.docked) == Set(dockBeforeMinimize + [expanded]), "缩小没有把窗口收进 dock")
         let afterMinimize = LayoutState(layout, in: bounds)
         layout.drop(in: bounds)
         try requireSame(layout, as: afterMinimize, in: bounds, "缩小后松开旧拖动")
         try requireComplete(layout, "缩小后")
 
-        layout.drag(restored, to: WindowRegions(in: bounds).dockFrame(at: layout.docked.count).center, in: bounds)
+        // 台面上只剩 restored：再缩掉另一张，然后服务端删掉 restored
+        for pane in layout.root?.panes ?? [] where pane != restored { layout.minimize(pane) }
+        layout.drag(restored, to: dockPoint(in: bounds), in: bounds)
         try require(layout.drag != nil, "服务端删除前没有形成待提交拖动")
         layout.reconcile(opened.filter { $0 != restored })
         try require(layout.drag == nil, "服务端删除没有取消旧拖动")
@@ -992,10 +1003,6 @@ private struct WindowDockContract {
         try require(first.root?.panes == [a, b] && first.docked == [c, d],
                     "首次布局没有按服务端顺序展开两张并停靠剩余窗口")
 
-        let secondDockFrame = WindowRegions(in: bounds).dockFrame(at: 1)
-        first.drag(c, to: CGPoint(x: secondDockFrame.maxX - 1, y: secondDockFrame.midY), in: bounds)
-        first.drop(in: bounds)
-        try require(first.docked == [d, c], "保存前 dock 重排没有完成")
         let beforeResize = LayoutState(first, in: bounds)
         guard let gap = first.root?.layout(in: canvas).gaps.first else {
             throw DockContractError.failed("双栏预设没有可调整的间距")
@@ -1015,19 +1022,20 @@ private struct WindowDockContract {
         first.focus(b)
         let committed = LayoutState(first, in: bounds)
 
-        first.drag(b, to: WindowRegions(in: bounds).dockFrame(at: first.docked.count).center, in: bounds)
+        first.drag(b, to: dockPoint(in: bounds), in: bounds)
         try require(first.drag != nil, "重建前没有待提交拖动")
         let restored = WindowLayout(panes: base, arrangement: .stacked, storageKey: key,
                                     defaults: MemoryDefaults(suite: suiteA))
         try requireSame(restored, as: committed, in: bounds, "同设备重建")
         try require(restored.drag == nil, "拖动预览被持久化")
 
-        restored.drag(b, to: WindowRegions(in: bounds).dockFrame(at: restored.docked.count).center, in: bounds)
+        restored.drag(b, to: dockPoint(in: bounds), in: bounds)
         restored.reconcile(base + [e])
-        try require(restored.drag == nil && restored.root?.layout(in: canvas).panes == committed.frames,
-                    "服务端增加窗口时丢失已有分栏比例或未取消拖动")
-        try require(restored.docked == [d, c, e] && restored.focused == b,
+        try require(restored.root?.layout(in: canvas).panes == committed.frames,
+                    "服务端增加窗口时丢失已有分栏比例")
+        try require(restored.docked == [c, d, e] && restored.focused == b,
                     "新增窗口没有按顺序进入 dock 或改变了焦点")
+        restored.cancelDrag()
         let afterAdd = LayoutState(restored, in: bounds)
         restored.drop(in: bounds)
         try requireSame(restored, as: afterAdd, in: bounds, "新增窗口后松开旧拖动")
@@ -1062,9 +1070,10 @@ private struct WindowDockContract {
         firstDeviceAgain.reconcile([])
         let replacement = Pane("contract-persisted-after-empty")
         firstDeviceAgain.reconcile([replacement])
-        try require(firstDeviceAgain.root?.panes == [replacement] && firstDeviceAgain.docked.isEmpty
+        // 远端新来的只进停靠栏，由本机的动作放上台面
+        try require(firstDeviceAgain.root == nil && firstDeviceAgain.docked == [replacement]
                     && firstDeviceAgain.focused == replacement && firstDeviceAgain.panes == [replacement],
-                    "服务端清空后首个新窗口没有展开，或旧缓存复活了已删除窗口")
+                    "服务端清空后新窗口没有进停靠栏，或旧缓存复活了已删除窗口")
     }
 
     private static func requireSpansCanvas(_ frame: CGRect, along edge: Edge, canvas: CGRect) throws {

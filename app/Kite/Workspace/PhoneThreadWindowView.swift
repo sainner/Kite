@@ -215,16 +215,13 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
 
     // MARK: - 输入区
 
-    /// 输入区读的模型：会话、实例、能不能输入（建草稿窗口中、配置模板中整块禁用），变了交一遍。
+    /// 输入区读的模型：会话、实例、能不能输入（发出草稿中、配置模板中整块禁用），变了交一遍。
     private func refreshControls() {
         guard let area = group.workspace else { return }
         let thread = thread, pane = pane, model = model, paneID = paneID
         // 实例也在观察里：改推理强度、换模型（本机或别的设备）后输入区跟着换，同 Mac 经环境拿的 paneInstance
         let (enabled, instance) = controlsTracking.track({
-            (environment.isEnabled && area.creatingWindow == nil && !thread.configuringTemplate,
-             area.windows.first(where: { $0.id == paneID.id }).flatMap { window in
-                 area.instances.first { $0.id == window.target.instanceId }
-             })
+            (environment.isEnabled && area.creatingInstance == nil && !thread.configuringTemplate, area.instance(of: paneID))
         }) { [weak self] in
             Task { @MainActor in self?.refreshControls() }
         }

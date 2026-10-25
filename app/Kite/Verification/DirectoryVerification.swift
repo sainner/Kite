@@ -60,7 +60,7 @@ enum DirectoryVerification {
     private static func verify(_ model: AppModel, fixture: Fixture) async throws {
         // 用真实完整快照保存布局，再用目录摘要创建同一个工作区；摘要不能抹掉已有布局。
         let seeded = WorkArea(remote: fixture.liveWorkspaceA)
-        guard let pane = seeded.layout.panes.first else { throw Failure(message: "布局夹具缺少真实窗口") }
+        guard let pane = seeded.layout.panes.first else { throw Failure(message: "布局夹具缺少真实实例") }
         seeded.layout.minimize(pane)
         let layout = layoutRecords(fixture.workspaceA)
         try require(!layout.isEmpty, "布局夹具未写入可恢复记录")
@@ -83,11 +83,11 @@ enum DirectoryVerification {
                     "两台真实工作机返回的共享项目身份不同")
 
         model.selected = areaB.id
-        let count = areaA.windows.count
-        model.openWindow(.create("kite.agent", instance: UUID().uuidString.lowercased()), in: areaA)
-        try await wait("选中 B 时在 A 新建窗口") {
+        let count = areaA.remote.instances.count
+        model.createInstance(CreateInstanceRequest(id: UUID().uuidString.lowercased(), definitionId: "kite.agent"), in: areaA)
+        try await wait("选中 B 时在 A 新建实例") {
             guard let area = model.workspace(fixture.workspaceA) else { return false }
-            return area.windowsSettled && area.windows.count > count
+            return area.instancesSettled && area.remote.instances.count > count
         }
         try await control(fixture, "/assert-operation-a")
         try require(model.workspace(fixture.workspaceB) != nil, "A 的实时快照清除了 B")

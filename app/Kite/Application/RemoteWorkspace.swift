@@ -2,7 +2,7 @@ import Foundation
 
 /// App 与工作机之间的协议号，与 kited/src/version.ts 的 PROTOCOL 一起改；不一致的工作机锁定为待更新（docs/App.md「版本」）。
 enum KiteProtocol {
-    static let version = 23
+    static let version = 24
 }
 
 /// 工作机正在运行的版本（`/machine` 的 version）：build 标识一份运行文件，源码运行时为 dev。
@@ -31,16 +31,8 @@ enum RemoteRuntime: String, Decodable {
     case claude, harness
 }
 
-enum RemotePresentation: String, Decodable {
-    case window, inline, background
-}
-
 enum RemoteInstanceStatus: String, Decodable {
     case open, archived
-}
-
-enum RemoteWindowState: String, Decodable {
-    case open, closed
 }
 
 /// 项目以远程仓库为身份；remote 是归一化地址（域名/owner/repo）。
@@ -69,7 +61,6 @@ struct RemoteWorkspace: Decodable, Identifiable {
     let workspace: WorkspaceInfo
     let threads: [RemoteThread]
     let instances: [RemotePluginInstance]
-    let windows: [RemoteWorkspaceWindow]
 
     var id: String { workspace.id }
 }
@@ -143,8 +134,9 @@ struct RemotePluginInstance: Decodable, Identifiable {
     let definitionId: String
     let title: String
     let status: RemoteInstanceStatus
-    let presentation: RemotePresentation
     let createdAt: Int
+    /// 实例当前显示的视图，定义声明的视图之一；各端一致，换视图走 PUT /instances/:id/view。没有视图的实例没有。
+    var view: String? = nil
     var state: State? = nil
     var config: InstanceAgentConfig? = nil
     /// 由另一个实例经 agent_start 创建时，工作机记下的创建来源。
@@ -302,24 +294,10 @@ struct RemotePluginDefinition: Decodable, Identifiable {
     var defaultRenderer: String? { views.first { $0.id == defaultView }?.renderer }
 }
 
-/// 所有窗口统一引用实例和已声明的视图。
+/// 一个实例的一个视图：插件页面按它取内容。
 struct WindowTarget: Codable {
     let instanceId: String
     let viewId: String
-}
-
-struct RemoteWorkspaceWindow: Decodable, Identifiable {
-    let id: String
-    let workspaceId: String
-    let target: WindowTarget
-    let state: RemoteWindowState
-    let createdAt: Int
-
-    /// 同一个窗口换到实例的另一个视图。
-    func showing(_ viewId: String) -> RemoteWorkspaceWindow {
-        RemoteWorkspaceWindow(id: id, workspaceId: workspaceId, target: WindowTarget(instanceId: target.instanceId, viewId: viewId),
-                              state: state, createdAt: createdAt)
-    }
 }
 
 /// 预览装到哪台设备：工作区的这个型号的模拟器，或与工作机配对过的真机（编号），kited 的 preview/devices.ts。
@@ -373,33 +351,14 @@ struct PreviewTargets: Decodable {
     let devices: [DeviceCandidate]
 }
 
-struct OpenWindowRequest: Encodable {
+/// 新建实例（POST /workspaces/:id/instances）。id 由本机定：本机先按它把实例放上台面，工作机确认后同一 ID 接上（见 AppModel.createInstance）。
+/// title 省略时按插件名编号；command 只用于终端，等 shell 起好后打进去执行；preview 只用于预览，必带：同一目标与设备已经在跑时工作机返回那个实例；
+/// page 只用于浏览，打开到一个网页。
+struct CreateInstanceRequest: Encodable {
     let id: String
-    let content: Content
-
-    /// 新建实例的 ID 也由本机定：本机先按它建好实例和窗口（见 AppModel.sendWindowRequest）。
-    /// title 省略时按插件名编号；command 只用于终端，等 shell 起好后打进去执行。preview 只用于预览，必带：
-    /// 同一目标与设备已经在跑时工作机打开那个实例。page 只用于浏览，打开到一个网页。
-    enum Content: Encodable {
-        case create(String, instance: String, title: String? = nil, command: String? = nil, preview: PreviewSpec? = nil, page: BrowsePage? = nil)
-        case open(WindowTarget)
-        private enum Keys: String, CodingKey { case kind, definitionId, instanceId, title, command, preview, page, viewId }
-        func encode(to encoder: Encoder) throws {
-            var c = encoder.container(keyedBy: Keys.self)
-            switch self {
-            case .create(let definitionId, let instanceId, let title, let command, let preview, let page):
-                try c.encode("create", forKey: .kind)
-                try c.encode(definitionId, forKey: .definitionId)
-                try c.encode(instanceId, forKey: .instanceId)
-                try c.encodeIfPresent(title, forKey: .title)
-                try c.encodeIfPresent(command, forKey: .command)
-                try c.encodeIfPresent(preview, forKey: .preview)
-                try c.encodeIfPresent(page, forKey: .page)
-            case .open(let target):
-                try c.encode("open", forKey: .kind)
-                try c.encode(target.instanceId, forKey: .instanceId)
-                try c.encode(target.viewId, forKey: .viewId)
-            }
-        }
-    }
+    let definitionId: String
+    var title: String? = nil
+    var command: String? = nil
+    var preview: PreviewSpec? = nil
+    var page: BrowsePage? = nil
 }

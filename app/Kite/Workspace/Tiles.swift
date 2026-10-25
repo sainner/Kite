@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// 窗口组里的一个窗口。Mac 上每个是一张卡片，iPhone 上一次显示一个，用页签切换。
+/// 窗口组里的一个窗口：工作区里就是一个实例，ID 相同（代理草稿与新建页是只在本机的两个特殊 pane，见 WorkArea）。
+/// Mac 上每个是一张卡片，iPhone 上一次显示一个，用页签切换。
 struct Pane: Hashable, Codable {
     let id: String
     init(_ id: String) { self.id = id }
@@ -304,16 +305,6 @@ struct WindowRegions {
         dock = CGRect(x: bounds.maxX - dockWidth, y: bounds.minY, width: dockWidth, height: bounds.height)
     }
 
-    func dockFrame(at index: Int) -> CGRect {
-        CGRect(x: dock.midX - Metrics.dragBubble / 2,
-               y: dock.minY + CGFloat(index) * (Metrics.dragBubble + Metrics.gap),
-               width: Metrics.dragBubble, height: Metrics.dragBubble)
-    }
-
-    func dockIndex(at point: CGPoint, count: Int) -> Int {
-        min(max(Int((point.y - dock.minY) / (Metrics.dragBubble + Metrics.gap)), 0), count)
-    }
-
     func canvasEdge(at point: CGPoint) -> Edge? {
         guard canvas.contains(point) else { return nil }
         let distances: [(Edge, CGFloat)] = [
@@ -324,12 +315,12 @@ struct WindowRegions {
     }
 }
 
-/// 松手后放在整个内容区的一侧、另一张卡片旁、空内容区，或者停靠栏中。
+/// 松手后放在整个内容区的一侧、另一张卡片旁、空内容区，或者停靠栏中（就是缩小：每个实例在停靠栏里都有自己的一格）。
 enum DropSpot: Equatable {
     case edge(Edge)
     case beside(Pane, Edge)
     case canvas
-    case dock(Int)
+    case dock
 }
 
 /// 拖动卡片：标题栏拖够一段距离后，卡片脱离布局并缩成圆跟着指针；指针落在卡片上时，
@@ -343,8 +334,6 @@ struct CardDrag {
     var displaced: [Pane] = []
     /// 拖动中显示的排布：剩下的，或者插了占位的预览。
     var layout: Tile?
-    /// 拖动期间的停靠顺序，包含落点占位所对应的窗口。
-    var docked: [Pane] = []
 
     /// 把 tile 放到落点上的排布；没有落点时为 nil。
     func placing(_ tile: Tile, in canvas: CGRect) -> Tile? {

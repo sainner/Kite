@@ -8,13 +8,13 @@ struct CatalogSnapshot: Codable {
     /// 那台工作机上承载 Line 的工作区；离线目录看不到实例，靠它认出 Line。
     let line: String?
 
-    /// 离线目录没有窗口与会话内容；连接所属工作机后才装载这些内容。
+    /// 离线目录没有实例与会话内容；连接所属工作机后才装载这些内容。
     var summaries: [RemoteWorkspace] {
         workspaces.compactMap { workspace in
             guard let checkout = checkouts.first(where: { $0.id == workspace.checkoutId }),
                   let project = projects.first(where: { $0.id == checkout.projectId }) else { return nil }
             return RemoteWorkspace(machine: machine, project: project, checkout: checkout, workspace: workspace,
-                                   threads: [], instances: [], windows: [])
+                                   threads: [], instances: [])
         }
     }
 }

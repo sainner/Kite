@@ -29,7 +29,7 @@ struct ThreadPane: View {
             }
         } controls: { typing in
             ThreadControls(typing: typing, send: send, voiceOwner: pane.patternSlot)
-                .disabled(area.creatingWindow != nil || thread.configuringTemplate)
+                .disabled(area.creatingInstance != nil || thread.configuringTemplate)
                 .frame(maxWidth: Metrics.transcriptWidth)
         }
         // 指针移到标题栏、输入区上时图案照样跟着
@@ -146,16 +146,16 @@ private struct MacThreadTranscript: View {
     }
 
     /// 发一条消息：先排进队里，对话滑过去（见 TranscriptFollow.send），气泡同时从下往上浮进来，alongside 也和滑同一次更新。
-    /// 草稿的第一条也这样走，同时创建代理；建好后同一个会话对象原地变成这个代理，窗口不换，失败时消息退回输入框。
+    /// 草稿的第一条也这样走，同时按草稿的 ID 创建代理；建好后同一个会话对象原地变成这个代理，卡片不换，失败时消息退回输入框。
     func send(_ message: Message, thread: WorkThread, model: AppModel, area: WorkArea, alongside: @escaping () -> Void) {
         if thread.isDraft {
-            guard area.creatingWindow == nil, let window = area.draftWindow else { return }
-            area.creatingWindow = window
+            guard area.creatingInstance == nil, let instance = area.draftPane else { return }
+            area.creatingInstance = instance
             thread.error = nil
             let draft = thread
             Task {
-                defer { area.creatingWindow = nil }
-                do { try await model.startThread(in: area, message: message, window: window) }
+                defer { area.creatingInstance = nil }
+                do { try await model.startThread(in: area, message: message, instance: instance) }
                 catch { draft.firstMessageFailed(message, error: error.localizedDescription) }
             }
         }

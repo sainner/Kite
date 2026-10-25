@@ -78,28 +78,17 @@ struct RemoteWorkspaceDecode {
         let threadInstanceIDs = Set(worktree.threads.map(\.instanceId))
         let agentInstances = worktree.instances.filter { $0.definitionId == "kite.agent" }
         guard Set(agentInstances.map(\.id)) == threadInstanceIDs,
-              agentInstances.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.status == .open && $0.presentation == .window }),
+              agentInstances.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.status == .open }),
               agentInstances.allSatisfy({ $0.state?.path == nil && $0.state?.revision == nil }),
               let filesInstance = worktree.instances.first(where: { $0.definitionId == "kite.files" }),
               filesInstance.workspaceId == worktree.workspace.id,
               filesInstance.status == .open,
-              filesInstance.presentation == .window,
               let customInstance = worktree.instances.first(where: { $0.definitionId == "custom.decode-state" }),
               customInstance.state?.plugin == .object(["count": .number(1)]) else {
             throw DecodeError.invalidRelationships
         }
         print("已解码真实自定义插件业务状态，保留 JSON 比较输入")
         try verifyFiles(files, instance: filesInstance)
-        let fileViews = worktree.windows.filter { $0.target.instanceId == filesInstance.id }
-        let agentViews = worktree.windows.filter { threadInstanceIDs.contains($0.target.instanceId) }
-        guard fileViews.count == 1,
-              fileViews[0].target.viewId == "files",
-              fileViews.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.state == .open }),
-              Set(agentViews.map { $0.target.instanceId }) == threadInstanceIDs,
-              Set(agentViews.map { $0.target.viewId }) == ["conversation"],
-              agentViews.allSatisfy({ $0.workspaceId == worktree.workspace.id && $0.state == .open }) else {
-            throw DecodeError.invalidRelationships
-        }
         guard let agentDefinition = definitions.first(where: { $0.id == "kite.agent" }),
               agentDefinition.lifetime == .persistent,
               agentDefinition.defaultView == "conversation",
@@ -108,7 +97,7 @@ struct RemoteWorkspaceDecode {
               agentInstances.allSatisfy({ $0.config?.agent?.model == agentDefinition.agent?.model }),
               agentDefinition.views.map(\.id) == ["conversation"],
               let filesDefinition = definitions.first(where: { $0.id == "kite.files" }),
-              filesDefinition.lifetime == .window,
+              filesDefinition.lifetime == .closable,
               filesDefinition.defaultView == "files",
               filesDefinition.views.map(\.id) == ["files"] else {
             throw DecodeError.invalidRelationships
@@ -152,7 +141,7 @@ struct RemoteWorkspaceDecode {
               summary.workspace.status == .open,
               summary.workspace.branch?.isEmpty == false,
               summary.workspace.base?.isEmpty == false,
-              summary.threads.isEmpty, summary.windows.isEmpty else {
+              summary.threads.isEmpty else {
             throw DecodeError.invalidDirectory
         }
         print("已解码工作机目录里另一台工作机的目录摘要")
