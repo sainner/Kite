@@ -324,6 +324,8 @@ export class Kite {
     this.modelAccounts = new ModelAccounts(home, (modelAccounts) => bus.emit({ type: 'model-accounts.changed', modelAccounts }),
       (home) => readModelAccounts(home, { usage: store, apiKeys: () => this.credentials.apiKeys() }));
     this.catalog = new PluginCatalog(join(home, 'plugins'));
+    // 旧库刚补上 view 列时，已有实例按定义的默认视图补上；定义不在本机（没装的 Bun 插件）的留空
+    store.fillMissingViews((id) => { try { return this.catalog.get(id).defaultView; } catch { return undefined; } });
     // 用户层的 skill 落在数据目录；机器层是这台工作机用户主目录里 Codex 与 Claude Code 的个人 skill。清单与沙箱放行都按这里的位置。
     const userSkills = join(home, 'skills');
     this.skillSources = { system: systemSkillsDirectory, user: userSkills, machine: [join(userHome(), '.agents/skills'), join(userHome(), '.claude/skills')] };

@@ -219,11 +219,32 @@ export class Store implements UsageStore {
     this.db.exec('drop table if exists window_requests; drop table if exists workspace_windows;');
   }
 
-  /** 实例去掉展示方式、带上当前视图之前的表。在研期间不迁移：删掉 presentation 列、补上 view 列，已有实例的视图留空，建它的定义在读取时不补。 */
+  /**
+   * 实例去掉展示方式、带上当前视图之前的表。在研期间不迁移：删掉 presentation 列、补上 view 列。已有实例的视图这里不知道（默认视图在插件定义里），
+   * 由 Kite 建好插件目录后按定义补一次，见 fillMissingViews。
+   */
   private reshapeInstances(): void {
     const columns = this.db.query("select name from pragma_table_info('plugin_instances')").all() as Array<{ name: string }>;
     if (columns.some((c) => c.name === 'presentation')) this.db.exec('alter table plugin_instances drop column presentation');
-    if (!columns.some((c) => c.name === 'view')) this.db.exec('alter table plugin_instances add column view text');
+    if (!columns.some((c) => c.name === 'view')) {
+      this.db.exec('alter table plugin_instances add column view text');
+      this.viewColumnAdded = true;
+    }
+  }
+
+  /** 这次打开时刚补上 view 列：已有实例的视图要按定义补。 */
+  private viewColumnAdded = false;
+
+  /** 补上 view 列那一次，给还没有视图的实例填定义的默认视图；没有默认视图的（无视图的插件）留空。只在补列的那次做。 */
+  fillMissingViews(defaultView: (definitionId: string) => string | undefined): void {
+    if (!this.viewColumnAdded) return;
+    const rows = this.db.query('select id, definition_id from plugin_instances where view is null').all() as Array<{ id: string; definition_id: string }>;
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const view = defaultView(row.definition_id);
+        if (view) this.setInstanceView(row.id, view);
+      }
+    })();
   }
 
   /** 工作区能手动命名之前没有 name_mode 列：补上，已有的工作区都按自动命名。 */
