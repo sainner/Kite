@@ -15,8 +15,10 @@ extension View {
 import os
 
 /// 停靠栏预览的台面：`--dock-preview --dock-stage` 用真实的原生台面（StageHost）摆一个造出来的工作区，卡片、停靠栏、过渡都和平时一样，
-/// 不发请求，正文是占位；再加 `--dock-crowded` 实例多到停靠栏放不下。带 `--dock-script` 时按固定的顺序自己动：缩小、从停靠栏打开、新建、
-/// 关掉新建页、从停靠栏拖出来放上台面、打开布局、展开收起家族格，各隔几秒，每一步记一条日志（kite.probe），配合 `--slow=N` 放慢动画逐帧截图核对。
+/// 不发请求，正文是占位；再加 `--dock-crowded` 实例多到停靠栏放不下。带 `--dock-script`（只在 Mac）时按固定的顺序自己动，
+/// 点、拖都是往这个窗口里发造出来的鼠标事件（不经系统，只到本进程），按停靠栏的几何（StagePlan.dock）找格子，点得中也就说明几何和画出来的对得上：
+/// 缩小、点格子打开、点添加实例新建、关掉新建页、从停靠栏按住拖出来放上台面、点布局文件夹打开、点开家族格再点里面的子代理、
+/// 浮出悬停标签和编号、点添加布局起名字，各隔几秒，每一步记一条日志（kite.probe），配合 `--slow=N` 放慢动画逐帧截图核对。
 /// 参数都写成以 -- 开头的一个：单独的词会被系统当成启动时要打开的文件，App 就不开窗口了。
 struct DockStagePreview: View {
     static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--dock-stage") }
@@ -26,7 +28,8 @@ struct DockStagePreview: View {
 
     @Environment(AppModel.self) private var model
     @State private var scene: DockPreviewScene?
-    @State private var size = CGSize.zero
+    /// 台面在窗口里的位置（左上角起），造鼠标事件时换算。
+    @State private var frame = CGRect.zero
 
     var body: some View {
         // 先有底：空的 Group 上的修饰不生效，task 也不会跑
@@ -34,9 +37,11 @@ struct DockStagePreview: View {
             Theme.background.ignoresSafeArea()
             if let scene {
                 TilesLayer(group: .workspace(scene.area))
+                    .modifier(InstanceSettingsPresentation())
+                    .modifier(LayoutSheetPresentation())
                     .environment(scene.area)
                     .environment(scene.area.layout)
-                    .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
                     .padding(Metrics.padding)
             }
         }
@@ -53,51 +58,114 @@ struct DockStagePreview: View {
         b.layout("评审", members: [.agent(role: b.role(1)), .files(page: nil), .preview(target: "app", device: nil)])
         let main = b.agent("主会话", role: 0, state: .running, onStage: true)
         let parent = b.agent("重构停靠栏", role: 3, state: .waiting)
-        b.agent("查引用", role: 4, state: .running, parent: parent.id)
+        let child = b.agent("查引用", role: 4, state: .running, parent: parent.id)
         b.agent("跑检查", role: 1, state: .failed, parent: parent.id)
         let docs = b.agent("整理文档", role: 1, state: .unseen)
+        var crowd: [String] = []
         if Self.crowded {
-            for index in 0..<16 { b.agent("后台 \(index + 1)", role: index, state: index % 3 == 0 ? .running : .idle) }
+            for index in 0..<16 { crowd.append(b.agent("后台 \(index + 1)", role: index, state: index % 3 == 0 ? .running : .idle).id) }
         }
         let files = b.tool("文件", .previewFiles, onStage: true)
         b.tool("终端", .previewTerminal)
         b.tool("索引", .previewBackground)
         let scene = b.build()
         self.scene = scene
+        #if os(macOS)
         guard Self.scripted else { return }
+        if Self.crowded, crowd.count > 12 {
+            await crowdedScript(scene, stacked: crowd[12])
+        } else {
+            await script(scene, main: main.id, docs: docs.id, files: files.id, family: parent.id, child: child.id)
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private func script(_ scene: DockPreviewScene, main: String, docs: String, files: String, family: String, child: String) async {
         let area = scene.area, layout = area.layout
-        func step(_ name: String, after seconds: Double, _ action: () -> Void) async {
+        let pause = 2.5 * WindowMotionKind.slowdown / 4 + 2
+        func step(_ name: String, after seconds: Double, _ action: () async -> Void) async {
             try? await Task.sleep(for: .seconds(seconds))
             Self.log.notice("step \(name, privacy: .public) at \(Date().timeIntervalSince1970, privacy: .public)")
-            action()
+            await action()
         }
-        let pause = 2.5 * WindowMotionKind.slowdown / 4 + 2
-        await step("minimize", after: 4) { layout.minimize(Pane(main.id)) }
-        await step("restore", after: pause) { layout.activate(Pane(main.id)) }
-        await step("open-docs", after: pause) { layout.activate(Pane(docs.id)) }
-        await step("new", after: pause) { area.openChooser() }
-        await step("close-new", after: pause) { area.closeChooser() }
-        // 从停靠栏拖出「文件」以外的一格放到台面中间，再拖回停靠栏
-        await step("minimize-files", after: pause) { layout.minimize(Pane(files.id)) }
-        try? await Task.sleep(for: .seconds(pause))
         // 台面的范围就是这一块：Mac 的台面往右多排的那一段在外面（见 StageView.trailingOverflow）
-        let bounds = CGRect(origin: .zero, size: size)
-        if let cell = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock.slot(of: Pane(files.id))?.frame {
-            let target = CGPoint(x: bounds.width * 0.4, y: bounds.height * 0.5)
-            Self.log.notice("step drag-out at \(Date().timeIntervalSince1970, privacy: .public)")
-            for index in 0...40 {
-                let t = CGFloat(index) / 40
-                layout.drag(Pane(files.id), to: CGPoint(x: cell.midX + (target.x - cell.midX) * t, y: cell.midY + (target.y - cell.midY) * t), in: bounds)
-                try? await Task.sleep(for: .milliseconds(25))
-            }
-            try? await Task.sleep(for: .seconds(1))
-            layout.drop(in: bounds)
+        func dock() -> DockGeometry { StagePlan.dock(layout: layout, area: area, bounds: CGRect(origin: .zero, size: frame.size)).dock }
+        func center(_ rect: CGRect?) -> CGPoint? { rect.map { CGPoint(x: $0.midX, y: $0.midY) } }
+        func item(_ id: String) -> CGRect? { dock().items.first { $0.item.id == id }?.slot.frame }
+        await step("minimize", after: 4) { layout.minimize(Pane(main)) }
+        await step("click-cell", after: pause) { await click(center(dock().slot(of: Pane(main))?.frame)) }
+        await step("click-docs", after: pause) { await click(center(dock().slot(of: Pane(docs))?.frame)) }
+        await step("click-add", after: pause) { await click(center(dock().add)) }
+        await step("close-new", after: pause) { area.closeChooser() }
+        await step("minimize-files", after: pause) { layout.minimize(Pane(files)) }
+        await step("drag-out", after: pause) {
+            await drag(from: center(dock().slot(of: Pane(files))?.frame), to: CGPoint(x: frame.width * 0.4, y: frame.height * 0.5))
         }
-        await step("open-layout", after: pause) { if let first = area.layouts.first { area.openLayout(first, model: model) } }
-        await step("expand-family", after: pause) { area.toggleDock(DockEntry.familyID(parent.id), depth: 0) }
-        await step("collapse-family", after: pause) { area.collapseDock() }
+        await step("click-folder", after: pause + 2) { await click(center(area.layouts.first.flatMap { item(DockBandItem.layout($0).id) })) }
+        await step("click-family", after: pause) {
+            // 胶囊下半截：上面是父代理的头像，点了直接打开它
+            await click(item(DockEntry.familyID(family)).map { CGPoint(x: $0.midX, y: $0.maxY - 6) })
+        }
+        await step("click-child", after: pause) { await click(center(dock().face(of: child)?.frame)) }
+        await step("hover", after: pause) { area.setDockHover(DockEntry.pane(Pane(docs)).id, hovering: true) }
+        await step("numbers", after: 3) {
+            area.setDockHover(DockEntry.pane(Pane(docs)).id, hovering: false)
+            model.shortcutHint = .dock
+        }
+        await step("add-layout", after: 3) {
+            model.shortcutHint = nil
+            await click(center(item(DockBandItem.addLayout.id)))
+        }
         Self.log.notice("step done at \(Date().timeIntervalSince1970, privacy: .public)")
     }
+
+    /// 停靠栏放不下时：把叠在末端、半透明的一格放上台面，再缩小回去。
+    private func crowdedScript(_ scene: DockPreviewScene, stacked: String) async {
+        let layout = scene.area.layout
+        let pause = 2.5 * WindowMotionKind.slowdown / 4 + 2
+        try? await Task.sleep(for: .seconds(4))
+        Self.log.notice("step open-stacked at \(Date().timeIntervalSince1970, privacy: .public)")
+        layout.activate(Pane(stacked))
+        try? await Task.sleep(for: .seconds(pause))
+        Self.log.notice("step minimize-stacked at \(Date().timeIntervalSince1970, privacy: .public)")
+        layout.minimize(Pane(stacked))
+        try? await Task.sleep(for: .seconds(pause))
+        Self.log.notice("step done at \(Date().timeIntervalSince1970, privacy: .public)")
+    }
+
+    /// 在台面坐标的 point 上按下、松开。
+    private func click(_ point: CGPoint?) async {
+        guard let point else { Self.log.notice("step missing target"); return }
+        send(.leftMouseDown, at: point)
+        try? await Task.sleep(for: .milliseconds(60))
+        send(.leftMouseUp, at: point)
+    }
+
+    /// 从 start 按住拖到 end，一步一帧左右，松开。
+    private func drag(from start: CGPoint?, to end: CGPoint) async {
+        guard let start else { Self.log.notice("step missing target"); return }
+        send(.leftMouseDown, at: start)
+        for index in 1...40 {
+            let t = CGFloat(index) / 40
+            try? await Task.sleep(for: .milliseconds(25))
+            send(.leftMouseDragged, at: CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t))
+        }
+        try? await Task.sleep(for: .milliseconds(600))
+        send(.leftMouseUp, at: end)
+    }
+
+    /// 造一个鼠标事件交给本窗口（不经系统）。point 是台面坐标，换成窗口坐标（左下角起）。
+    private func send(_ type: NSEvent.EventType, at point: CGPoint) {
+        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }), let content = window.contentView else { return }
+        let global = CGPoint(x: frame.minX + point.x, y: frame.minY + point.y)
+        let location = content.convert(CGPoint(x: global.x, y: content.isFlipped ? global.y : content.bounds.height - global.y), to: nil)
+        guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+                                             pressure: type == .leftMouseUp ? 0 : 1) else { return }
+        window.sendEvent(event)
+    }
+    #endif
 }
 
 /// 停靠栏预览：用真实的停靠栏组件（DockBand、DockGroup、DockLayoutFolder）画造出来的实例、布局和活动，不建工作区、不发请求，也不接点击。

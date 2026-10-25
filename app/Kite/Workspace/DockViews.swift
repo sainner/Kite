@@ -52,6 +52,13 @@ extension WorkArea {
         withAnimation(.snappy) { dockExpansion = [] }
     }
 
+    /// 点了展开的家族格里的一项、放上了台面：等台面按展开着的样子排完这一轮再收起，卡片从那一项现在的位置飞出去，
+    /// 不从收起后的胶囊里起。
+    func collapseDockAfterShowing() {
+        guard !dockExpansion.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in self?.collapseDock() }
+    }
+
     /// pane 对应的实例 ID（就是 pane 的 ID；草稿是草稿会话的 ID）；新建页交给了后台实例的按那个实例算。
     func dockInstanceID(_ pane: Pane) -> String {
         handedOff[pane.id] ?? pane.id
@@ -235,7 +242,7 @@ struct DockCellButton: View {
         case .family:
             return
         }
-        area.collapseDock()
+        area.collapseDockAfterShowing()
     }
 }
 
@@ -477,7 +484,7 @@ struct DockGroup: View, Animatable {
     private func openParent(_ family: DockFamily) {
         if let pane = family.pane { showPane(pane) }
         else { model.openDockInstance(family.parent, in: area) }
-        area.collapseDock()
+        area.collapseDockAfterShowing()
     }
 
     @ViewBuilder
