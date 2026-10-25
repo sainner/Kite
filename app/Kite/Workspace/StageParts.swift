@@ -71,7 +71,8 @@ enum StageAnimation {
 // MARK: - 台面上的托管视图
 
 /// 停靠栏：竖排的 DockBand，摆在台面右边那一列；各格画成什么样按 StageGeometry（卡片在不在画头像、停没停在台面上）。
-/// 拖着卡片到停靠栏上时，在它那一格描一圈虚线，松手就落回那里。
+/// 拖着一张卡片的整个过程（从停靠栏拖出来、从台面拖起来）在它那一格描一圈虚线，标出它的位置：这时卡片自己画着头像，
+/// 格子不画，不描的话那一格是个空洞；拖到停靠栏上松手就落回那里。虚线同那一格一样透明（堆叠渐隐）。
 struct StageDockRail: View {
     let layout: WindowLayout
     let area: WorkArea?
@@ -87,11 +88,12 @@ struct StageDockRail: View {
                     .environment(\.dockHidden, geometry.airborne)
                     .environment(\.dockStage, geometry)
                     .placed(dock)
-                if case .dock = layout.drag?.spot, let pane = layout.drag?.pane,
-                   let frame = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock.slot(of: pane)?.frame {
+                if let pane = layout.drag?.pane,
+                   let slot = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock.face(of: area.dockInstanceID(pane)) {
                     Circle()
                         .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
-                        .placed(frame)
+                        .opacity(slot.opacity)
+                        .placed(slot.frame)
                         .allowsHitTesting(false)
                 }
             }
