@@ -174,7 +174,7 @@ struct MarkdownBlock: Equatable {
         guard let parsed = try? AttributedString(markdown: input.parsed, options: options) else {
             return [MarkdownBlock(kind: .paragraph, text: AttributedString(source), source: .whole(source))]
         }
-        let document = input.placeholders.isEmpty ? parsed : CJKDelimiters.strip(parsed)
+        let document = input.inserted.isEmpty ? parsed : CJKDelimiters.strip(parsed)
         let locator = SourceLocator(input)
         var blocks: [MarkdownBlock] = []
         var lastListItem: Int?
@@ -301,30 +301,40 @@ struct MarkdownSource: Equatable {
 /// 解析前在这样的 ** 和标点之间插一个占位字（非字符 U+FDD0，Foundation 不当空白也不当标点），两边就都算字，
 /// 和夹在两个汉字中间的 ** 一样能开能收；解析完删掉，源位置由 SourceLocator 换回原文的下标。
 /// 只管 * 和 ~，一边是中日韩的字或标点才插，英文照 CommonMark。
+///
+/// 裸网址也一样：解析器认网址要碰到空白或 < 才停，「**https://a.com**，确认」的「**，确认」会整段算进网址，粗体也收不了尾。
+/// 网址后面紧跟全角标点，或 **、~~ 后面紧跟中日韩的字时，在网址末尾插一个 < 截住，后面跟非字符 U+FDD1，
+/// < 后面不是字母，只能当普通字；解析完连同 U+FDD1 一起删掉。
 private struct CJKDelimiters {
     private static let placeholder = Unicode.Scalar(0xFDD0)!
+    private static let linkStop = Unicode.Scalar(0xFDD1)!
     let source: String
-    /// 送去解析的：原文插上占位字。
+    /// 送去解析的：原文插上占位字和网址的截断标记。
     let parsed: String
-    /// 每个占位字在 parsed 里的 UTF-16 下标，从小到大。
-    let placeholders: [Int]
+    /// 插进去的每个字在 parsed 里的 UTF-16 下标，从小到大。
+    let inserted: [Int]
 
     init(_ source: String) {
         self.source = source
         let scalars = Array(source.unicodeScalars)
+        let linkEnds = Self.linkEnds(scalars)
         var parsed = String.UnicodeScalarView()
-        var placeholders: [Int] = []
+        var inserted: [Int] = []
         var offset = 0
         func append(_ scalar: Unicode.Scalar) {
             parsed.append(scalar)
             offset += UTF16.width(scalar)
         }
-        func insert() {
-            placeholders.append(offset)
-            append(Self.placeholder)
+        func insert(_ scalar: Unicode.Scalar = Self.placeholder) {
+            inserted.append(offset)
+            append(scalar)
         }
         var index = 0
         while index < scalars.count {
+            if linkEnds.contains(index) {
+                insert("<")
+                insert(Self.linkStop)
+            }
             let scalar = scalars[index]
             if scalar == "\\" {
                 // 转义的 * 不是标记
@@ -351,15 +361,15 @@ private struct CJKDelimiters {
             index = end
         }
         self.parsed = String(parsed)
-        self.placeholders = placeholders
+        self.inserted = inserted
     }
 
     /// parsed 里的 UTF-16 下标换成原文里的。
     func original(_ offset: Int) -> Int {
-        offset - placeholders.prefix { $0 < offset }.count
+        offset - inserted.prefix { $0 < offset }.count
     }
 
-    /// 解析出的正文删掉占位字。占位字只插在标记和标点之间，自成一个字。
+    /// 解析出的正文删掉占位字和网址的截断标记。占位字只插在标记和标点之间，自成一个字；截断标记连同前面的 < 一起删。
     /// 先在普通字符串里数出各占位字是第几个标量，再在正文里一段段跳过去：逐字走 AttributedString 慢约十倍
     /// （2026-10-21 实测，约 12KB 的中文回复要 1 ms 多，流式输出时每来一段都整段重解析）。
     static func strip(_ document: AttributedString) -> AttributedString {
@@ -367,14 +377,59 @@ private struct CJKDelimiters {
         var result = AttributedString()
         var start = scalars.startIndex
         var startOffset = 0
-        for (offset, scalar) in String(document.characters).unicodeScalars.enumerated() where scalar == placeholder {
-            let at = scalars.index(start, offsetBy: offset - startOffset)
+        for (offset, scalar) in String(document.characters).unicodeScalars.enumerated() where scalar == placeholder || scalar == linkStop {
+            let from = scalar == linkStop ? offset - 1 : offset
+            let at = scalars.index(start, offsetBy: from - startOffset)
             result.append(document[start..<at])
-            start = scalars.index(after: at)
+            start = scalars.index(at, offsetBy: offset + 1 - from)
             startOffset = offset + 1
         }
         result.append(document[start...])
         return result
+    }
+
+    /// 裸网址该截在哪：碰到非 ASCII 的标点（，。“ 这类），或 * ~ 后面紧跟中日韩的字，就截在这些标记前面。返回这些位置的标量下标。
+    private static func linkEnds(_ scalars: [Unicode.Scalar]) -> Set<Int> {
+        var ends: Set<Int> = []
+        var index = 0
+        while index < scalars.count {
+            guard isLinkStart(scalars, index) else {
+                index += 1
+                continue
+            }
+            var next = index + 1
+            while next < scalars.count, !isSpace(scalars[next]), scalars[next] != "<" {
+                let c = scalars[next]
+                if !c.isASCII && isPunctuation(c) || isCJK(c) && isDelimiter(scalars[next - 1]) {
+                    var end = next
+                    while isDelimiter(scalars[end - 1]) { end -= 1 }
+                    // 插在 \ 后面会把 < 转义掉
+                    if scalars[end - 1] != "\\" { ends.insert(end) }
+                    break
+                }
+                next += 1
+            }
+            index = next
+        }
+        return ends
+    }
+
+    private static let linkPrefixes = ["http://", "https://", "www."].map { Array($0.unicodeScalars) }
+
+    /// 解析器认的裸网址开头（不分大小写），前面不是字母，也不在 <网址> 和 [文字](网址) 里。
+    private static func isLinkStart(_ scalars: [Unicode.Scalar], _ index: Int) -> Bool {
+        guard "hHwW".unicodeScalars.contains(scalars[index]) else { return false }
+        let before = index > 0 ? scalars[index - 1] : nil
+        if let before, before.isASCII && before.properties.isAlphabetic || before == "<" { return false }
+        if index >= 2, before == "(", scalars[index - 2] == "]" { return false }
+        func lower(_ c: Unicode.Scalar) -> UInt32 { ("A"..."Z").contains(c) ? c.value + 32 : c.value }
+        return linkPrefixes.contains { prefix in
+            index + prefix.count <= scalars.count && zip(prefix, scalars[index...]).allSatisfy { lower($1) == $0.value }
+        }
+    }
+
+    private static func isDelimiter(_ c: Unicode.Scalar) -> Bool {
+        c == "*" || c == "~"
     }
 
     private static func isWord(_ c: Unicode.Scalar?) -> Bool {
@@ -411,7 +466,7 @@ private struct CJKDelimiters {
 }
 
 /// Foundation 给的源位置是第几行、第几个 UTF-8 字节，都从 1 起，结束列含这个字节；这里换成原文里的 UTF-16 下标。
-/// 位置对的是插了占位字的 parsed（见 CJKDelimiters），换回原文时减掉前面的占位字。
+/// 位置对的是插了占位字和截断标记的 parsed（见 CJKDelimiters），换回原文时减掉前面插进去的字。
 private struct SourceLocator {
     let input: CJKDelimiters
     let source: String
