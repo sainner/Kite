@@ -30,10 +30,11 @@
 - [什么要保存](feedback-save-scope.md) — 只有提示词这类文稿改完要保存，其他修改即时生效；新角色在上下文窗口一次建好
 - [旧数据出错就删](feedback-stale-data.md) — 旧数据读不了就删、不兼容；方案取舍不把已有会话角色对不上当代价；删前确认
 - [不记安装状态](feedback-no-install-state.md) — 不写哪台机器装了哪一版、装没装上；版本读 /machine
+- [子 agent 用 Opus](feedback-subagent-model.md) — Agent 工具每次传 model: opus，不让子 agent 跑 Fable
 
 ## 未决事项
 
-- [停靠栏与台面新模型](todo-stage-dock.md) — 一格一实例、台面按设备、布局配方：10-25 定稿写进 docs，实现与验证中；装新 kited 前先告知
+- [停靠栏与台面新模型](todo-stage-dock.md) — 一格一实例、台面按设备、布局配方：10-25 两侧实现完、Mac 核过，等用户验收；要定的默认值、Release 待装
 
 - [真机与线上验收](todo-device-validation.md) — 角色、插件、托管账号、跨机目录与 Git 的验收范围
 - [上下文能力](todo-context-capabilities.md) — 外部 MCP 已合回待真机手测、观察账本、预览、开场白与个人记忆
