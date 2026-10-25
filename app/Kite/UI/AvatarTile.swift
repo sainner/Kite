@@ -40,9 +40,11 @@ private struct AvatarTileStyle: ButtonStyle {
         let configuration: ButtonStyleConfiguration
         @Environment(\.isEnabled) private var enabled
         @State private var hovered = false
+        /// 悬停垫片的圆角：垫片只比头像宽 24，controlRadius 对它太圆。
+        private static let padRadius: CGFloat = 12
 
         var body: some View {
-            let shape = RoundedRectangle(cornerRadius: Metrics.dockRadius, style: .continuous)
+            let shape = RoundedRectangle(cornerRadius: Self.padRadius, style: .continuous)
             configuration.label
                 .background(feedback, in: shape)
                 .contentShape(shape)
