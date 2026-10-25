@@ -102,7 +102,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 ### 账号级数据
 
-资源库（角色、后台场景的上下文模板、点阵签名、插件包与 Bun 插件的定义级授权、用户层的 skill）、项目登记表与项目外观、项目约束、凭据，以及各工作机的目录摘要，是所有工作机共有的账号级数据，任一台都能修改，设计见 [分布式架构](分布式架构.md#数据的归属与同步)。每台工作机在数据目录的 `account.db` 里存一份完整副本，离线时照常读写。
+资源库（角色、后台场景的上下文模板、点阵签名、插件包与 Bun 插件的定义级授权、用户层的 skill）、项目登记表与项目外观、项目约束、项目的布局、凭据，以及各工作机的目录摘要，是所有工作机共有的账号级数据，任一台都能修改，设计见 [分布式架构](分布式架构.md#数据的归属与同步)。每台工作机在数据目录的 `account.db` 里存一份完整副本，离线时照常读写。
 
 - **同步。** 工作机之间直接同步，不经服务器。发现见 [远程连接](#远程连接)；每台工作机向其他每台在线的工作机增量拉取，没有新变化时请求挂着等，对方一有变化就返回，断线后从上次的位置续传。收到的变化也会被第三台拉走，不要求两两直接连通。只有工作机能拉取（`/sync/changes`），因为其中有凭据明文；App 经任一台连着的工作机读写。
 - **并发修改。** 每条数据带版本，两台工作机同时改了同一条时以后写的为准，被覆盖的那份另存下来，`/sync/conflicts` 可以找回。删除也是一次修改，与另一台的并发修改相遇时，修改的那份同样另存。
@@ -110,7 +110,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 资源库的写入先进账号级数据，再更新本机缓存；读取用缓存。内置角色和模板只保存自建或修改的内容，未修改项跟随 kited 版本；改回与默认一样或恢复默认时删掉那一条，其他工作机同步后退回默认。写入时按本机缓存给出期望的版本，基于已被删掉或改过的旧内容保存返回 409。插件包装到本机时一并写入，其他工作机同步后用到时再装。skill 是多文件包（SKILL.md 保持 UTF-8 文本，可附带文本、图片、PDF 等文件，整包按原始字节合计不超过 4 MiB），同步到每台工作机后写进数据目录的 `skills/<名字>/`，代理从那里加载；随 kited 带的 skill 同角色，只存改过的那份。skill 的列表只有名字与版本，客户端打开某一个时再按名字取整包。
 
-本机缓存有变化（本机写入或同步来的）时，目录流推 `library.changed`，`kind` 是变了的那一类目录：`role` 是角色列表（签名状态与点阵签名的变化也算），`template` 是后台场景的上下文模板，`skill` 是 skill 列表，`plugin` 是插件定义（Bun 插件包或它的定义级授权有变化时推）。读过这一类的客户端重新读取；断线期间收不到，重连后读过的都重读。
+本机缓存有变化（本机写入或同步来的）时，目录流推 `library.changed`，`kind` 是变了的那一类目录：`role` 是角色列表（签名状态与点阵签名的变化也算），`template` 是后台场景的上下文模板，`skill` 是 skill 列表，`plugin` 是插件定义（Bun 插件包或它的定义级授权有变化时推），`layout` 是某个项目的布局（另带 `projectId`）。读过这一类的客户端重新读取；断线期间收不到，重连后读过的都重读。
 
 项目约束随项目登记表同步，只由用户在 App 里修改。它在创建代理、每次模型请求和每次工具调用前过滤工具，不改写实例配置；有效工具因此变化的代理收到配置通知。分层规则见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)。
 
@@ -202,12 +202,12 @@ bun src/cli.ts net up              # 开启已登录设备的组网
 |---|---|
 | 登记项目 | 远程地址只写进项目登记表，不 clone。本机文件夹有 origin 的按远程登记；没有的在这台工作机上导入成没有远程的项目，原文件夹不动。可以一起保存环境变量文件为项目密钥。都不创建工作区 |
 | 创建工作区 | 在这台工作机上为项目建工作区：先检查环境，不满足就不建；没有该项目的检出时自动 clone 并登记，检出保留。先拉取主线，从最新的主线开出工作树。可以先建空工作区，也可在准备完成后运行首条消息。名称跟着代理的标题，见 [轻任务与会话标题](#轻任务与会话标题) |
-| 添加线程 | 工作区可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或等待继续时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例、线程与窗口 |
+| 添加线程 | 工作区可有多个线程，各自保存对话；线程之间默认并行，一个线程在执行、等你回应或等待继续时，其他线程照常启动，见 [工作区并行](工作区并行.md)。App 的新代理草稿只在本机，第一条消息连同所选角色和调整过的模型、工具、预算一次创建实例与线程 |
 | 快照与回退 | 每批工具后与回合结束时保存整个工作区的变更并记下触发的线程，快照不改变 HEAD、分支或暂存区；超过 10 MiB 且项目 Git 未跟踪的文件不进快照，与被忽略的文件一样回退不碰（见 [成果查看与位置](成果查看与位置.md#大文件)）。回退先保存现状，再恢复文件；任一线程在执行期间不允许回退 |
 | 采纳（集成） | 按项目的集成方式：直接合入把工作区改动合进主线并推送到远程；提交 PR 把工作区分支推到远程并开 PR。同一检出的采纳串行执行，冲突留在工作树；采纳后工作区与线程仍可继续使用 |
 | 同步 | 拉取主线并合进工作区分支，不推送；要求线程全部空闲，冲突同采纳，合完保存快照。工作区聚合带 `behind`，是主线比工作区分支多出的提交数，按最近一次拉取计算 |
-| 归档实例 | 停止该实例的执行并关闭它的窗口，保留会话、业务数据、工作区和快照；归档代理时，同一工作区里它开出的各层子代理一起归档。随窗口回收的实例关闭窗口即可，不提供归档 |
-| 归档工作区 | 停止所有线程、保存最后快照，回收工作树和分支，归档实例并关闭共享窗口。未采纳改动须显式 `force`；提交 PR 的工作区以 PR 合并为已采纳。Line 所在的工作区不能归档 |
+| 归档实例 | 停止该实例的执行，保留会话、业务数据、工作区和快照；归档代理时，同一工作区里它开出的各层子代理一起归档。关闭即回收的实例与进程实例用关闭（`DELETE /instances/:id`），不提供归档 |
+| 归档工作区 | 停止所有线程、保存最后快照，回收工作树和分支，归档并回收实例。未采纳改动须显式 `force`；提交 PR 的工作区以 PR 合并为已采纳。Line 所在的工作区不能归档 |
 | 跨机流转 | 所有线程空闲时交出工作区；另一台工作机把副本补到末尾、装到本机并接管后，本机记录冻结为 `transferred`。工作区 ID 不变，`epoch` 加 1；见 [工作区流转](Line与工作区流转.md#工作区流转) |
 | 子工作区 | 代理用 `agent_start` 的 `isolation` 从当前工作区最近的快照开出，挂在父工作区下；只能合回父工作区或放弃，随父工作区流转，见 [子工作区](项目与远程仓库.md#子工作区) |
 
@@ -330,8 +330,10 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET/PUT/DELETE | `/network/channel` | 仅本机：读取 `{channel}`；PUT `{endpoint, routerKey, address4, address6?}` 设置受管网络通道（`address4`、`address6` 是通道内地址，不是对外端点），DELETE 清除；组网开着时重启组网节点生效 |
 | GET | `/network/channel/key` | 仅本机：通道公钥 `{publicKey}`，没有私钥时先生成；kite-net 读钥匙串可能要等用户允许 |
 | GET | `/projects` | 列出本机已登记的项目身份 |
+| GET | `/project-registry/:id/layouts` | 这个项目的布局 `{layouts: [{id, name, members, arrangement, revision}]}`，配方的含义见 [台面与停靠栏](台面与停靠栏.md#布局) |
+| PUT / DELETE | `/project-registry/:id/layouts/:layout` | PUT `{expectedRevision?, layout: {name, members, arrangement}}` 新建（不带 `expectedRevision`）或整体替换一个布局，版本不符 409；DELETE `?expectedRevision=` 删除。布局是账号级数据，随项目登记同步，变化推 `kind` 为 `layout` 的 `library.changed`（另带 `projectId`） |
 | GET | `/checkouts` | 列出本机检出（`?project=`） |
-| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本，打开的工作区带 `workspace.rootNames`（工作区目录顶层的名字，App 据此识别消息里的路径，顶层在快照后有增减时发 `workspace.changed`）；创建 `{project, prompt?, role?, id?, windowId?, messageId?}`（先检查环境，没有检出时先 clone，clone 时远程要账号的错误体带 `gitLogin`），`role` 为 `{id, revision}`，准备过程看事件；`id`、`windowId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理窗口和第一条消息的 ID，工作区或窗口 ID 已用过返回 409，省略时由 kited 生成 |
+| GET/POST | `/workspaces` | 列出聚合（`?project=`），响应头 `X-Kite-Cursor` 标识列表版本，打开的工作区带 `workspace.rootNames`（工作区目录顶层的名字，App 据此识别消息里的路径，顶层在快照后有增减时发 `workspace.changed`）；创建 `{project, prompt?, role?, id?, instanceId?, messageId?}`（先检查环境，没有检出时先 clone，clone 时远程要账号的错误体带 `gitLogin`），`role` 为 `{id, revision}`，准备过程看事件；`id`、`instanceId`、`messageId` 是客户端生成的 UUID，分别用作工作区、首个代理实例和第一条消息的 ID，工作区或实例 ID 已用过返回 409，省略时由 kited 生成 |
 | GET | `/environment?project=&needs=` | 这台工作机为该项目建工作区前的环境，只读；`needs` 是逗号分隔的换机环境需求，见 [工作区与线程的生命周期](#工作区与线程的生命周期) |
 | POST | `/workspaces/:id/setup` | 准备失败的工作区重跑准备，设了路径的项目密钥重新写入；工作树没建成时重建 |
 | POST | `/workspaces/:id/transfer` | 在持有工作区的工作机上调用，把它流转到 `{to, operationId}`：本机交出，目标补齐副本后还原并接管，返回 `{workspaceId, machine, epoch}`，返回时本机记录已冻结；目标没接成时撤回交接、工作区重新开放并返回错误。本机或目标访问远程时要账号的，错误体带 `gitLogin`，出在目标上的另带 `gitLoginMachine` |
@@ -376,12 +378,13 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效；读取另给按项目上限收紧后实际用的 `effective` 与上限 `max`。新建代理时依次取创建请求的 `approval`、角色的默认与 `/roles` 的 `defaultApproval`，写进实例配置的 `approval`，随工作区的 instances 下发 |
 | GET / PUT | `/instances/:id/mcp` | 读取或设置代理打开的 MCP 服务 `{servers}`（服务名，可以有本机没装的，装上后生效），运行中也可改，下一次请求生效；读取另给项目禁用的 `denied` 与这台工作机装的服务 `available: [{name, description?, phase}]`。新建代理时取创建请求的 `mcp`，没给就用角色的默认 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 与 grants 整体更新，代理的协作范围是其中几项授权共用的目标 |
-| POST | `/workspaces/:id/windows` | 创建实例及默认窗口，或打开已有实例的视图（实例已有窗口时换到这个视图）；请求使用稳定 id |
+| POST | `/workspaces/:id/instances` | 新建实例，请求与响应见下文；Bun 插件的实例有没有视图都从这里建 |
+| PUT | `/instances/:id/view` | `{viewId}` 换实例当前显示的视图，须由定义声明；返回实例，各端同步 |
 | GET | `/workspaces/:id/preview-targets` | 工作区的预览目标与设备候选 `{targets, devices}`：targets 每项是目标名；devices 是模拟器型号，以及与这台工作机配对过的真机，真机带名字、硬件型号、编号与连没连着，见 [实例操作 · 目标](实例操作.md#目标) |
 | GET | `/instances/:id/preview/bundle` | App 窗口里那个 App 的 .app 打成的 zip，响应头 `X-Kite-App` 是 .app 的名字（百分号编码）；App 不是 .app 时 409，见 [实例操作 · App 窗口](实例操作.md#app-窗口) |
 | PUT | `/apps/:name` | 请求体是 .app 的 zip，在这台 Mac 上解开到 Kite 目录的 `apps/` 下（同名的换成新的）并打开，返回 `{path}`；只接本机监听的请求 |
-| DELETE | `/workspaces/:id/windows/:window` | 关闭共享窗口，按插件生命周期回收实例或保留 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建代理并打开窗口 `{prompt, role?, model?, tools?, approval?, mcp?, windowId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`windowId` 是客户端生成的 UUID，用作新窗口的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
+| DELETE | `/instances/:id` | 关闭实例：`closable` 的回收；`process` 的进程还在跑就先停、再回收；`persistent` 的 409（用归档）；已不存在 404。回收后各端的停靠栏与台面一起去掉它 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理 `{prompt, role?, model?, tools?, approval?, mcp?, instanceId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`instanceId` 是客户端生成的 UUID，用作代理实例（也是线程）的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |
@@ -409,11 +412,11 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 
 skill 文件的 `encoding` 省略时，`content` 是 UTF-8 文本；`encoding: "base64"` 时是原始字节的规范 base64（保留填充）。`SKILL.md` 不能用二进制编码，文件路径须在包内，最多 200 个文件，4 MiB 上限按解码后的字节计。旧文本包仍可读取；账号同步原样保存包，不支持该文件编码的旧工作机暂不物化，升级后再落盘。
 
-窗口创建请求为 `{id, content: {kind: "create", definitionId, instanceId?, title?, command?, preview?, page?}}`，`instanceId` 是客户端生成的 UUID，用作新实例的 ID，已用过返回 409，省略时由 kited 生成；`title` 是新实例的名字，省略时按插件名编号（带 `preview` 时用目标名）；`command` 只用于终端，见 [实例操作 · 终端](实例操作.md#终端)；`preview` 只用于预览、必带，`{target, device?}`，目标已经在跑时打开那个实例的窗口，`device` 是 `{simulator: 型号}` 或 `{physical: 设备编号}`，见 [实例操作 · 目标](实例操作.md#目标)；`page` 只用于浏览，`{port}` 或 `{url}`，打开到一个网页，见 [实例操作 · 浏览](实例操作.md#浏览)；打开已有视图为 `{id, content: {kind: "open", instanceId, viewId}}`。`id` 使用 UUID。内置代理（`kite.agent`）提供 `conversation`，浏览（`kite.files`）提供 `files`，终端提供 `terminal`，预览提供 `screen`、`grid`、`output`。新建的空 agent 不调用模型；目标实例须属于当前工作区且处于可用状态，视图须由定义声明。
+新建实例的请求为 `{id, definitionId, title?, command?, preview?, page?}`：`id` 是客户端生成的 UUID，用作实例 ID，App 据此在工作机确认前先把它放上本机台面；`title` 是新实例的名字，省略时按插件名编号（带 `preview` 时用目标名）；`command` 只用于终端，见 [实例操作 · 终端](实例操作.md#终端)；`preview` 只用于预览、必带，`{target, device?}`，同一目标与设备已经在跑时返回那个实例、不新建，`device` 是 `{simulator: 型号}` 或 `{physical: 设备编号}`，见 [实例操作 · 目标](实例操作.md#目标)；`page` 只用于浏览，`{port}` 或 `{url}`，打开到一个网页，见 [实例操作 · 浏览](实例操作.md#浏览)。内置代理（`kite.agent`）提供 `conversation`，浏览（`kite.files`）提供 `files`，终端提供 `terminal`，预览提供 `screen`、`grid`、`output`，这些是 `PUT /instances/:id/view` 能换的视图。新建的空 agent 不调用模型；monitor 不从这里建。
 
-窗口响应包含 `{id, workspaceId, target: {instanceId, viewId}, state, createdAt}`。新建的窗口以请求 `id` 作窗口 ID，App 据此在工作机确认前先按这个 ID（和 `instanceId`）打开窗口；实例已有窗口时不另开，那个窗口换到请求的视图后返回。同一请求 ID 重试返回同一个窗口、不再切换视图，内容改变或窗口已关闭时拒绝，迟到重试不会复活窗口。实例回收与跨端布局的完整规则见 [Agent 与插件契约](Agent与插件契约.md#34-workspacewindow实例的呈现)。
+响应是实例，带当前视图 `view`（没有视图的实例没有这一项）。同一 `id` 同内容重试返回同一个实例；`id` 已用于别的内容、或那个实例已回收时 409，迟到重试不会复活实例。各端怎样呈现见 [台面与停靠栏](台面与停靠栏.md)。
 
-`/threads/:id` 使用 agent 实例 ID；原生后端 ID 不用于此接口。工作区聚合包含所属实例、线程与共享窗口，具体类型见 [领域模型](../kited/src/model.ts)。实例操作的参数、授权和收据统一见 [实例操作](实例操作.md)，文件引用见 [资源引用](资源引用.md)。
+`/threads/:id` 使用 agent 实例 ID；原生后端 ID 不用于此接口。工作区聚合包含所属实例与线程，具体类型见 [领域模型](../kited/src/model.ts)。实例操作的参数、授权和收据统一见 [实例操作](实例操作.md)，文件引用见 [资源引用](资源引用.md)。
 
 `POST /project-registry` 添加本机文件夹时：
 
