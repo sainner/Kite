@@ -540,6 +540,7 @@ final class CardView: NSView {
                     link.settle()
                 }
                 applyPresentation(at: .now)
+                updateIcon()
                 stage.refreshHover()
                 // 停进了停靠栏的格子、从停靠栏飞到了台面上：台面再排一轮，收进格子或让格子画上「看得到」（见 CardPresentation）
                 if placed.awaitsRest { stage.needsLayout = true }
@@ -619,18 +620,28 @@ final class CardView: NSView {
         let icon: String
         let instance: String?
         let size: CGFloat
+        let paused: Bool
     }
 
     private func updateIcon() {
         guard let stage, let placed, installed else { return }
         let size = iconSize
         let instance = presentation.instance
-        let key = IconKey(isAgent: placed.appearance.isAgent, icon: placed.appearance.icon, instance: instance?.id, size: size)
+        let key = IconKey(isAgent: placed.appearance.isAgent, icon: placed.appearance.icon, instance: instance?.id, size: size,
+                          paused: iconHidden(placed))
         guard key != iconKey else { return }
         iconKey = key
         icon.rootView = stage.rooted(CardIcon(appearance: placed.appearance, area: stage.group.workspace, instance: instance, pane: pane,
-                                               size: size) { [weak self] color in self?.ringChanged(color) })
+                                               size: size, paused: key.paused) { [weak self] color in self?.ringChanged(color) })
         icon.frame = CGRect(x: 0, y: 0, width: size, height: size)
+    }
+
+    /// 头像眼下和这一段动画里都看不见：终点透明，这一刻（要先摆到格子上的，从格子那一刻）也透明。停在台面上、停在停靠栏格子里的卡片都是，
+    /// 在跑的代理头像这时停在当前帧（见 CardIcon.paused）：每张卡片都带着头像，停靠栏里还另画一份，不停的话每个在跑的代理
+    /// 每秒多画几十次看不见的头像（2026-10-25 测量，五个代理在跑时静息主线程约 15%）。停下时再判一次（见 motionChanged）。
+    private func iconHidden(_ placed: CardPresentation.Placement) -> Bool {
+        let now = placed.snap?.iconOpacity ?? placed.motion.presentation(at: .now).iconOpacity
+        return placed.target.iconOpacity == 0 && now == 0
     }
 
     private func ringChanged(_ color: Color?) {

@@ -211,6 +211,8 @@ struct CardIcon: View {
     let instance: RemotePluginInstance?
     let pane: Pane
     let size: CGFloat
+    /// 头像这会儿看不见（卡片停在台面上、停在停靠栏的格子里，头像整个透明）：在跑的代理头像停在当前帧，不在看不见的时候逐帧画。
+    var paused = false
     let ring: @MainActor (Color?) -> Void
 
     var body: some View {
@@ -218,6 +220,7 @@ struct CardIcon: View {
             if appearance.isAgent, let area {
                 DockEntryFace(subject: instance.map { .instance($0) } ?? .pane(pane), pulse: false, ring: false)
                     .environment(area)
+                    .environment(\.avatarsPaused, paused)
             } else {
                 Image(systemName: appearance.icon).font(Theme.title).foregroundStyle(Theme.ink)
             }

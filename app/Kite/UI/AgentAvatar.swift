@@ -22,7 +22,7 @@ struct AgentAvatar: View {
         let seed = Self.seed(instance)
         Group {
             #if os(macOS)
-            if animating, !reduceMotion, let pattern {
+            if animating, !reduceMotion, !avatarsPaused, let pattern {
                 AvatarFrames(pattern: pattern, rest: rest, seed: seed)
                     .allowsHitTesting(false)
             } else {
