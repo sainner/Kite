@@ -22,6 +22,21 @@ enum DockBandItem: Identifiable {
     var flexible: Bool {
         if case .entry(let entry) = self { entry.expands } else { false }
     }
+
+    /// 这一项盖住的范围，堆叠时挡住后面的格子用（见 DockStackFade）；分割线不挡。
+    var outline: DockItemOutline? {
+        switch self {
+        case .divider: nil
+        case .layout: .folder
+        case .entry(let entry) where entry.expands: .capsule
+        default: .circle
+        }
+    }
+}
+
+/// 一项的轮廓：圆形格子、家族格的胶囊、布局文件夹的圆角矩形。
+enum DockItemOutline {
+    case circle, capsule, folder
 }
 
 extension DockModel {
@@ -134,7 +149,7 @@ nonisolated struct DockStackCurve {
 /// 停靠栏：一条带子，宽屏竖排在台面右边（StageDockRail），紧凑布局横排在底栏（CompactDockBar）。两端是这同一个组件，方向是参数：
 /// 从前到后依次是布局组、分割线、实例组（见 DockBandItem），竖排从上到下，横排从右到左（和原来的底栏一样倒着排）。
 /// 格子都是圆的，间距固定。放不下时不折叠、不分页、不缩小头像：靠前端的照原来的间距，溢出的一头挤起来叠进末端（DockStackCurve），
-/// 叠得越密越透明（DockStackFade），滚动翻看；前端滚出去的渐隐、画箭头。家族格原地展开，后面的让开、别的格子模糊淡出，展开时不挤。
+/// 叠得越密越透明、靠前的挡住后面的（DockStackFade），滚动翻看；前端滚出去的渐隐、画箭头。家族格原地展开，后面的让开、别的格子模糊淡出，展开时不挤。
 ///
 /// 滚动区只借它的手势、惯性和滚动范围：里面是一条和照原来间距排开一样长的空轨道，格子钉在可视区里，由 DockStackLayout
 /// 按离前端滚了多远来摆，加减格子时由排版的动画过渡，家族格展开、收起时按它这一刻的长让位（见 DockStackFlexible）。格子若直接排在滚动内容里、
@@ -199,13 +214,15 @@ struct DockBand: View {
                             ZStack { self.item(item, expansion: expansion, limit: limit) }
                                 .modifier(DockDimmed(dimmed: dimmed && expansion.first != item.id))
                                 .modifier(DockStackFade(scroll: scroll, back: run.back(index), length: extents[index], total: run.total,
-                                                        region: visible, stacking: dimmed ? 0 : 1))
+                                                        region: visible, outline: item.outline, stacking: dimmed ? 0 : 1))
                                 .transition(vertical ? .scale(scale: 0.6).combined(with: .opacity) : .move(edge: .top).combined(with: .opacity))
                                 .layoutValue(key: DockStackStart.self, value: run.starts[index])
                                 .layoutValue(key: DockStackLength.self, value: extents[index])
                                 .layoutValue(key: DockStackFlexible.self, value: item.flexible)
                         }
                     }
+                    // 格子挡住后面的格子（见 DockStackFade）只在这一组里挖，不挖穿到停靠栏底下
+                    .compositingGroup()
                     .environment(\.dockAxis, axis)
                     .animation(WindowMotionKind.preview.animation, value: items.map(\.id))
                     .padding(margin)
@@ -406,12 +423,17 @@ private struct DockStackLayout: Layout {
 
 /// 堆叠部分越靠后越透明（见 DockStackCurve.opacity）。按这一项照原来的间距排开时的位置算，滚动时只有这一层跟着重算，
 /// 里面的格子不重算；排得下时不读滚动。
+/// 每一项先按自己的轮廓挖掉压在下面（靠后）的格子再画：叠在一起时每一处只看得到最靠前的那一格，按它自己的透明度，
+/// 不再半透明叠半透明，末端几格几乎重合时也不会累加成一块亮斑，整体越往后越淡。透明度仍是每格一个数，卡片落进堆叠处
+/// 按同一个数画（DockGeometry），交接前后一样。挖的只是这一组里的格子（DockBand 给整串套了 compositingGroup）；
+/// 卡片自己画着头像、这一格不画的时候照样挖：卡片落进堆叠处、从那里飞出去时，同格子画着时一样只露最靠前的。
 private struct DockStackFade: ViewModifier, Animatable {
     let scroll: DockScroll
     let back: CGFloat
     let length: CGFloat
     let total: CGFloat
     let region: CGFloat
+    let outline: DockItemOutline?
     var stacking: CGFloat
 
     var animatableData: CGFloat {
@@ -420,8 +442,19 @@ private struct DockStackFade: ViewModifier, Animatable {
     }
 
     func body(content: Content) -> some View {
-        content.opacity(total > region ? DockStackCurve(total: total, region: region, distance: scroll.distance, stacking: stacking)
-            .opacity(back + length / 2) : 1)
+        content
+            .opacity(total > region ? DockStackCurve(total: total, region: region, distance: scroll.distance, stacking: stacking)
+                .opacity(back + length / 2) : 1)
+            .background { cutout.blendMode(.destinationOut) }
+    }
+
+    @ViewBuilder private var cutout: some View {
+        switch outline {
+        case .circle: Circle()
+        case .capsule: Capsule()
+        case .folder: RoundedRectangle(cornerRadius: DockLayoutFolder.radius, style: .continuous)
+        case nil: EmptyView()
+        }
     }
 }
 
