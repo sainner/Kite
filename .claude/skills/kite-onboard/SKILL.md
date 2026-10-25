@@ -100,13 +100,3 @@ templates/test-writer.md 分层表里的数字是默认预算，项目可以按�
 | 设计原则、职责边界、对外契约与开发入口 | `docs/` | 经项目入口按需读取 |
 
 收进任何一处之前先想清楚以后谁会拿它做什么判断，说不清就不收。一件事只在一处写正文，别处引用，不另抄一份。改现行文档时直接替换过时的话，不追加更新说明。与本项目工作方式有关的用户反馈可以进入项目记忆；无关的个人画像不收录。零碎决定凑成完整主题后整理进 docs，正式协作规则进 AGENTS.md 或规则文件，记忆只保留仍有独立价值的背景或入口。给项目补齐时采用它已有的约定，不把 Kite 仓库的记忆或个人偏好复制过去。
-
-## 在 Codex 中使用
-
-项目的知识正文不随开发工具复制两份。Codex 使用根目录的 `AGENTS.md`；其中明确要求开始时读取 `.kite/memory/MEMORY.md`、按需读取正文，工作中把长期有效的项目决定和反馈及时写回。Codex 自带的全局生成记忆和这份项目记忆分开，不能照搬 Claude 的 `autoMemoryDirectory` 设置。
-
-已有 `.claude/skills/<技能>` 时，在 `.agents/skills/<技能>` 建相对软链接，Codex 原生支持这种发现方式。不要重复复制模板；它们可能同时被项目代码引用。
-
-写测试的规则仍以项目的一份正文为准。为 Codex 添加 `.codex/agents/test-writer.toml`，用 `name`、`description`、`developer_instructions` 定义入口，指令要求先读该规则文件；可在 `.codex/config.toml` 的 `[agents.test-writer]` 中用 `config_file` 显式注册，路径相对配置文件。不要直接搬入 Claude 的 `tools` 字段，也不要额外指定用户没要求的模型或权限。
-
-给项目补齐时以它自己的规则和路径为准；不覆盖已有 Codex 配置。
