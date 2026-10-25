@@ -468,6 +468,42 @@ test('B 先同步到别的工作机已收紧约束的项目、再为它建工作
   expect((await b.call('GET', `/instances/${id}/agent-capabilities`)).body.blocked).toContain('shell');
 }, 1000);
 
+// 项目的布局是账号级数据（kind 'layout'），随项目登记同步：A 存、删以后 B 经长轮询拉到，收到时推 kind 为 layout、带 projectId 的
+// library.changed，按项目读到同一份。删除在账号级数据里是一条正文为空的写入，B 只能从条目 ID 认出是哪个项目的布局。
+// 要同步链路、布局条目归到项目与收到同步时的事件合起来才看得出。
+test('A 存的项目布局同步到 B 后 B 推这个项目的布局变化、读到同一份；A 删除后 B 同步到、再推一次，读到的没有了', async () => {
+  const a = startKited();
+  const b = startKited();
+  kiteds.push(a, b);
+  await connect(a, b);
+  const projectId = (await addProject(a, { remote: remoteUrl('layouts') })).id;
+  const path = `/project-registry/${projectId}/layouts`;
+  /** B 在 since 之后推了这个项目的布局变化。 */
+  const layoutChanged = (since: number) => b.waitEvent((event) =>
+    event.type === 'library.changed' && event.kind === 'layout' && event.projectId === projectId && after(b, since)(event));
+
+  const layout = {
+    name: '写代码',
+    members: [{ kind: 'agent', role: 'kite.work' }, { kind: 'terminal' }, { kind: 'preview', target: 'web', device: { simulator: 'iPhone 17' } }],
+    arrangement: {
+      kind: 'split', axis: 'horizontal', ratio: 0.6, first: { kind: 'member', index: 0 },
+      second: { kind: 'split', axis: 'vertical', ratio: 0.5, first: { kind: 'member', index: 2 }, second: { kind: 'member', index: 1 } },
+    },
+  };
+  let since = mark(b);
+  const saved = await a.call('PUT', `${path}/coding`, { layout });
+  expect(saved.status).toBe(200);
+  expect(saved.body).toMatchObject({ id: 'coding', ...layout });
+  await layoutChanged(since);
+  expect((await b.call('GET', path)).body).toEqual({ layouts: [saved.body] });
+
+  since = mark(b);
+  const removed = await a.call('DELETE', `${path}/coding?expectedRevision=${encodeURIComponent(saved.body.revision)}`);
+  expect(removed.status).toBe(200);
+  await layoutChanged(since);
+  expect((await b.call('GET', path)).body).toEqual({ layouts: [] });
+}, 1000);
+
 // 项目约束是实时过滤：改了约束后对缓存，正在跑的回合里已经发出的 shell 调用在执行前被拦下，
 // 下一次请求不再放行 shell；只有有效工具真的变了的代理收到一条配置通知；放宽后实例配置里留着的 shell 恢复。
 // 账号级数据、SQLite 缓存、配置通知与 harness 请求边界的执行检查要合起来才看得出。
