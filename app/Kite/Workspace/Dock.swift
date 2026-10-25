@@ -126,9 +126,6 @@ extension WorkArea {
         }
         let childAgents = open.filter { parent(of: $0) != nil }
         let childrenOf = Dictionary(grouping: childAgents) { parent(of: $0)!.id }
-        func recent(_ instance: RemotePluginInstance) -> Double {
-            activities[instance.id]?.changedAt ?? Double(instance.createdAt)
-        }
         func ordered(_ entries: [DockEntry]) -> [DockEntry] {
             entries.enumerated().sorted { left, right in
                 let (a, b) = (left.element, right.element)
@@ -137,8 +134,10 @@ extension WorkArea {
                 return left.offset < right.offset
             }.map(\.element)
         }
+        /// 子代理按创建先后（自己也带着子代理的排在前面），状态变化不挪位置：在跑的不靠挪到前面露出来，
+        /// 收着时由父代理那一格替它发脉冲（见 DockEntryFace.familyFold）。
         func children(of id: String) -> [DockEntry] {
-            ordered((childrenOf[id] ?? []).sorted { recent($0) > recent($1) }.map(member))
+            ordered((childrenOf[id] ?? []).sorted { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }.map(member))
         }
         /// 家族里的一项：子代理自己也带着子代理的是嵌套的家族。
         func member(_ instance: RemotePluginInstance) -> DockEntry {
