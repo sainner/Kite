@@ -62,23 +62,15 @@ struct SubscriptionLoginForm: View {
                 }
             }
         } actions: {
-            if authorizationURL != nil || (actionPhase.error == nil && state?.status != "complete") {
-                PaneHeaderButtonGroup {
-                    if let url = authorizationURL {
-                        Button { openAuthorization(url) } label: {
-                            PaneHeaderButtonLabel("打开登录页面", systemImage: "arrow.up.right.square")
-                        }
-                        .help("打开登录页面")
-                    }
-                    if actionPhase.error == nil && state?.status != "complete" {
-                        Button(action: restart) {
-                            PaneHeaderButtonLabel("重新登录", systemImage: "arrow.clockwise")
-                        }
-                        .disabled(starting || submitPhase.working)
-                        .help("重新开始登录")
-                    }
-                }
+            var group: [PaneHeaderAction] = []
+            if let url = authorizationURL {
+                group.append(PaneHeaderAction(title: "打开登录页面", systemImage: "arrow.up.right.square") { openAuthorization(url) })
             }
+            if actionPhase.error == nil && state?.status != "complete" {
+                group.append(PaneHeaderAction(title: "重新登录", systemImage: "arrow.clockwise", help: "重新开始登录",
+                                              disabled: starting || submitPhase.working, action: restart))
+            }
+            return group.isEmpty ? [] : [group]
         } footer: {
             if !starting {
                 CardActions(primary: "提交", enabled: !trimmedCode.isEmpty,

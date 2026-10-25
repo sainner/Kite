@@ -40,7 +40,7 @@ struct InstanceSettings: View {
     }
 
     var body: some View {
-        Group {
+        CardSheet(size: Self.size, close: { if changed { discardAction = "close" } else { dismiss() } }) {
             switch page {
             case .agent?:
                 if let thread { AgentSettings(instance: instance, thread: thread, back: { page = nil }) }
@@ -52,78 +52,74 @@ struct InstanceSettings: View {
                 main
             }
         }
-        .animation(.snappy, value: page)
         // 挂在外层：从子页面返回时不重新读取，主页的草稿保留
         .task { perform { try await load() } }
     }
 
     private var main: some View {
-        CardSheet(title: "配置", subtitle: "管理实例的运行与协作授权", error: progress.error, size: Self.size,
-                  close: { if changed { discardAction = "close" } else { dismiss() } }) {
-            Group {
-                CardSection("实例", note: definition?.lifetime.explanation) {
-                    LabeledContent("插件") { Text(definition?.title ?? instance.definitionId).foregroundStyle(.secondary) }
-                    LabeledContent("工作区") { Text(area.title).foregroundStyle(.secondary) }
-                    if thread != nil {
-                        CardLink("代理配置") { page = .agent }.disabled(!available)
-                        CardLink("执行授权") { page = .grants }.disabled(!available)
-                        CardLink("MCP 服务") { page = .mcp }.disabled(!available)
-                    }
-                    ForEach(definition?.views ?? []) { view in
-                        Button("打开\(view.title)") {
-                            model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
-                        }.disabled(!available)
-                    }
+        Group {
+            CardSection("实例", note: definition?.lifetime.explanation) {
+                LabeledContent("插件") { Text(definition?.title ?? instance.definitionId).foregroundStyle(.secondary) }
+                LabeledContent("工作区") { Text(area.title).foregroundStyle(.secondary) }
+                if thread != nil {
+                    CardLink("代理配置") { page = .agent }.disabled(!available)
+                    CardLink("执行授权") { page = .grants }.disabled(!available)
+                    CardLink("MCP 服务") { page = .mcp }.disabled(!available)
                 }
-                if definition?.runtime == "bun" {
-                    CardSection("进程", note: "停止进程保留实例和数据，后续调用会按需启动。") {
-                        LabeledContent("状态") { Text(processLabel).foregroundStyle(.secondary) }
-                        Button("刷新状态") { perform { try await readProcess() } }
-                        Button("停止进程") {
-                            perform {
-                                let client = try boundClient()
-                                let _: JSON = try await client.request("/instances/\(instance.id)/plugin/process", method: "DELETE", as: JSON.self)
-                                try await readProcess()
-                            }
-                        }.disabled(!available || phase == nil || phase == "stopped")
-                    }
-                }
-                if definition?.lifetime == .persistent {
-                    CardSection("归档", note: "停止执行并关闭窗口，会话和数据保留在工作机上。") {
-                        Button("归档实例…", role: .destructive) { archiving = instance }.disabled(!available)
-                    }
-                }
-                if editable, draft != nil {
-                    CardSection("协作授权", note: (definition?.agent != nil
-                        ? "协作范围决定这个代理能对准哪些代理、monitor 和终端：仅后代是它建的以及再往下建的，同工作区是工作区里的全部；超出后代范围时，停下别人的、经权限比它大的代理做事都要先经你批准。插件工具在下面逐项授予，新授权的何时生效见代理配置。"
-                        : "这个插件能经宿主调用工作区里的哪些实例和操作；起点是新建时拷来的资源库里这个插件的授权。")
-                        + "修改后保存，撤回对后续调用立即生效。")
-                    WorkspaceGrants(caller: caller, draft: $draft, operations: operations, roles: model.roles(in: area)?.roles ?? [])
-                        .disabled(!available)
-                    ForEach(targets) { target in
-                        if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
-                        // 代理对其他实例的操作按协作范围，不逐个授权。
-                        else if caller == "plugin" { instanceGrants(target) }
-                    }
+                ForEach(definition?.views ?? []) { view in
+                    Button("打开\(view.title)") {
+                        model.openWindow(.open(.init(instanceId: instance.id, viewId: view.id)), in: area)
+                    }.disabled(!available)
                 }
             }
-            .disabled(working)
-        } actions: {
-            CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") {
-                if changed { discardAction = "reload" } else { perform { try await load() } }
+            if definition?.runtime == "bun" {
+                CardSection("进程", note: "停止进程保留实例和数据，后续调用会按需启动。") {
+                    LabeledContent("状态") { Text(processLabel).foregroundStyle(.secondary) }
+                    Button("刷新状态") { perform { try await readProcess() } }
+                    Button("停止进程") {
+                        perform {
+                            let client = try boundClient()
+                            let _: JSON = try await client.request("/instances/\(instance.id)/plugin/process", method: "DELETE", as: JSON.self)
+                            try await readProcess()
+                        }
+                    }.disabled(!available || phase == nil || phase == "stopped")
+                }
             }
-            .disabled(working || !available)
-            // 不能编辑的实例没有保存
-            if editable {
-                CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
-                    .disabled(working || !available || !changed || draft == nil)
+            if definition?.lifetime == .persistent {
+                CardSection("归档", note: "停止执行并关闭窗口，会话和数据保留在工作机上。") {
+                    Button("归档实例…", role: .destructive) { archiving = instance }.disabled(!available)
+                }
+            }
+            if editable, draft != nil {
+                CardSection("协作授权", note: (definition?.agent != nil
+                    ? "协作范围决定这个代理能对准哪些代理、monitor 和终端：仅后代是它建的以及再往下建的，同工作区是工作区里的全部；超出后代范围时，停下别人的、经权限比它大的代理做事都要先经你批准。插件工具在下面逐项授予，新授权的何时生效见代理配置。"
+                    : "这个插件能经宿主调用工作区里的哪些实例和操作；起点是新建时拷来的资源库里这个插件的授权。")
+                    + "修改后保存，撤回对后续调用立即生效。")
+                WorkspaceGrants(caller: caller, draft: $draft, operations: operations, roles: model.roles(in: area)?.roles ?? [])
+                    .disabled(!available)
+                ForEach(targets) { target in
+                    if area.definition(of: target)?.runtime == "bun" { pluginGrants(target) }
+                    // 代理对其他实例的操作按协作范围，不逐个授权。
+                    else if caller == "plugin" { instanceGrants(target) }
+                }
             }
         }
+        .disabled(working)
+        .cardSheetPage("配置", subtitle: "管理实例的运行与协作授权", error: progress.error, actions: mainActions)
         .interactiveDismissDisabled(working || changed)
         .modifier(ArchiveInstanceConfirmation(instance: $archiving, archived: { dismiss() }))
         .discardAlert("放弃未保存的授权修改？", item: $discardAction) { action in
             if action == "close" { dismiss() } else { perform { try await load() } }
         }
+    }
+
+    private var mainActions: [[PaneHeaderAction]] {
+        let reload = PaneHeaderAction.sheet("重新读取", systemImage: "arrow.clockwise", disabled: working || !available) {
+            if changed { discardAction = "reload" } else { perform { try await load() } }
+        }
+        // 不能编辑的实例没有保存
+        guard editable else { return [[reload]] }
+        return [[reload], [.sheet("保存", busy: working, disabled: working || !available || !changed || draft == nil) { perform { try await save() } }]]
     }
 
     private var processLabel: String {

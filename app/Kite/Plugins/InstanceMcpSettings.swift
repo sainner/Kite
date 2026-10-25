@@ -24,25 +24,24 @@ struct InstanceMcpSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "MCP 服务", subtitle: "选择代理能用的外部 MCP 服务", error: phase.error, back: true, size: InstanceSettings.size,
-                  close: back) {
-            Group {
-                if let value {
-                    CardSection("服务", note: "开关后下一次请求生效，运行中也能改。服务在工作机上运行，不在沙箱里，授权一个服务等于把它能做的事交给代理；执行授权管不到它。在「设备」里给这台工作机添加服务。") {
-                        if value.available.isEmpty && value.servers.isEmpty {
-                            Text("这台工作机还没有 MCP 服务。").foregroundStyle(.secondary)
-                        }
-                        McpServerToggles(available: value.available, denied: value.denied,
-                                         selected: Binding(get: { value.servers }, set: { servers in $phase.run { try await save(servers) } }),
-                                         showsStatus: true)
+        Group {
+            if let value {
+                CardSection("服务", note: "开关后下一次请求生效，运行中也能改。服务在工作机上运行，不在沙箱里，授权一个服务等于把它能做的事交给代理；执行授权管不到它。在「设备」里给这台工作机添加服务。") {
+                    if value.available.isEmpty && value.servers.isEmpty {
+                        Text("这台工作机还没有 MCP 服务。").foregroundStyle(.secondary)
                     }
+                    McpServerToggles(available: value.available, denied: value.denied,
+                                     selected: Binding(get: { value.servers }, set: { servers in $phase.run { try await save(servers) } }),
+                                     showsStatus: true)
                 }
             }
-            .disabled(phase.working || !available)
-        } actions: {
-            CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") { $phase.run { try await load() } }
-                .disabled(phase.working || !available)
         }
+        .disabled(phase.working || !available)
+        .cardSheetPage("MCP 服务", subtitle: "选择代理能用的外部 MCP 服务", error: phase.error,
+                       actions: [[.sheet("重新读取", systemImage: "arrow.clockwise", disabled: phase.working || !available) {
+                           $phase.run { try await load() }
+                       }]],
+                       back: back)
         // 工作机推 mcp.changed（装卸服务、连接状态变化）时重新读。
         .task(id: model.connections[area.remote.machine.id]?.mcpRevision) { $phase.run { try await load() } }
     }

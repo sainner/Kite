@@ -30,72 +30,70 @@ struct ExecutionGrantSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "执行授权", subtitle: "设定代理能访问的路径、网络与沙箱外命令", error: phase.error, typing: focus != nil, back: true, size: InstanceSettings.size,
-                  close: { if changed { discardAction = .back } else { back() } }) {
-            Group {
-                CardSection("当前执行") {
-                    LabeledContent("状态") { Text(statusLabel).foregroundStyle(.secondary) }
-                    if thread.hasUnconfirmedStop || state?.capabilities.interrupt == true {
-                        Button(thread.hasUnconfirmedStop ? "重试停止" : "停止执行") {
-                            perform {
-                                _ = try boundClient()
-                                try await thread.stopAndWait()
-                                try await readState()
-                            }
-                        }.disabled(!available || thread.stopping)
-                    }
-                    Button("刷新执行状态") { perform { try await readState() } }.disabled(!available)
-                }
-                if let approval {
-                    CardSection("越界请求", note: approvalNote(approval)) {
-                        LabeledContent("审批模式") {
-                            Picker("审批模式", selection: Binding(get: { approval.mode }, set: { mode in perform { try await setApproval(mode) } })) {
-                                ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
-                            }
-                            .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
+        Group {
+            CardSection("当前执行") {
+                LabeledContent("状态") { Text(statusLabel).foregroundStyle(.secondary) }
+                if thread.hasUnconfirmedStop || state?.capabilities.interrupt == true {
+                    Button(thread.hasUnconfirmedStop ? "重试停止" : "停止执行") {
+                        perform {
+                            _ = try boundClient()
+                            try await thread.stopAndWait()
+                            try await readState()
                         }
-                    }
+                    }.disabled(!available || thread.stopping)
                 }
-                if let draft {
-                    CardSection("工作区", note: draft.project.workspace == .read ? "项目定为只读，这里改不了。"
-                                : "系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") {
-                        Text(area.remote.workspace.cwd).font(Theme.code).foregroundStyle(.secondary).textSelection(.enabled)
-                        LabeledContent("访问权限") {
-                            Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
-                                Text("只读").tag(WorkspaceAccess.read)
-                                Text("读写").tag(WorkspaceAccess.write)
-                            }
-                            .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
-                            .disabled(draft.project.workspace == .read)
+                Button("刷新执行状态") { perform { try await readState() } }.disabled(!available)
+            }
+            if let approval {
+                CardSection("越界请求", note: approvalNote(approval)) {
+                    LabeledContent("审批模式") {
+                        Picker("审批模式", selection: Binding(get: { approval.mode }, set: { mode in perform { try await setApproval(mode) } })) {
+                            ForEach(ApprovalMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
                     }
-                    CardField(label: "额外只读路径", focused: focus == .read, note: projectNote(.read)) {
-                        scopeField(.read, placeholder: "每行一个绝对路径")
-                    }
-                    CardField(label: "额外读写路径", focused: focus == .write,
-                              note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。" + (projectNote(.write).map { "\n" + $0 } ?? "")) {
-                        scopeField(.write, placeholder: "每行一个绝对路径")
-                    }
-                    CardField(label: "允许访问的网络地址", focused: focus == .network,
-                              note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。" + (projectNote(.network).map { "\n" + $0 } ?? "")) {
-                        scopeField(.network, placeholder: "例如 registry.npmjs.org:443")
-                    }
-                    CardField(label: "沙箱外命令", focused: focus == .unsandboxed,
-                              note: "每行一条，匹配的命令不进沙箱、以你的用户身份运行。以「 *」结尾表示带任意参数，例如 docker compose *；否则须一字不差。命令会执行工作区里的脚本（如 package.json），代理能修改它们。" + (projectNote(.unsandboxed).map { "\n" + $0 } ?? "")) {
-                        scopeField(.unsandboxed, placeholder: "例如 npm run dev")
-                    }
-                    CardNote("先停止执行，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
                 }
             }
-            .disabled(working)
-        } actions: {
-            CardSheetAction(title: "重新读取", systemImage: "arrow.clockwise") {
-                if changed { discardAction = .reload } else { perform { try await load() } }
+            if let draft {
+                CardSection("工作区", note: draft.project.workspace == .read ? "项目定为只读，这里改不了。"
+                            : "系统工具链保留基础读取权限；宿主数据和 Git 元数据仍受保护。") {
+                    Text(area.remote.workspace.cwd).font(Theme.code).foregroundStyle(.secondary).textSelection(.enabled)
+                    LabeledContent("访问权限") {
+                        Picker("访问权限", selection: field(\.workspace, fallback: .read)) {
+                            Text("只读").tag(WorkspaceAccess.read)
+                            Text("读写").tag(WorkspaceAccess.write)
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
+                        .disabled(draft.project.workspace == .read)
+                    }
+                }
+                CardField(label: "额外只读路径", focused: focus == .read, note: projectNote(.read)) {
+                    scopeField(.read, placeholder: "每行一个绝对路径")
+                }
+                CardField(label: "额外读写路径", focused: focus == .write,
+                          note: "每行填写一个工作机上已存在的绝对路径，读写包含读取。命令可访问这些路径；文件读取和补丁工具仍限于工作区。" + (projectNote(.write).map { "\n" + $0 } ?? "")) {
+                    scopeField(.write, placeholder: "每行一个绝对路径")
+                }
+                CardField(label: "允许访问的网络地址", focused: focus == .network,
+                          note: "每行一个域名或 IP，可带端口，支持 *.example.com。留空禁止网络；不支持全网通配或本机回环地址。" + (projectNote(.network).map { "\n" + $0 } ?? "")) {
+                    scopeField(.network, placeholder: "例如 registry.npmjs.org:443")
+                }
+                CardField(label: "沙箱外命令", focused: focus == .unsandboxed,
+                          note: "每行一条，匹配的命令不进沙箱、以你的用户身份运行。以「 *」结尾表示带任意参数，例如 docker compose *；否则须一字不差。命令会执行工作区里的脚本（如 package.json），代理能修改它们。" + (projectNote(.unsandboxed).map { "\n" + $0 } ?? "")) {
+                    scopeField(.unsandboxed, placeholder: "例如 npm run dev")
+                }
+                CardNote("先停止执行，再保存授权。保存后用于后续工具调用，并在下一次模型请求追加通知。")
             }
-            .disabled(working || !available)
-            CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
-                .disabled(!canSave)
         }
+        .disabled(working)
+        .cardSheetPage("执行授权", subtitle: "设定代理能访问的路径、网络与沙箱外命令", error: phase.error, typing: focus != nil,
+                       actions: [
+                           [.sheet("重新读取", systemImage: "arrow.clockwise", disabled: working || !available) {
+                               if changed { discardAction = .reload } else { perform { try await load() } }
+                           }],
+                           [.sheet("保存", busy: working, disabled: !canSave) { perform { try await save() } }],
+                       ],
+                       back: { if changed { discardAction = .back } else { back() } })
         .endsTyping(focus != nil) { focus = nil }
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的执行授权修改？", item: $discardAction) { action in

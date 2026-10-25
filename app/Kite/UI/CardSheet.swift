@@ -1,6 +1,10 @@
 import SwiftUI
 
-/// 卡片样式的弹窗骨架。标题栏两端都是关闭、标题、其他操作，关闭固定在左上角；子页面把关闭换成返回。
+/// 卡片样式的弹窗骨架。标题栏两端都是关闭、标题、其他操作，关闭固定在左上角。
+/// 弹窗可以有几页（实例设置和它的子页面、添加项目的两步）。多页弹窗是一种界面场景，只用这一个视图：标题栏和底栏只有这里的一份，
+/// 各页用 cardSheetPage 交出标题、副行、失败原因、操作和底栏按钮，自己只画正文；子页面给 back，左上角的关闭换成返回。
+/// 换页时标题栏和底栏原地变（标题模糊替换、关闭换成返回、操作从旁边分出或并回、主按钮换字），正文模糊替换、回到顶部，高度跟着新的一页变。
+/// 各页各画一份骨架时，两页的标题栏是两个视图，只能整块淡入淡出或硬切。
 /// 保存放在哪按弹窗的用途：编辑内容、填表的放在标题栏的操作区，同窗口；信息展示、步骤引导的主按钮（下一步、提交、推送）贴底，
 /// iPhone 上紧挨安全区，Mac 上没有安全区，底边留白同左右。没有信息区，失败原因换掉副行（error），其余状态写在正文。
 /// iPhone 键盘升起时底栏放收起键盘：有主按钮时由 CardActions 放，底栏是工具栏时由工具栏放，底栏空着时由这里放。
@@ -8,54 +12,24 @@ import SwiftUI
 /// 不给 size 时按内容定高，放不下（键盘升起）时正文滚动；给了 size 的（设置、编辑器这类会变长的）Mac 上用这个尺寸，iPhone 上铺满高度。
 /// 按内容定高时，影响排版的初始状态（默认选项、预填的字）在弹窗视图的 init 里定好：放到 onAppear 里改，Mac 上窗口先按改前量出的高度打开，
 /// 随后跳高。
-struct CardSheet<Content: View, Actions: View, Footer: View>: View {
-    let titleText: String
-    /// 标题下一句简短的说明，写这个弹窗做什么；不放状态，也不放所作用的对象。
-    var subtitle: String?
-    /// 正在打字：iPhone 上键盘升起，弹窗被顶到键盘上方，读到的 Home 条安全区不再可信。
-    var typing = false
-    /// 子页面：左上角是返回而不是关闭。
-    var back = false
-    /// 失败原因，有时换掉副行。
-    var error: String?
+struct CardSheet<Pages: View>: View {
     var size: CGSize?
+    /// 关掉弹窗；子页面左上角是返回，见 CardSheetPage.back。
     let close: () -> Void
-    let content: Content
-    let actions: Actions
-    let footer: Footer
+    let pages: Pages
     @State private var bodyHeight: CGFloat = 0
     @State private var headerHeight: CGFloat = 0
     @State private var footerHeight: CGFloat = 0
     /// 弹窗自身的底部安全区，不含键盘。
     @State private var bottomSafeArea: CGFloat = 0
+    /// 几页共用一个滚动容器，换页时回到顶部。
+    @State private var scroll = ScrollPosition(edge: .top)
 
-    init(title: String, subtitle: String? = nil, error: String? = nil, typing: Bool = false, back: Bool = false, size: CGSize? = nil,
-         close: @escaping () -> Void, @ViewBuilder content: () -> Content,
-         @ViewBuilder actions: () -> Actions = { EmptyView() }, @ViewBuilder footer: () -> Footer = { EmptyView() }) {
-        self.titleText = title
-        self.subtitle = subtitle
-        self.error = error
-        self.typing = typing
-        self.back = back
+    /// 有几页的弹窗：pages 按现在在哪一页给出那一页，每页带 cardSheetPage。
+    init(size: CGSize? = nil, close: @escaping () -> Void, @ViewBuilder pages: () -> Pages) {
         self.size = size
         self.close = close
-        self.content = content()
-        self.actions = actions()
-        self.footer = footer()
-    }
-
-    private var dismissButton: some View {
-        PaneHeaderButtonGroup {
-            Button(action: close) {
-                PaneHeaderButtonLabel(back ? "返回" : "关闭", systemImage: back ? "chevron.left" : "xmark")
-            }
-            .keyboardShortcut(.cancelAction)
-        }
-    }
-
-    private var title: some View {
-        PaneHeaderTitle(header: PaneHeader(title: titleText, subtitle: subtitle, failure: error))
-            .frame(maxWidth: .infinity, alignment: .leading)
+        self.pages = pages()
     }
 
     #if os(macOS)
@@ -69,10 +43,20 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
     private var footerBottom: CGFloat { bottomSafeArea }
     #endif
 
-    /// Mac 用三段的实际高度作为理想尺寸打开并更新同一个 sheet；放不下时正文滚动。
-    /// iPhone 上按量出的高度给 detent，键盘升起时正文滚动。
     var body: some View {
-        #if os(macOS)
+        // pages 里只有现在这一页；换走的那页由 ForEach 留着做完过渡
+        Group(subviews: pages) { pages in
+            let page = pages.last?.containerValues.cardSheetPage ?? CardSheetPage()
+            sized(scrolling(pages, page: page), typing: page.typing)
+                // 换页时标题栏、底栏、正文和高度一起过渡
+                .animation(.snappy, value: pages.last?.id)
+                .onChange(of: pages.last?.id) { scroll.scrollTo(edge: .top) }
+        }
+    }
+
+    #if os(macOS)
+    /// Mac 用三段的实际高度作为理想尺寸打开并更新同一个 sheet；放不下时正文滚动。
+    private func sized(_ scrolling: some View, typing: Bool) -> some View {
         Group {
             if let size {
                 scrolling.frame(width: size.width, height: size.height)
@@ -87,7 +71,10 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
         }
         .presentationBackground(Theme.card)
         .presentationSizing(.fitted)
-        #else
+    }
+    #else
+    /// iPhone 上按量出的高度给 detent，键盘升起时正文滚动。
+    private func sized(_ scrolling: some View, typing: Bool) -> some View {
         scrolling
             .ignoresSafeArea(.container, edges: .bottom)
             .background {
@@ -101,51 +88,64 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
             .presentationBackground(Theme.card)
             // Home 条那一截已算在按钮栏里
             .presentationDetents(size == nil ? [.height(headerHeight + bodyHeight + footerHeight)] : [.large])
-        #endif
     }
+    #endif
 
-    /// 正文从两条栏后面滚过，滚到标题栏下时软边模糊。
-    private var scrolling: some View {
+    /// 正文从两条栏后面滚过，滚到标题栏下时软边模糊。换页时新旧两页叠着过渡，不上下排开。
+    private func scrolling(_ pages: SubviewsCollection, page: CardSheetPage) -> some View {
         ScrollView {
-            page
+            ZStack(alignment: .topLeading) {
+                ForEach(pages) { subview in
+                    pageBody(subview).transition(.blurReplace)
+                }
+            }
         }
+        .scrollPosition($scroll)
         .scrollBounceBehavior(.basedOnSize)
             .scrollDismissesKeyboard(.interactively)
             .safeAreaBar(edge: .top, spacing: 0) {
-                header
+                header(page)
             }
             .safeAreaBar(edge: .bottom, spacing: 0) {
-                footerBar
+                footerBar(page)
             }
             .scrollEdgeEffectStyle(.soft, for: .top)
     }
 
-    private var header: some View {
+    private func header(_ page: CardSheetPage) -> some View {
         HStack(spacing: Metrics.paneButtonGap) {
-            dismissButton
-            title
-            actions
+            PaneHeaderButtonGroup {
+                Button(action: page.back ?? close) {
+                    PaneHeaderButtonLabel(page.back == nil ? "关闭" : "返回", systemImage: page.back == nil ? "xmark" : "chevron.left")
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+            PaneHeaderTitle(header: PaneHeader(title: page.title, subtitle: page.subtitle, failure: page.error))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            PaneHeaderActions(groups: page.actions, menus: page.menus)
         }
         // 窗口标题栏的边距在 Mac 上偏紧，弹窗标题栏四周至少留 padding，角上的关闭按钮离两边一样远
         .padding(max(Metrics.paneMargin, Metrics.padding))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { headerHeight = $0 }
     }
 
-    private var page: some View {
-        VStack(alignment: .leading, spacing: 16) { content }
+    /// 高度按新的一页量：换走的那页过渡时还占着地方，大小不再变，不会报上来。
+    private func pageBody(_ subview: Subview) -> some View {
+        subview
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, CardMetrics.sheetInset)
             .padding(.vertical, Metrics.padding)
             .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { old, new in
-                if old == 0 { bodyHeight = new } else { withAnimation(.snappy) { bodyHeight = new } }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                if bodyHeight == 0 { bodyHeight = height } else { withAnimation(.snappy) { bodyHeight = height } }
             }
     }
 
     /// 底栏空着时，正文已有一段底边留白，只补足剩下的安全距离；键盘升起时放收起键盘。
     /// 收起键盘撑高的那截不算进弹窗高度：按内容定高的弹窗不跟着键盘变高，正文滚动。
-    private var footerBar: some View {
-        Group(subviews: footer) { buttons in
+    private func footerBar(_ page: CardSheetPage) -> some View {
+        Group(subviews: page.footer) { buttons in
             if !buttons.isEmpty || keyboardShown {
                 VStack(spacing: 0) {
                     if buttons.isEmpty { KeyboardDismissButton().frame(maxWidth: .infinity, alignment: .leading) } else { buttons }
@@ -162,6 +162,66 @@ struct CardSheet<Content: View, Actions: View, Footer: View>: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { if !keyboardShown { footerHeight = $0 } }
     }
 }
+
+extension CardSheet {
+    /// 只有一页的弹窗。
+    init<Content: View, Footer: View>(title: String, subtitle: String? = nil, error: String? = nil, typing: Bool = false,
+                                      size: CGSize? = nil, menus: AnyView? = nil, close: @escaping () -> Void,
+                                      @ViewBuilder content: () -> Content, actions: () -> [[PaneHeaderAction]] = { [] },
+                                      @ViewBuilder footer: () -> Footer = { EmptyView() })
+    where Pages == CardSheetPageContent<Content> {
+        let page = content().cardSheetPage(title, subtitle: subtitle, error: error, typing: typing,
+                                           actions: actions(), menus: menus, footer: footer)
+        self.init(size: size, close: close) { page }
+    }
+}
+
+/// 弹窗的一页交给标题栏和底栏的东西，由 CardSheet 统一画。
+struct CardSheetPage {
+    var title = ""
+    /// 标题下一句简短的说明，写这一页做什么；不放状态，也不放所作用的对象。
+    var subtitle: String?
+    /// 失败原因，有时换掉副行。
+    var error: String?
+    /// 正在打字：iPhone 上键盘升起，弹窗被顶到键盘上方，读到的 Home 条安全区不再可信。
+    var typing = false
+    /// 子页面回到上一页：左上角是返回而不是关闭。
+    var back: (() -> Void)?
+    /// 标题栏的操作，同窗口的右组：每组一块玻璃，换页时按位置原地变，多出来的从旁边分出、少了的并回去。
+    var actions: [[PaneHeaderAction]] = []
+    /// 操作前面的菜单，同 PaneHeaderActions.menus。
+    var menus: AnyView?
+    var footer = AnyView(EmptyView())
+}
+
+extension ContainerValues {
+    @Entry var cardSheetPage: CardSheetPage?
+}
+
+/// 弹窗的一页：正文各段竖排，带着交给 CardSheet 的标题栏和底栏。
+struct CardSheetPageContent<Content: View>: View {
+    let page: CardSheetPage
+    let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) { content }
+            .containerValue(\.cardSheetPage, page)
+    }
+}
+
+extension View {
+    /// 把这个视图作为弹窗的一页放进 CardSheet，见 CardSheetPage。back 排在 footer 后面：不带标签的尾随闭包只会给到底栏，
+    /// 排在前面时会被当成返回，底栏没了、左上角变成返回也照样编得过。
+    func cardSheetPage<Footer: View>(_ title: String, subtitle: String? = nil, error: String? = nil, typing: Bool = false,
+                                     actions: [[PaneHeaderAction]] = [], menus: AnyView? = nil,
+                                     @ViewBuilder footer: () -> Footer = { EmptyView() },
+                                     back: (() -> Void)? = nil) -> CardSheetPageContent<Self> {
+        CardSheetPageContent(page: CardSheetPage(title: title, subtitle: subtitle, error: error, typing: typing, back: back,
+                                                 actions: actions, menus: menus, footer: AnyView(footer())),
+                             content: self)
+    }
+}
+
 
 #if os(macOS)
 /// 系统有时只更新 sheet 的尺寸约束，既有窗口仍停留在初始高度；按内容更新原窗口，不重建登录流程。
@@ -210,16 +270,13 @@ private struct CardSheetWindowSize: NSViewRepresentable {
 }
 #endif
 
-/// 标题栏上的操作，在忙时换成转圈，同窗口的右组。重新读取这类给图标；不给图标的是保存、创建这类确认动作，
-/// 显示文字、用主题色，见 PaneHeaderAction.prominent。分步骤的弹窗（添加项目）的下一步与最后的确认不放这里，用底部的 CardActions。
-struct CardSheetAction: View {
-    let title: String
-    var systemImage: String?
-    var busy = false
-    let action: () -> Void
 
-    var body: some View {
-        PaneHeaderActions(groups: [[PaneHeaderAction(title: title, systemImage: systemImage, busy: busy, prominent: systemImage == nil, action: action)]])
+extension PaneHeaderAction {
+    /// 弹窗标题栏上的操作，在忙时换成转圈，同窗口的右组。重新读取这类给图标；不给图标的是保存、创建这类确认动作，
+    /// 显示文字、用主题色，见 prominent。分步骤的弹窗（添加项目）的下一步与最后的确认不放这里，用底部的 CardActions。
+    static func sheet(_ title: String, systemImage: String? = nil, busy: Bool = false, disabled: Bool = false,
+                      action: @escaping () -> Void) -> PaneHeaderAction {
+        PaneHeaderAction(title: title, systemImage: systemImage, busy: busy, disabled: disabled, prominent: systemImage == nil, action: action)
     }
 }
 

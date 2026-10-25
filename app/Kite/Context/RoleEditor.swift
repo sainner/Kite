@@ -189,8 +189,7 @@ struct RoleEditor: View {
             .disabled(working || !available)
             if !available { CardCallout(text: "工作机连接已变化，请返回后重新打开角色。草稿尚未保存。", systemImage: "info.circle", tint: .secondary) }
         } actions: {
-            CardSheetAction(title: "保存", busy: working, action: save)
-                .disabled(working || !available || !draft.isSavable)
+            [[.sheet("保存", busy: working, disabled: working || !available || !draft.isSavable, action: save)]]
         }
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的角色修改？", isPresented: $discard) { dismiss() }

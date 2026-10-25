@@ -214,11 +214,11 @@ struct ContextVariableSheet: View {
         let shown = shown()
         let source = shown.source, paths = shown.paths
         CardSheet(title: variable.title, subtitle: "查看变量现在的取值", error: error,
-                  typing: typing != nil, size: Self.size, close: { dismiss() }) {
+                  typing: typing != nil, size: Self.size, menus: sourceMenu(shown), close: { dismiss() }) {
             if let status = status(shown) { Text(status).font(Theme.body).foregroundStyle(.secondary) }
             if let value, let source { content(value, source: source) }
         } actions: {
-            PaneHeaderActions(groups: headerGroups(shown), menus: sourceMenu(shown))
+            headerGroups(shown)
         } footer: {
             if !paths.isEmpty { ContextTextToolbar().disabled(saving) }
         }

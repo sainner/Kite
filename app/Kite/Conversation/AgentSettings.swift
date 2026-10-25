@@ -28,29 +28,27 @@ struct AgentSettings: View {
     }
 
     var body: some View {
-        CardSheet(title: "代理配置", subtitle: "选择模型与可用工具", error: phase.error, back: true, size: InstanceSettings.size,
-                  close: { if changed { discard = "back" } else { back() } }) {
-            Group {
-                if draft != nil, let capabilities {
-                    CardSection("模型", note: capabilities.explanation
-                        + (capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后内置工具目录固定，增减要新代理；新授权的插件工具会话中途就能加载。")) {
-                        AgentModelFields(configuration: Binding(get: { draft!.model }, set: { draft?.model = $0 }),
-                                         vendors: capabilities.vendors, models: capabilities.models)
-                    }
-                    CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用，项目放宽后恢复。勾选工具不会增加文件、网络或其他实例的访问权限，那些由执行授权和协作授权决定。") {
-                        AgentToolToggles(capabilities: capabilities, tools: Binding(get: { draft?.tools ?? [] }, set: { draft?.tools = $0 }))
-                    }
+        Group {
+            if draft != nil, let capabilities {
+                CardSection("模型", note: capabilities.explanation
+                    + (capabilities.toolCatalogBoundary == "idle" ? "新增插件工具在下次执行时加入。" : "首次请求后内置工具目录固定，增减要新代理；新授权的插件工具会话中途就能加载。")) {
+                    AgentModelFields(configuration: Binding(get: { draft!.model }, set: { draft?.model = $0 }),
+                                     vendors: capabilities.vendors, models: capabilities.models)
+                }
+                CardSection("可用工具", note: "角色给出默认勾选，也可以开角色没给的；角色必需的不能关闭，项目禁用的暂不可用，项目放宽后恢复。勾选工具不会增加文件、网络或其他实例的访问权限，那些由执行授权和协作授权决定。") {
+                    AgentToolToggles(capabilities: capabilities, tools: Binding(get: { draft?.tools ?? [] }, set: { draft?.tools = $0 }))
                 }
             }
-            .disabled(working || !available)
-        } actions: {
-            CardSheetAction(title: "重新载入", systemImage: "arrow.clockwise") {
-                if changed { discard = "reload" } else { perform { try await load() } }
-            }
-            .disabled(working || !available)
-            CardSheetAction(title: "保存", busy: working) { perform { try await save() } }
-                .disabled(!canSave)
         }
+        .disabled(working || !available)
+        .cardSheetPage("代理配置", subtitle: "选择模型与可用工具", error: phase.error,
+                       actions: [
+                           [.sheet("重新载入", systemImage: "arrow.clockwise", disabled: working || !available) {
+                               if changed { discard = "reload" } else { perform { try await load() } }
+                           }],
+                           [.sheet("保存", busy: working, disabled: !canSave) { perform { try await save() } }],
+                       ],
+                       back: { if changed { discard = "back" } else { back() } })
         .interactiveDismissDisabled(working || changed)
         .discardAlert("放弃未保存的代理配置？", item: $discard) { action in
             if action == "back" { back() } else { perform { try await load() } }
@@ -144,8 +142,7 @@ struct DraftAgentSettings: View {
                 ProgressView()
             }
         } actions: {
-            CardSheetAction(title: "完成", action: save)
-                .disabled(capabilities == nil)
+            [[.sheet("完成", disabled: capabilities == nil, action: save)]]
         }
         .onAppear {
             tools = thread.draftChoice?.tools ?? capabilities?.defaults ?? []

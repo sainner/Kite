@@ -403,8 +403,7 @@ private struct SecretSheet: View {
             }
             CardNote("加密保存在工作机上、在工作机之间同步。保存后不再显示内容，用到它的命令只返回执行状态，不显示输出。")
         } actions: {
-            CardSheetAction(title: "保存", busy: phase.working, action: save)
-                .disabled(!valid || phase.working)
+            [[.sheet("保存", busy: phase.working, disabled: !valid || phase.working, action: save)]]
         }
         .endsTyping(focus != nil) { focus = nil }
         .onChange(of: kind) { _, _ in value = ""; fileName = nil }
@@ -650,8 +649,7 @@ struct KeySheet<Provider: KeyProvider>: View {
                 }
             }
         } actions: {
-            CardSheetAction(title: "保存", busy: phase.working, action: save)
-                .disabled(!valid || phase.working)
+            [[.sheet("保存", busy: phase.working, disabled: !valid || phase.working, action: save)]]
         }
         .endsTyping(focus != nil) { focus = nil }
         .onChange(of: provider) { _, value in if !value.acceptsAdminKey { adminKey = "" } }

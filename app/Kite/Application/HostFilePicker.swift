@@ -48,11 +48,10 @@ struct HostFilePicker: View {
                 }
             }
         } actions: {
-            CardSheetAction(title: "选择") {
+            [[.sheet("选择", disabled: phase.working || (request.folders ? directory == nil : selected.isEmpty)) {
                 choose(request.folders ? directory.map { [$0.path] } ?? [] : selected.sorted())
                 dismiss()
-            }
-            .disabled(phase.working || (request.folders ? directory == nil : selected.isEmpty))
+            }]]
         }
         .endsTyping(typing) { typing = false }
         .task {

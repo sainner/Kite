@@ -170,7 +170,7 @@ private struct AddProject: View {
     }
 
     var body: some View {
-        Group {
+        CardSheet(close: { dismiss() }) {
             if step == 1 { sourceStep } else { integrationStep }
         }
         .endsTyping(focus != nil) { focus = nil }
@@ -205,8 +205,7 @@ private struct AddProject: View {
     // MARK: 第一步：来源与环境变量文件
 
     private var sourceStep: some View {
-        CardSheet(title: "添加项目", subtitle: "从远程或任一工作机添加项目及所需环境变量",
-                  typing: focus != nil, close: { dismiss() }) {
+        Group {
             HStack(spacing: 12) {
                 CardChoice(title: "远程仓库", detail: "GitHub、GitLab 等平台上的仓库", symbol: .world, selected: source == .remote) { source = .remote }
                 CardChoice(title: "工作机文件夹", detail: "任一工作机上的本地仓库或文件夹", symbol: .folder, selected: source == .folder) { source = .folder }
@@ -273,7 +272,8 @@ private struct AddProject: View {
                 }
                 .menuStyle(.button).menuIndicator(.hidden)
             }
-        } footer: {
+        }
+        .cardSheetPage("添加项目", subtitle: "从远程或任一工作机添加项目及所需环境变量", typing: focus != nil) {
             footer("下一步", enabled: sourceReady && filesValid, action: next)
         }
         // 路径填完（回车或离开输入框）就去看一眼，找到的环境变量文件默认选上；打字途中不看，免得把上级目录整个扫一遍
@@ -335,8 +335,7 @@ private struct AddProject: View {
     // MARK: 第二步：集成方式
 
     private var integrationStep: some View {
-        CardSheet(title: "集成方式", subtitle: "工作区的改动怎样进入主线，之后可以在项目配置里改", back: true,
-                  close: { phase = .idle; step = 1 }) {
+        Group {
             VStack(spacing: 8) {
                 CardChoice(title: "直接合入", detail: "把工作区的改动合进主线，再推送到远程。适合只有自己用的仓库。",
                            symbol: .gitMerge, selected: integration == "merge") { integration = "merge" }
@@ -344,9 +343,10 @@ private struct AddProject: View {
                            symbol: .gitPullRequest, selected: integration == "pullRequest") { integration = "pullRequest" }
             }
             if let reason = check?.integrationReason { CardNote("已按仓库情况预选：\(reason)。") }
-        } footer: {
-            footer("添加") { $phase.run { try await add() } }
         }
+        .cardSheetPage("集成方式", subtitle: "工作区的改动怎样进入主线，之后可以在项目配置里改",
+                       footer: { footer("添加") { $phase.run { try await add() } } },
+                       back: { phase = .idle; step = 1 })
     }
 
     /// 两步共用的底部按钮：远程要求登录时由 CardActions 换成登录这个平台。

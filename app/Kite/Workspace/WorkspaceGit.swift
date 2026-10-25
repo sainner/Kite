@@ -348,8 +348,7 @@ struct PendingChildrenSheet: View {
                 }
             }
         } actions: {
-            CardSheetAction(title: "集成", action: integrate)
-                .disabled(working != nil || handled.count < request.children.count)
+            [[.sheet("集成", disabled: working != nil || handled.count < request.children.count, action: integrate)]]
         }
         .alert("放弃子工作区", isPresented: Binding { discarding != nil } set: { if !$0 { discarding = nil } }, presenting: discarding) { child in
             Button("放弃", role: .destructive) { discard(child) }

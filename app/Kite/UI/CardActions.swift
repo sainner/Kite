@@ -150,6 +150,8 @@ struct CardActions: View {
                     Group {
                         if let icon { Label { Text(primary) } icon: { icon } } else { Text(primary) }
                     }
+                    // 多页弹窗换页时主按钮换字（下一步、添加），同标题模糊替换
+                    .id(primary)
                     .transition(.blurReplace)
                 case .working:
                     HStack(spacing: 8) {

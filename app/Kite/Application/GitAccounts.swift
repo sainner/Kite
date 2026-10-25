@@ -87,14 +87,7 @@ struct GitHubBindSheet: View {
                 CardProgress("正在获取验证码…")
             }
         } actions: {
-            if let device {
-                PaneHeaderButtonGroup {
-                    Button { open(device) } label: {
-                        PaneHeaderButtonLabel("打开 GitHub", systemImage: "arrow.up.right.square")
-                    }
-                    .help("打开 GitHub")
-                }
-            }
+            device.map { device in [[PaneHeaderAction(title: "打开 GitHub", systemImage: "arrow.up.right.square") { open(device) }]] } ?? []
         } footer: {
             if device != nil || phase.error != nil {
                 CardActions(primary: "重试", phase: .constant(phase), working: "等待授权完成…", action: restart)
@@ -237,8 +230,7 @@ struct GitLoginSheet: View {
                     .cardInput { focus = .token }
             }
         } actions: {
-            CardSheetAction(title: "保存", busy: phase.working, action: save)
-                .disabled(phase.working || token.isEmpty || target.isEmpty)
+            [[.sheet("保存", busy: phase.working, disabled: phase.working || token.isEmpty || target.isEmpty, action: save)]]
         }
         .endsTyping(focus != nil) { focus = nil }
     }

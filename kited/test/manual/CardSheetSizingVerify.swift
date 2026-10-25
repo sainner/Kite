@@ -82,8 +82,7 @@ private struct SheetFixture: View {
                     }
                     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { recorder.bodyHeight = $0 }
                 } actions: {
-                    Button("等待授权完成") {}
-                        .buttonStyle(.glassProminent)
+                    [[.sheet("等待授权完成") {}]]
                 }
                 .background {
                     TimelineView(.animation) { context in
