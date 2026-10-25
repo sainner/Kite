@@ -109,9 +109,9 @@ struct AgentAvatar: View {
     }
 }
 
-/// 停靠栏里一个实例的样子：代理是签名头像，其他实例是窗口类别图标。没有窗口的缩成小头像，样子不另外区分。
+/// 停靠栏里一个实例的样子，都是圆：代理是签名头像，其他实例是窗口类别图标。
 /// 代理头像描一圈本色：方形点阵裁成圆后边界不清；需要处理时本色换成状态色，点和描边一起换，大小头像一样。
-/// 工具的圆角和图标随格子大小缩放。
+/// 工具的图标随格子大小缩放。
 struct DockFace: View {
     enum Look {
         case agent(instance: String, design: EmblemDesign?)
@@ -152,11 +152,10 @@ struct DockFace: View {
                 .overlay { if ring { Circle().strokeBorder(ringColor, lineWidth: Self.ringWidth / faceScale) } }
                 .preference(key: DockRingColor.self, value: ring ? nil : ringColor)
         case .tool(let appearance):
-            // 底色定大小，图标叠在上面：图标按原字号排版，放进小头像会比格子宽，不能让它撑开底色
-            // 圆角和图标按格子大小等比缩放，停靠格大小时圆角正好是 dockRadius
+            // 底色定大小，图标叠在上面：图标按原字号排版，放进小头像会比格子宽，不能让它撑开底色；图标按格子大小等比缩放
             GeometryReader { proxy in
                 let scale = min(proxy.size.width, proxy.size.height) / Metrics.dragBubble
-                RoundedRectangle(cornerRadius: Metrics.dockRadius * scale, style: .continuous).fill(appearance.tint)
+                Circle().fill(appearance.tint)
                     .overlay {
                         ZStack {
                             Image(systemName: appearance.icon)

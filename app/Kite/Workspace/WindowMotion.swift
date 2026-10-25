@@ -37,12 +37,24 @@ nonisolated enum WindowMotionKind {
                                        endControlPoint: UnitPoint(x: 0, y: 1))
 
     var duration: TimeInterval {
-        switch self {
+        let base: TimeInterval = switch self {
         case .immediate: 0
         case .settle: 0.3
         case .preview, .tracking: 0.2
         }
+        return base * Self.slowdown
     }
+
+    /// 调试时放慢几倍：Debug 构建带 `--slow=N` 启动，逐帧截图核对窗口过渡用；平时是 1。
+    /// 写成一个参数：分开写的 N 会被系统当成启动时要打开的文件，App 就不开窗口了。
+    static let slowdown: Double = {
+        #if DEBUG
+        for argument in ProcessInfo.processInfo.arguments where argument.hasPrefix("--slow=") {
+            if let value = Double(argument.dropFirst("--slow=".count)) { return max(value, 1) }
+        }
+        #endif
+        return 1
+    }()
 
     /// SwiftUI 排布动画，与逐帧取样同曲线同时长。
     var animation: Animation { .timingCurve(Self.curve, duration: duration) }
@@ -69,6 +81,9 @@ final class WindowMotion {
 
     /// 排布动画进行中（缩小、恢复、让位、放下后归位），不含跟手拖动。
     var settling: Bool { moving && kind != .tracking }
+
+    /// 终点和在不在动，不登记观察：台面排布时看卡片停没停进停靠栏的格子（见 CardPresentation.place），不因各张卡片动画的起止重排。
+    var quietState: (target: WindowPose, moving: Bool) { (_target, _moving) }
 
     /// 跟手拖动：指针一动整条轨迹跟着平移，不能整段预先交出去。
     var tracking: Bool { kind == .tracking }

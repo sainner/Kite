@@ -15,8 +15,10 @@ enum ScrollOverflowCarets {
     case apart
     /// 两个箭头并排在末端（右边或底边），开头那条边不渐隐。内容靠开头对齐时用，对齐的那条边保持硬边。
     case atEnd
-    /// 只提醒末端，开头保持硬边、不放箭头：开头那头滚出去的内容另有表示，例如紧凑布局底栏左边的堆叠。
+    /// 只提醒末端，开头保持硬边、不放箭头：开头那头滚出去的内容另有表示，例如横排停靠栏左边的堆叠。
     case endOnly
+    /// 只提醒开头，末端保持硬边、不放箭头：末端没滚到的内容另有表示，例如竖排停靠栏底下的堆叠。
+    case startOnly
 }
 
 private struct ScrollOverflowHint: ViewModifier {
@@ -50,7 +52,7 @@ private struct ScrollOverflowHint: ViewModifier {
             }
             .mask { fade(vertical: vertical) }
             .overlay(alignment: vertical ? .top : .leading) {
-                if carets == .apart {
+                if carets == .apart || carets == .startOnly {
                     caret(vertical: vertical, before: true).padding(vertical ? .top : .leading, ScrollOverflowCaret.inset)
                 }
             }
@@ -59,6 +61,8 @@ private struct ScrollOverflowHint: ViewModifier {
                     switch carets {
                     case .apart, .endOnly:
                         caret(vertical: vertical, before: false)
+                    case .startOnly:
+                        EmptyView()
                     case .atEnd:
                         let pair = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
                         pair {
@@ -74,8 +78,8 @@ private struct ScrollOverflowHint: ViewModifier {
     /// 两头的渐隐与中间不透明的部分是同一条渐变，没有拼接的缝。
     /// 箭头并排时开头保持硬边，末端只要有一头被截掉就渐隐，给箭头留出干净的底。
     private func fade(vertical: Bool) -> some View {
-        let before = carets == .apart && overflow.before
-        let after = carets == .atEnd ? overflow.any : overflow.after
+        let before = (carets == .apart || carets == .startOnly) && overflow.before
+        let after = carets == .atEnd ? overflow.any : carets == .startOnly ? false : overflow.after
         return GeometryReader { proxy in
             let extent = vertical ? proxy.size.height : proxy.size.width
             let end = min(0.5, length / max(extent, 1))

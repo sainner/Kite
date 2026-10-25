@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// iPad 宽屏的台面：各张卡片、卡片之间的缝、拖动时的占位都是 UIKit 视图（PhoneStageView、PhoneCardView），拖缝改宽时
-/// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏、能展开的格子、停靠栏上面那一层（脉冲）不随拖缝改尺寸，仍是 SwiftUI，
+/// 每步只重算排布、按新位置摆，不经过 SwiftUI。停靠栏和它上面那一层（展开家族格时点空白收起）不随拖缝改尺寸，仍是 SwiftUI，
 /// 各放进一个铺满台面的岛（HostIsland）。行为和结构照 Mac 的台面（StageView），排布的计算共用 StagePlan。原生层报不了偏好，有没有窗口开点阵、摆在点阵上的图形、停靠栏悬停标签由这里接着往上报。
 struct PhoneStageHost: View {
     let group: PaneGroup
@@ -54,8 +54,8 @@ private struct PhoneStageRepresentable: UIViewRepresentable {
     }
 }
 
-/// 台面本身：最底下停靠栏、能展开的格子几个岛，上面依次是缝、拖动时的占位、各张卡片，最上面是停靠栏的脉冲，
-/// 展开着的那一格抬到它上面。
+/// 台面本身：最底下停靠栏的岛，上面依次是缝、拖动时的占位、各张卡片，最上面是展开家族格时点空白收起的那一层。
+/// 停靠栏里的头像由停靠栏画，卡片停在停靠栏的格子里时整张透明（见 CardPresentation）。
 /// 观察排布模型（ModelTracking），变了在 layoutSubviews 里重算 StagePlan、摆缝和卡片；排布动画由各张卡片整段交给 Core Animation，
 /// 只有跟手拖动的那张由显示链接逐帧取样。过渡中（WindowLayout.transitioning）缝、卡片、停靠栏都不接点按。
 final class PhoneStageView: UIView, StageDotsReporting {
@@ -73,10 +73,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
     private let dockRail = HostIsland()
     private let placeholder = StagePlaceholderView()
     private let dockOverlay = HostIsland()
-    /// 停靠栏里能展开的格子各一层，同 Mac 的 StageView.unfolds。
-    private var unfolds: [String: HostIsland] = [:]
-    /// 各格收着时的格子和展开后的面板，定这几层接点按的范围。
-    private var unfoldFrames: [String: (cell: CGRect, panel: CGRect)] = [:]
     private var gaps: [ObjectIdentifier: StageGapView] = [:]
     private var cards: [Pane: PhoneCardView] = [:]
     /// 台面上和正在退出的窗口，按加入的先后；退出动画走完才拿掉。
@@ -85,6 +81,8 @@ final class PhoneStageView: UIView, StageDotsReporting {
     private var paneInstances: [Pane: String] = [:]
     /// 排过一轮了：之后才有的卡片是新打开的窗口，要动着出来（见 CardPresentation.place 的 appearing）。
     private var populated = false
+    /// 上一轮停靠栏的添加入口在哪，新建的窗口从这里长出来（见 CardPresentation.place 的 addStart）。
+    private var lastAdd: CGRect?
 
     private let tracking = ModelTracking()
     private var displayLink: CADisplayLink?
@@ -137,7 +135,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
         guard appearance != look || sidebarChanged || groupChanged else { return }
         let rebuilds = appearance != look || groupChanged
         look = appearance
-        if groupChanged { dropUnfolds() }
         if rebuilds {
             installIslands()
             placeholder.environment = environment
@@ -170,7 +167,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
         let layout = group.layout, geometry = geometry
         dockRail.rootView = rooted(StageDockRail(layout: layout, area: group.workspace, geometry: geometry))
         dockOverlay.rootView = rooted(StageDockOverlay(layout: layout, area: group.workspace, geometry: geometry))
-        for (id, island) in unfolds { island.rootView = unfoldRoot(id, appearing: false) }
     }
 
     /// 台面拆掉（换工作区、离开这一栏）：停掉显示链接，不再跟模型，卡片、缝和岛里的东西都清掉。
@@ -189,7 +185,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
         retained = []
         for gap in gaps.values { gap.removeFromSuperview() }
         gaps = [:]
-        dropUnfolds()
         for island in [dockRail, dockOverlay] {
             island.hitRegion = nil
             island.rootView = AnyView(EmptyView())
@@ -232,7 +227,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
             // 报视口会改排布模型，自己的改动不回头再排一遍。台面左边在哪交给排布：侧栏改宽时只由最左一列吸收
             tracking.quietly { group.layout.updateViewport(size, presentation: .tiled, leading: origin.x + shift, animated: toggled) }
         }
-        for island in [dockRail, dockOverlay] + unfolds.values { place(island, bounds) }
+        for island in [dockRail, dockOverlay] { place(island, bounds) }
         place(placeholder, bounds)
         // 停靠栏贴着台面右边，侧栏改宽时不动，按整个台面排
         if geometry.bounds != bounds { geometry.bounds = bounds }
@@ -264,9 +259,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
         var visible: Set<String> = []
         var hoverTips: [DockHoverTip] = []
         var drag: Pane?
-        var unfolds: [String: (cell: CGRect, panel: CGRect)] = [:]
-        /// 台面排过一轮了：之后才有的格子动着出来。
-        var appearing = false
+        /// 停靠栏里各格这一刻谁画头像，见 StageGeometry。
+        var airborne: Set<String> = []
+        var staged: Set<String> = []
     }
 
     /// 各张卡片报的点阵用量，排布时读（变了再排一轮），见 reportDots。
@@ -285,8 +280,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
             // 新建页交给了后台实例：飞进那一格，飞到之前那一格先不显示
             for pane in retained where paneInstances[pane] != area.dockInstanceID(pane) { paneInstances[pane] = area.dockInstanceID(pane) }
         }
-        let retiring = Set(retained.filter { !layout.panes.contains($0) }.compactMap { paneInstances[$0] })
-        if geometry.retiring != retiring { geometry.retiring = retiring }
 
         arrangeGaps(plan.tiles.gaps, blocked: layout.isFixed ? nil : layout.blocksInput)
         placeholder.show(plan.tiles.placeholder, kind: layout.motionKind, reduceMotion: look?.reduceMotion ?? false)
@@ -299,31 +292,36 @@ final class PhoneStageView: UIView, StageDotsReporting {
         let keepsExpansion = layout.drag != nil || resizing || dotsHidden
         let appearing = populated
         populated = true
-        arranged.appearing = appearing
-        arranged.unfolds = plan.dock?.unfolds(path: (area?.dockExpansion ?? []).dropFirst(), regions: plan.regions) ?? [:]
         for pane in retained {
             let fresh = cards[pane] == nil
             let card = cards[pane] ?? makeCard(pane)
             let closing = !layout.panes.contains(pane)
             let rect = plan.tiles.panes[pane]
-            let instance = paneInstances[pane], dockFrame = plan.dockFrame(of: pane, instance: instance)
-            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dockFrame: dockFrame,
+            let instance = paneInstances[pane], slot = plan.dockSlot(of: pane, instance: instance)
+            let placed = card.presentation.place(group: group, pane: pane, rect: rect, dock: slot,
                                                  fallbackSize: plan.regions.canvas.size, regions: plan.regions, closing: closing,
-                                                 appearing: appearing && fresh, addButton: plan.dock?.add, inFamily: plan.inFamily(instance))
-            // 收进家族格的子代理整张透明，不压暗（压暗的模糊挂在铺满台面的图层上）
+                                                 appearing: appearing && fresh, addButton: plan.dock?.add, addStart: lastAdd,
+                                                 tucked: plan.tucked(instance))
+            switch placed.facing {
+            case .card: arranged.airborne.insert(instance ?? pane.id)
+            case .stage: arranged.staged.insert(instance ?? pane.id)
+            case .cell: break
+            }
+            // 停在停靠栏里的卡片整张透明，不压暗（压暗的模糊挂在铺满台面的图层上）
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane && !placed.hidden
             let dragged = layout.drag?.pane == pane
             let hasThread = area?.thread(in: pane) != nil
             // 被拖的卡片照常接：跟手拖动是它标题栏上的手势，中途设成不接会把拖动取消
             let accepts = (!blocksInput || dragged) && !resizing && !closing && !dimmed && !placed.hidden
             let arrangement = PhoneCardView.Arrangement(
-                placed: placed, dockFrame: dockFrame, closing: closing,
+                placed: placed, closing: closing,
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed, acceptsInput: accepts, dotsHidden: resizing || dotsHidden,
                 dragged: dragged, hasThread: hasThread, fixed: layout.isFixed,
                 header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread),
                 expansion: (keepsExpansion ? card.arrangement?.expansion : nil) ?? layout.expansion(of: pane))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
+        lastAdd = plan.dock?.add
         arranged.visible = Set(plan.onStage.map(\.id))
         cardDots = (cards.values.contains { $0.bodyReports.usesDots }, cards.values.reduce(into: Set<String>()) {
             $0.formUnion($1.bodyReports.dotSlots)
@@ -342,14 +340,20 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     /// 观察之外：把终点交给各张卡片的 motion，再按这一轮的过渡状态报看得见的实例和悬停标签。
     private func settle(_ arranged: Arranged, immediate: Bool) {
-        arrangeUnfolds(arranged.unfolds, appearing: arranged.appearing)
+        var unsettled = false
         for (card, arrangement, kind) in arranged.cards {
-            let kind = immediate ? .immediate : kind
+            let placed = arrangement.placed, kind = immediate || placed.immediate ? .immediate : kind
             // 卡片铺满台面，里面各层按台面坐标摆
             place(card, bounds)
             card.arrange(arrangement, kind: kind)
-            card.move(to: arrangement.placed.target, kind: kind)
+            if let snap = placed.snap { card.move(to: snap, kind: .immediate) }
+            card.move(to: placed.target, kind: kind)
+            if placed.unsettled || placed.awaitsRest && !placed.motion.moving { unsettled = true }
         }
+        if geometry.airborne != arranged.airborne { geometry.airborne = arranged.airborne }
+        if geometry.staged != arranged.staged { geometry.staged = arranged.staged }
+        // 落进格子还差一步、没有动画就到了的：下一拍再排一轮，同 Mac 的 StageView.settle
+        if unsettled { DispatchQueue.main.async { [weak self] in self?.setNeedsLayout() } }
         if dragging != arranged.drag {
             dragging = arranged.drag
             // 起拖时收起各卡片的悬停（停靠栏标签）
@@ -394,60 +398,6 @@ final class PhoneStageView: UIView, StageDotsReporting {
         cards[pane] = card
         insertSubview(card, belowSubview: dockOverlay)
         return card
-    }
-
-    // MARK: - 能展开的格子
-
-    /// 新出现的格子加一层，压在卡片下面、停靠栏上面；没了的等它在自己那一层里缩放淡出再拿掉，同 Mac 的 StageView.arrangeUnfolds。
-    private func arrangeUnfolds(_ frames: [String: (cell: CGRect, panel: CGRect)], appearing: Bool) {
-        let gone = unfoldFrames.keys.filter { frames[$0] == nil }
-        unfoldFrames = frames
-        for id in frames.keys where unfolds[id] == nil {
-            // 先记下再交 rootView：里面一出现就展开着的话当场要抬起这一层
-            let island = HostIsland()
-            unfolds[id] = island
-            island.hitRegion = { [weak self] in self?.unfoldHitRegion(id) }
-            island.rootView = unfoldRoot(id, appearing: appearing)
-            insertSubview(island, aboveSubview: dockRail)
-            place(island, bounds)
-        }
-        for id in gone {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-                guard let self, unfoldFrames[id] == nil, let island = unfolds[id] else { return }
-                island.removeFromSuperview()
-                unfolds[id] = nil
-                geometry.lifted.remove(id)
-            }
-        }
-    }
-
-    private func unfoldRoot(_ id: String, appearing: Bool) -> AnyView {
-        rooted(StageDockUnfold(layout: group.layout, area: group.workspace, geometry: geometry, id: id, appearing: appearing) { [weak self] in
-            self?.lift(id, $0)
-        })
-    }
-
-    /// 抬到卡片和停靠栏上面那一层上面，或放回停靠栏那一层；停靠栏上面那一层同时不画、接着画它的脉冲。
-    private func lift(_ id: String, _ lifted: Bool) {
-        unfolds[id]?.layer.zPosition = lifted ? 3 : 0
-        if lifted { geometry.lifted.insert(id) } else { geometry.lifted.remove(id) }
-    }
-
-    private func dropUnfolds() {
-        for island in unfolds.values {
-            island.hitRegion = nil
-            island.rootView = AnyView(EmptyView())
-            island.removeFromSuperview()
-        }
-        unfolds = [:]
-        unfoldFrames = [:]
-        geometry.lifted = []
-    }
-
-    /// 收着时接自己那一格，展开时接面板；过渡中不接，同停靠栏。
-    private func unfoldHitRegion(_ id: String) -> CGRect? {
-        guard !group.layout.transitioning, let frames = unfoldFrames[id] else { return nil }
-        return group.workspace?.dockExpansion.first == id ? frames.panel : frames.cell
     }
 
     /// 退出动画走完：拿掉这张卡片。
@@ -523,7 +473,7 @@ final class PhoneStageView: UIView, StageDotsReporting {
         group.layout.cancelDrag()
     }
 
-    /// 点缩在停靠栏里的卡片（家族格里的父代理也是）：放上台面。
+    /// 读屏在缩成停靠形状的卡片上要展开：放上台面。
     func activate(_ pane: Pane) {
         group.layout.restore(pane, in: stageRect)
     }
@@ -582,9 +532,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
     // MARK: - 命中
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        // 展开着的那一格抬在卡片和停靠栏上面那一层上面，先接
-        if let id = group.workspace?.dockExpansion.first, let island = unfolds[id], self.point(inside: point, with: event),
-           let hit = island.hitTest(convert(point, to: island), with: event) {
+        // 展开着家族格时，停靠栏那一列在点空白收起的那一层上面
+        if group.workspace?.dockExpansion.isEmpty == false, self.point(inside: point, with: event), dockHitRegion?.contains(point) == true,
+           let hit = dockRail.hitTest(convert(point, to: dockRail), with: event) {
             return hit
         }
         return super.hitTest(point, with: event)
@@ -592,9 +542,9 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     private var regions: WindowRegions { group.layout.regions(in: stageRect) }
 
-    /// 停靠栏只在停靠栏那一列接点按；过渡中不接，同 PausedInTransition。
+    /// 停靠栏只在停靠栏那一列接点按，左右多让出展开的家族格比格子宽的那一点；过渡中不接，同 PausedInTransition。
     private var dockHitRegion: CGRect? {
-        group.layout.transitioning || group.workspace == nil ? nil : regions.dock
+        group.layout.transitioning || group.workspace == nil ? nil : regions.dock.insetBy(dx: -DockGroup.padding, dy: 0)
     }
 
     /// 停靠栏展开时铺满台面接点空白收起；收着时上面只有脉冲，不接。
@@ -629,14 +579,14 @@ final class PhoneStageView: UIView, StageDotsReporting {
 
     // MARK: - 读屏
 
-    /// 读屏按看的顺序：卡片（按位置从上到下、从左到右）、停靠栏、能展开的格子、停靠栏上面那一层。
+    /// 读屏按看的顺序：卡片（按位置从上到下、从左到右）、停靠栏、停靠栏上面那一层。
     override var accessibilityElements: [Any]? {
         get {
             let shown = cards.values.filter { !$0.closing }.sorted {
                 let a = $0.accessibilityOrder, b = $1.accessibilityOrder
                 return (a.minY, a.minX) < (b.minY, b.minX)
             }
-            let layers: [UIView] = [dockRail] + Array(unfolds.values) + [dockOverlay]
+            let layers: [UIView] = [dockRail, dockOverlay]
             return shown as [UIView] + layers
         }
         set {}

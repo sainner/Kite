@@ -150,8 +150,8 @@ extension WorkArea {
     static let layoutMemberLimit = 32
 
     /// 把本机台面上现有的卡片翻成配方保存：代理记角色，浏览记当前网页（看文件的不记），预览记目标与设备，其余记类型；
-    /// 草稿按选的角色记，新建页不记。保存成一个新布局；要改就重新保存覆盖（见 ProjectLayout）。
-    func saveLayout(name: String, model: AppModel) async throws {
+    /// 草稿按选的角色记，新建页不记。保存成一个新布局；给了 replacing 就用当前台面覆盖它（带着它的版本，别处刚改过时工作机拒绝）。
+    func saveLayout(name: String, replacing: ProjectLayout? = nil, model: AppModel) async throws {
         var members: [LayoutMember] = []
         var indices: [Pane: Int] = [:]
         for pane in layout.shown?.panes ?? [] {
@@ -163,7 +163,7 @@ extension WorkArea {
             throw KitedError(message: "台面上没有能记进布局的实例")
         }
         let client = try model.activeClient(in: self)
-        _ = try await client.putLayout(project: remote.project.id, id: Self.newPaneID(), expectedRevision: nil,
+        _ = try await client.putLayout(project: remote.project.id, id: replacing?.id ?? Self.newPaneID(), expectedRevision: replacing?.revision,
                                        layout: ProjectLayout.Recipe(name: name, members: members, arrangement: arrangement))
         await model.refreshLayouts(project: remote.project.id, client: client)
     }

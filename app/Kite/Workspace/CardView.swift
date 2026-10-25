@@ -14,7 +14,6 @@ final class CardView: NSView {
     /// 台面这一轮给这张卡片的：终点、停靠格、在不在退出、侧栏入口给不给它、是不是被停靠栏展开的面板压暗、接不接输入。
     struct Arrangement {
         let placed: CardPresentation.Placement
-        let dockFrame: CGRect?
         let closing: Bool
         let openSidebar: (@MainActor () -> Void)?
         let dimmed: Bool
@@ -547,6 +546,8 @@ final class CardView: NSView {
                 }
                 applyPresentation(at: .now)
                 stage.refreshHover()
+                // 停进了停靠栏的格子、从停靠栏飞到了台面上：台面再排一轮，收进格子或让格子画上「看得到」（见 CardPresentation）
+                if placed.awaitsRest { stage.needsLayout = true }
             }
         }
         // 报给排布：排布动画进行中（不含跟手拖动），过渡中所有窗口不接输入。改模型放到这一轮之后
@@ -699,7 +700,7 @@ final class CardView: NSView {
 
     // MARK: - 悬停与点击
 
-    /// 指针在不在这张卡片上（台面统一跟踪，见 StageView.refreshHover）：停着时按外框（缩成停靠形状时是圆或圆角方）算。
+    /// 指针在不在这张卡片上（台面统一跟踪，见 StageView.refreshHover）：停着时按外框算。停在停靠栏里的整张透明，不接。
     func contains(_ point: CGPoint) -> Bool {
         guard let placed, acceptsInput, !placed.motion.moving else { return false }
         let target = placed.target
@@ -712,16 +713,11 @@ final class CardView: NSView {
         return true
     }
 
-    /// 悬停：窗口按钮露出来（见 PaneHeaderControls）；缩成停靠形状停着时浮出停靠栏的名字。
+    /// 悬停：窗口按钮露出来（见 PaneHeaderControls）。停靠栏的名字由停靠栏自己浮（卡片停在格子里时透明、不接悬停）。
     func setHovered(_ hovered: Bool) {
         guard hovered != self.hovered else { return }
         self.hovered = hovered
         if header.hovered != hovered { header.hovered = hovered }
-        guard let stage, let placed, let area = stage.group.workspace else { return }
-        let layout = stage.group.layout
-        // 缩成停靠形状、停着、没在拖动和拖缝时才浮出停靠栏的名字
-        area.setDockHover(DockEntry.pane(pane).id, frame: arrangement?.dockFrame ?? placed.target.frame,
-                          hovering: hovered && placed.minimized && !placed.motion.moving && layout.drag == nil && layout.resizing == nil)
     }
 
     func resetHover() {
@@ -761,7 +757,7 @@ final class CardView: NSView {
 
     override func accessibilityLabel() -> String? { placed?.appearance.name }
 
-    /// 收进家族格的子代理窗口整张透明，读屏也跳过，由家族格读。
+    /// 停在停靠栏里、收进家族格的卡片整张透明，读屏也跳过，由停靠栏读。
     override func isAccessibilityElement() -> Bool { placed?.hidden != true }
 
     override func accessibilityFrame() -> NSRect {

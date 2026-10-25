@@ -147,8 +147,6 @@ enum Metrics {
     static let sidebarMin: CGFloat = 204
     static let sidebarMax: CGFloat = 396
     static let sidebarCollapse: CGFloat = 120
-    /// 最小化插件窗口的圆角；agent 仍使用圆形。
-    static let dockRadius: CGFloat = 12
     /// 卡片拖小时的下限。
     static var minPane: CGFloat { InputMode.current.isTouch ? 360 : 168 }
     /// 按下后挪动多少才算拖动，免得单击也算。

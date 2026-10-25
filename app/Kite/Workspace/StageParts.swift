@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 原生台面（Mac 的 StageView、iPad 的 PhoneStageView）两端共用的部分：往上报的几项、台面几何、图层动画的曲线，
-/// 和放进托管视图的几块 SwiftUI（停靠栏、能展开的格子、停靠栏上面那一层、卡片里的正文、点阵、头像、窗口按钮）。
+/// 和放进托管视图的几块 SwiftUI（停靠栏、停靠栏上面那一层、卡片里的正文、点阵、头像、窗口按钮）。
 
 /// 原生台面报给 SwiftUI 的几项，由台面外面的 SwiftUI 薄壳发成偏好：有没有卡片开点阵（App 背景让出静息点）、
 /// 摆在点阵上的图形（换栏目时收回）、停靠栏悬停浮出的标签。
@@ -25,14 +25,16 @@ struct StageAppearance: Equatable {
     var dotStage: ObjectIdentifier?
 }
 
-/// 看得见的台面（台面自己的坐标；Mac 拖侧栏改宽时左边让出被侧栏盖住的一段，见 StageView.stageRect），
-/// 关闭途中、停靠栏里那一格先不显示的实例，和抬到卡片上面的格子。停靠栏的托管视图读它，铺到 bounds 的右下角，自己从排布模型算停靠栏各格：
-/// 排布的改动在 SwiftUI 的事务里，岛自己读模型才接得到同一个动画（见 StagePlan.dock）；原生层不把算好的格子推进去。
+/// 看得见的台面（台面自己的坐标；Mac 拖侧栏改宽时左边让出被侧栏盖住的一段，见 StageView.stageRect），和停靠栏里各格这一刻该怎么画。
+/// 停靠栏的托管视图读它，铺到 bounds 的右下角，自己从排布模型算停靠栏各格：排布的改动在 SwiftUI 的事务里，岛自己读模型才接得到同一个动画；
+/// 原生层不把算好的格子推进去。
 @MainActor @Observable final class StageGeometry {
     var bounds: CGRect = .zero
-    var retiring: Set<String> = []
-    /// 抬到卡片上面的格子：展开着和正收回的家族格，见 DockUnfold。
-    var lifted: Set<String> = []
+    /// 卡片自己画着头像的实例：缩成停靠形状在飞或拖着、刚从停靠栏飞出去还没停到台面上、关掉的新建页正飞进交给的实例那一格。
+    /// 停靠栏里这一格不画，同一时刻只有一份头像（见 CardPresentation.Placement.facing）。
+    var airborne: Set<String> = []
+    /// 卡片停在台面上的实例：停靠栏里这一格画「看得到」的样子（头像模糊、指向台面的箭头）。
+    var staged: Set<String> = []
 }
 
 /// 台面上的图层动画：曲线与时长同 WindowMotionKind（cubic-bezier(0.2, 0, 0, 1)）；SwiftUI 的弹簧按同样的参数逐帧取样成关键帧。
@@ -68,7 +70,8 @@ enum StageAnimation {
 
 // MARK: - 台面上的托管视图
 
-/// 停靠栏：自己从排布模型算停靠栏各格（不读拖缝的比例），排布改动的动画照常落在格子上。
+/// 停靠栏：竖排的 DockBand，摆在台面右边那一列；各格画成什么样按 StageGeometry（卡片在不在画头像、停没停在台面上）。
+/// 拖着卡片到停靠栏上时，在它那一格描一圈虚线，松手就落回那里。
 struct StageDockRail: View {
     let layout: WindowLayout
     let area: WorkArea?
@@ -77,38 +80,24 @@ struct StageDockRail: View {
     var body: some View {
         if let area {
             let bounds = geometry.bounds
-            let dock = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock
-            DockRail(geometry: dock, hiddenInstances: geometry.retiring) { pane in StagePlan.show(pane, layout: layout, in: bounds) }
-                .environment(area)
-                .modifier(PausedInTransition(layout: layout))
-                .frame(width: geometry.bounds.maxX, height: geometry.bounds.maxY, alignment: .topLeading)
-                .coordinateSpace(.named(DockSpace.name))
-                .environment(\.dockCardsDrawPanes, true)
-                .modifier(StageIslandFill())
-        }
-    }
-}
-
-/// 停靠栏里能展开的一格单独一层，见 DockUnfold；lift 把这一层抬到卡片上面或放回去。
-/// 点了里面的代理：在台面上就聚焦，否则放上台面。
-struct StageDockUnfold: View {
-    let layout: WindowLayout
-    let area: WorkArea?
-    let geometry: StageGeometry
-    let id: String
-    /// 台面排好以后才有的格子，见 DockUnfold.shown。
-    let appearing: Bool
-    let lift: (Bool) -> Void
-
-    var body: some View {
-        if let area {
-            let bounds = geometry.bounds
-            let (regions, dock) = StagePlan.dock(layout: layout, area: area, bounds: bounds)
-            DockUnfold(geometry: dock, regions: regions, id: id, hiddenInstances: geometry.retiring, appearing: appearing, lift: lift) { pane in
-                StagePlan.show(pane, layout: layout, in: bounds)
+            let dock = layout.regions(in: bounds).dock
+            ZStack(alignment: .topLeading) {
+                DockBand(axis: .vertical) { pane in StagePlan.show(pane, layout: layout, in: bounds) }
+                    .environment(\.dockOnStage, geometry.staged)
+                    .environment(\.dockHidden, geometry.airborne)
+                    .environment(\.dockStage, geometry)
+                    .placed(dock)
+                if case .dock = layout.drag?.spot, let pane = layout.drag?.pane,
+                   let frame = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock.slot(of: pane)?.frame {
+                    Circle()
+                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                        .placed(frame)
+                        .allowsHitTesting(false)
+                }
             }
             .environment(area)
-            .modifier(PausedInTransition(layout: layout))
+            // 过渡中不接点击、悬停；从停靠栏拖出一格时拖动本身也是过渡，那一格的手势照常走完
+            .allowsHitTesting(!layout.transitioning || layout.drag != nil)
             .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
             .coordinateSpace(.named(DockSpace.name))
             .modifier(StageIslandFill())
@@ -116,7 +105,7 @@ struct StageDockUnfold: View {
     }
 }
 
-/// 停靠栏上面那一层：最小化窗口的脉冲、悬停标签。
+/// 停靠栏上面那一层：展开着家族格时铺满台面，点空白处收起，Esc 也收起。
 struct StageDockOverlay: View {
     let layout: WindowLayout
     let area: WorkArea?
@@ -125,13 +114,22 @@ struct StageDockOverlay: View {
     var body: some View {
         if let area {
             let bounds = geometry.bounds
-            let dock = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock
-            DockOverlay(geometry: dock, bounds: bounds, lifted: geometry.lifted)
-            .environment(area)
+            ZStack(alignment: .topLeading) {
+                if !area.dockExpansion.isEmpty {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { area.collapseDock() }
+                        .placed(bounds)
+                    // Esc 收起
+                    Button("收起") { area.collapseDock() }
+                        .keyboardShortcut(.cancelAction)
+                        .opacity(0)
+                        .frame(width: 0, height: 0)
+                }
+            }
             .modifier(PausedInTransition(layout: layout))
+            // 原生台面拖侧栏改宽时 bounds 左边让出一段（见 StageView.stageRect），这一层从台面原点铺到右下角
             .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
-            .coordinateSpace(.named(DockSpace.name))
-            .environment(\.dockCardsDrawPanes, true)
             .modifier(StageIslandFill())
         }
     }
@@ -230,6 +228,7 @@ struct CardIcon: View {
 }
 
 /// 窗口按钮（缩小、展开或还原，和按实例存续方式给的关闭）：悬停卡片时露出来（触屏一直露），飞行中、拖动和拖缝时看不见也不接输入。
+/// 垫底的新建页没有（见 WorkArea.isFloor）。
 /// persistent 的实例没有关闭，归档在实例操作的菜单里（见 InstanceAction.managing）。露不露由卡片算好放在状态里（见 PaneHeaderControls），实际尺寸报给标题栏让位。
 struct CardButtons: View {
     let group: PaneGroup
@@ -246,7 +245,8 @@ struct CardButtons: View {
         if let area = group.workspace {
             let layout = group.layout
             let expansion = state.expansion ?? layout.expansion(of: pane)
-            let buttons = PaneHeaderButtonGroup {
+            // 垫底的新建页没有窗口按钮：缩不小、展不开、关不掉；报上去的尺寸是零，标题栏不给它让地方
+            let buttons = Group { if area.isFloor(pane) { Color.clear.frame(width: 0, height: 0) } else { PaneHeaderButtonGroup {
                 button("缩小", icon: "minus") { layout.minimize(pane) }
                 switch expansion {
                 case .expand: button("展开", icon: "arrow.up.left.and.arrow.down.right") { layout.expand(pane) }
@@ -257,7 +257,7 @@ struct CardButtons: View {
                     button("关闭", icon: "xmark") { model.close(pane, in: area) }
                         .disabled(!area.canClose(pane))
                 }
-            }
+            } } }
             // 缩小、恢复时台面上的窗口数变了，展开按钮出现消失不跟排布的动画走：飞行中按钮组本来看不见，
             // 带着动画这个托管视图每帧要重排几遍（2026-10-14 实测，一次缩小或恢复约 117 次、合计约 49 ms）
             .animation(nil, value: expansion)

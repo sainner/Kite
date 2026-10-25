@@ -11,6 +11,7 @@ struct WorkspaceContent: View {
             } else {
                 TilesLayer(group: .workspace(workspace))
                     .modifier(InstanceSettingsPresentation())
+                    .modifier(LayoutSheetPresentation())
             }
         }
             .environment(workspace)

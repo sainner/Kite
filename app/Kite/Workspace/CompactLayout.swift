@@ -194,6 +194,7 @@ struct CompactTabBar: View {
             if let area = group.workspace {
                 CompactDockBar(open: motion.openBinding)
                     .modifier(InstanceSettingsPresentation())
+                    .modifier(LayoutSheetPresentation())
                     .environment(area)
             } else {
                 tabs(in: group)
@@ -214,7 +215,7 @@ struct CompactTabBar: View {
                     } label: {
                         DockFace(look: .tool(appearance), arrow: current ? "arrow.up" : nil)
                             .frame(width: Metrics.dragBubble, height: Metrics.dragBubble)
-                            .background { if current { DockSelection(cornerRadius: Metrics.dockRadius) } }
+                            .background { if current { DockSelection() } }
                     }
                     .buttonStyle(.pointingPlain)
                     .accessibilityLabel("展开\(appearance.name)窗口")

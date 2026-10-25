@@ -71,6 +71,16 @@ final class WorkArea: Identifiable {
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
     var dockHover: DockHover?
+    /// 停靠栏离前端滚了多远、展开的家族格里面滚了多远，由停靠栏报（见 DockBand）。台面算卡片落点时读一眼（见 StagePlan），
+    /// 不观察：滚动时台面不跟着重排，收着的卡片整张透明，要飞出来时才按这一刻的位置起。
+    @ObservationIgnored var dockScrollDistance: CGFloat = 0
+    @ObservationIgnored var dockFamilyOffset: CGFloat = 0
+    /// 停靠栏看得见的那一段多长，由停靠栏报；展开家族格时据此定它最长多长（dockFamilyLimit，展开的那一刻定下，见 toggleDock）。
+    @ObservationIgnored var dockVisibleLength: CGFloat = 0
+    @ObservationIgnored var dockFamilyLimit: CGFloat?
+    /// 正在起名字的布局：存成新布局或改名，见 LayoutNameSheet。
+    var layoutSheet: LayoutSheetRequest?
+    var layoutError: String?
     /// 这个工作区的代理能加载的 skill，输入框打「/」时列候选用，这个工作区的各个会话共用；见 loadAvailableSkills。
     private(set) var availableSkills: [AvailableSkill] = []
     /// 上次读完的时候与成没成；作废后为 nil。
@@ -265,12 +275,11 @@ final class WorkArea: Identifiable {
         return (layout.root?.panes ?? []).allSatisfy { $0.id == chooserPane }
     }
 
-    /// 停靠栏要放下添加入口、每一格和两组之间的分隔。
-    var minimumSize: CGSize {
-        let content = layout.minimumSize
-        let dock = DockGeometry.length(of: dockModel(onStage: []))
-        return CGSize(width: content.width, height: max(content.height, 2 * Metrics.padding + dock))
-    }
+    /// 停靠栏放不下时堆叠（见 DockBand），不再撑高窗口。
+    var minimumSize: CGSize { layout.minimumSize }
+
+    /// 新建页此刻垫在台面底下：它的标题栏上没有缩小、展开、关闭（见 CardButtons）。
+    func isFloor(_ pane: Pane) -> Bool { isChooser(pane) && chooserIsFloor }
 
     func view(in pane: Pane) -> RemotePluginDefinition.PluginView? {
         guard let instance = instance(of: pane), let current = currentView(of: instance) else { return nil }
@@ -599,11 +608,6 @@ struct WindowAppearance {
     /// 颜色留给代理的状态，代理以外的窗口都用同一种中性色。
     var tint = Palette.stone
     var isAgent = false
-    /// 最小化后的圆角：代理是圆，其余是圆角矩形。
-    /// 工具的圆角随格子大小缩放，和停靠栏里画的一样（见 DockFace）：关进小头像时，飞到终点的卡片和接手的小头像同形。
-    func minimizedCornerRadius(width: CGFloat = Metrics.dragBubble) -> CGFloat {
-        isAgent ? width / 2 : Metrics.dockRadius * width / Metrics.dragBubble
-    }
 
     static let agentIcon = "bubble.left.and.bubble.right"
 

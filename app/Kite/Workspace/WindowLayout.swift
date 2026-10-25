@@ -279,12 +279,11 @@ final class WindowLayout {
         return stored.filter { !visible.contains($0) }
     }
 
+    /// 停靠栏放不下时堆叠，不撑高窗口，只占右边一列。
     var minimumSize: CGSize {
         let content = root?.minimumSize ?? CGSize(width: Metrics.minPane, height: Metrics.minPane)
         if isFixed { return content }
-        let dockHeight = 2 * Metrics.padding + CGFloat(stored.count + 1) * (Metrics.dragBubble + Metrics.gap) - Metrics.gap
-        return CGSize(width: content.width + Metrics.gap + Metrics.dockWidth,
-                      height: max(content.height, dockHeight))
+        return CGSize(width: content.width + Metrics.gap + Metrics.dockWidth, height: content.height)
     }
 
     /// 正在显示的排布。

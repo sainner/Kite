@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 停靠栏里的一格。添加入口不在这里，固定排第一个。
+/// 实例组里的一格。布局文件夹、添加入口见 DockBandItem。
 indirect enum DockEntry: Identifiable {
     /// 一个实例（Pane 的 ID 就是实例 ID），本机台面上的和不在台面上的都一样；也用于草稿、新建页这两个只在本机的 pane。
     /// 紧凑布局里是底栏上的每一格，含当前窗口。
@@ -67,22 +67,22 @@ struct DockFamily {
     let pane: Pane?
     /// 父代理在本机台面上，格子里以箭头代替头像。
     let onStage: Bool
-    /// 子代理：.instance，或自己也带着子代理的 .family。在台面上的画箭头，不在的藏在自己的头像后面（见 DockGeometry.tucked）。
+    /// 子代理：.instance，或自己也带着子代理的 .family。在台面上的画箭头；收着时只露前三个，其余的藏在后面（见 DockGeometry.tucked）。
     let children: [DockEntry]
 }
 
-/// 停靠栏的两组：布局组（本项目的布局文件夹，第二期画）与实例组（代理在前、工具在后，各按创建先后，状态变化不挪位置）。
+/// 停靠栏的两组：布局组（本项目的布局文件夹）与实例组（代理在前、工具在后，各按创建先后，状态变化不挪位置），各项的排法见 DockBandItem。
 struct DockModel {
-    /// 本项目的布局（配方），见 ProjectLayout；这一期停靠栏还不画它们，入口留给第二期。
+    /// 本项目的布局（配方），见 ProjectLayout；停靠栏的布局组里一个布局一个文件夹。
     var layouts: [ProjectLayout] = []
     var agents: [DockEntry] = []
     var tools: [DockEntry] = []
-    /// 本机台面上的实例：家族格里的子代理画向左的箭头。
+    /// 本机台面上的实例：家族格里的父代理、子代理画向左的箭头。
     var onStage: Set<String> = []
     /// 挂在父代理下面的子代理（各层都算）。
     var grouped: Set<String> = []
     var all: [DockEntry] { agents + tools }
-    /// 宽屏停靠栏从上到下的各格，⌘数字按它数：代理组、工具组。
+    /// ⌘数字按它数：实例组从上到下的各格（代理、工具），布局文件夹和两个添加入口不占编号。
     var topToBottom: [DockEntry] { agents + tools }
 }
 
@@ -255,30 +255,31 @@ extension WorkArea {
         guard numbered, dockExpansion.isEmpty else { return hover.map { [$0] } ?? [] }
         let numbers = Dictionary(uniqueKeysWithValues: geometry.numbered.enumerated().map { ($1, $0 + 1) })
         var tips: [DockHoverTip] = []
-        for (entry, frame) in geometry.cells {
-            guard let number = numbers[entry.id] else { continue }
-            tips.append(DockHoverTip(id: entry.id, text: dockLabel(entry), frame: geometry.hoverFrame(of: entry, cell: frame), number: number))
+        for (entry, _) in geometry.entries {
+            guard let number = numbers[entry.id], let frame = geometry.hoverFrame(of: entry.id) else { continue }
+            tips.append(DockHoverTip(id: entry.id, text: dockLabel(entry), frame: frame, number: number))
         }
         return tips
     }
 
-    /// 停靠栏上悬停的那一格的标签；家族格里的父代理是卡片报上来的，按 pane 找。
-    /// 展开着家族格时只标面板里的：别的格子、卡片压暗了，面板也盖在它们上面，报上来的悬停不算。
+    /// 停靠栏上悬停的那一格的标签：带子上的格子按停靠栏的几何找位置，展开的家族格里的各项自己报位置。
+    /// 展开着家族格时只标家族格里的：别的格子压暗了，报上来的悬停不算。
     private func dockHoverTip(in geometry: DockGeometry) -> DockHoverTip? {
         guard let hover = dockHover else { return nil }
-        let entry: DockEntry
+        let text: String
         if let root = dockExpansion.first {
-            let members = geometry.cells.first { $0.entry.id == root }?.entry.members ?? []
+            let members = geometry.entries.first { $0.entry.id == root }?.entry.members ?? []
             guard let found = DockModel(agents: members).entry(hover.id) else { return nil }
-            entry = found
-        } else if let found = DockModel(agents: geometry.cells.map(\.entry)).entry(hover.id) {
-            entry = found
-        } else if hover.id.hasPrefix("pane:") {
-            entry = .pane(Pane(String(hover.id.dropFirst("pane:".count))))
+            text = dockLabel(found)
+        } else if let found = DockModel(agents: geometry.entries.map(\.entry)).entry(hover.id) {
+            text = dockLabel(found)
+        } else if let layout = layouts.first(where: { DockBandItem.layout($0).id == hover.id }) {
+            text = layout.name
         } else {
             return nil
         }
-        return DockHoverTip(id: hover.id, text: dockLabel(entry), frame: hover.frame)
+        guard let frame = hover.frame ?? geometry.hoverFrame(of: hover.id) else { return nil }
+        return DockHoverTip(id: hover.id, text: text, frame: frame)
     }
 }
 
@@ -318,129 +319,115 @@ extension AppModel {
     }
 }
 
-/// 宽屏停靠栏每一格的位置：添加入口固定在最上面，然后是代理组、分隔线、工具组。坐标与内容区相同。
+/// 宽屏停靠栏（竖排）每一项、每个头像画在哪，坐标与内容区相同。和停靠栏画出来的是同一套排法（DockBandRun、DockStackCurve、
+/// DockGroup.openPlacement），按这一刻离前端滚了多远、展开着哪一格算：卡片缩小落到哪、从哪展开（StagePlan.dockSlot、
+/// CardPresentation.place），悬停标签对着哪，都按它。
 struct DockGeometry {
-    /// 两组之间多出的一个模块，分隔线画在两组正中。
-    static var dividerExtra: CGFloat { Metrics.gap }
-    /// 展开的家族格里头像缩放的下限，见 DockGroup；沿用原来小头像的尺寸。
-    static var miniGap: CGFloat { Metrics.dragBubble * 4 / 36 }
-    static var miniSize: CGFloat { (Metrics.dragBubble - miniGap) / 2 }
+    /// 一项或一个头像画在哪、多透明（堆叠渐隐）。
+    struct Slot: Equatable {
+        var frame: CGRect
+        var opacity: Double = 1
+    }
 
-    let add: CGRect
-    private(set) var cells: [(entry: DockEntry, frame: CGRect)] = []
-    private(set) var divider: CGFloat?
-    /// 家族格里各个代理的头像画在哪（实例 ID 到位置）：父代理在胶囊最前面，子代理各在露出来的那一截，露不出来的藏在最后一个后面，
-    /// 孙辈跟着它所在的子代理。卡片缩小、关掉时落到这里。
-    private(set) var faces: [String: CGRect] = [:]
+    /// 从前到后各项，见 DockModel.bandItems。
+    private(set) var items: [(item: DockBandItem, slot: Slot)] = []
+    /// 各实例的头像画在哪：普通的就是它那一格，家族里的按它在胶囊里或展开的一排里的位置。卡片缩小、关掉时落到这里，打开时从这里起。
+    private(set) var faces: [String: Slot] = [:]
+    /// 收在家族胶囊里、只露一截的子代理（各层都算）：卡片落进来时外框缩到它的头像上淡没，不压在父代理的头像上面停一下。
+    private(set) var tucked: Set<String> = []
     let onStage: Set<String>
     let grouped: Set<String>
     /// ⌘1～9 打开的各格，按编号排，见 DockModel.topToBottom。
     let numbered: [String]
-    var allCells: [(entry: DockEntry, frame: CGRect)] { cells }
 
-    init(model: DockModel, regions: WindowRegions) {
+    /// region 是停靠栏那一列（WindowRegions.dock），distance 是离前端滚了多远，familyOffset 是展开的家族格里面滚了多远。
+    /// familyLimit 是展开的家族格最长多长（见 WorkArea.dockFamilyLimit），没给时按停靠栏的长。
+    init(model: DockModel, region: CGRect, expansion: [String] = [], distance: CGFloat = 0, familyOffset: CGFloat = 0, familyLimit: CGFloat? = nil) {
         onStage = model.onStage
         grouped = model.grouped
         numbered = model.topToBottom.prefix(9).map(\.id)
-        let size = Metrics.dragBubble, step = size + Metrics.gap
-        let x = regions.dock.midX - size / 2
-        var y = regions.dock.minY
-        add = CGRect(x: x, y: y, width: size, height: size)
-        y += step
-        for (index, entry) in (model.agents + model.tools).enumerated() {
-            // 工具组的第一格前面有代理时，先空出分隔线
-            if index == model.agents.count && index > 0 {
-                divider = y - Metrics.gap / 2 + Self.dividerExtra / 2
-                y += Self.dividerExtra
-            }
-            let height = Self.cellSize(entry).height
-            cells.append((entry, CGRect(x: x, y: y, width: size, height: height)))
-            y += height + Metrics.gap
-        }
-        for (entry, frame) in cells {
-            guard case .family(let family) = entry else { continue }
-            faces[family.parent.id] = Self.faceFrame(in: frame, at: 0)
-            for (index, child) in family.children.enumerated() {
-                let face = Self.faceFrame(in: frame, at: min(index + 1, DockGroup.shownChildren))
-                for id in child.instanceIDs { faces[id] = face }
-            }
-        }
-    }
-
-    /// 一格的大小：家族沿排列方向更长。
-    static func cellSize(_ entry: DockEntry, mini: Bool = false, axis: Axis = .vertical) -> CGSize {
-        let width = mini ? miniSize : Metrics.dragBubble
-        var length = width
-        if case .family(let family) = entry { length = mini ? Metrics.dragBubble : DockGroup.length(family, width: width) }
-        return axis == .vertical ? CGSize(width: width, height: length) : CGSize(width: length, height: width)
-    }
-
-    /// 从添加入口到最后一格的总长，窗口最小高度据此算。
-    static func length(of model: DockModel) -> CGFloat {
-        let lengths = [Metrics.dragBubble] + (model.agents + model.tools).map { cellSize($0).height }
-        let divider = model.agents.isEmpty || model.tools.isEmpty ? 0 : dividerExtra
-        return lengths.reduce(0, +) + CGFloat(lengths.count - 1) * Metrics.gap + divider
-    }
-
-    /// 某个实例落在哪一格：它自己，或装着它的家族格。
-    func frame(containing instance: String) -> CGRect? {
-        cells.first { $0.entry.contains(instance: instance) }?.frame
-    }
-
-    /// 实例的头像画在哪：家族格里的按它在胶囊里的位置（见 faces），其余的按装着它的那一格。
-    func face(of instance: String) -> CGRect? {
-        faces[instance] ?? frame(containing: instance)
-    }
-
-    /// 卡片缩小后画在哪：普通的占满一格，家族格里的父代理在胶囊最上面。
-    func paneFrame(_ pane: Pane) -> CGRect? {
-        for (entry, frame) in cells {
+        let bandItems = model.bandItems, visible = region.height
+        let limit = familyLimit ?? DockBandMetrics.familyLimit(visible: visible)
+        let extents = bandItems.map { DockBandMetrics.extent($0, expansion: expansion, limit: limit) }
+        let run = DockBandRun(extents: extents, gap: Metrics.gap)
+        let curve = DockStackCurve(total: run.total, region: visible, distance: distance, stacking: expansion.isEmpty ? 1 : 0)
+        for (index, item) in bandItems.enumerated() {
+            let length = extents[index], back = run.back(index)
+            let breadth = DockBandMetrics.breadth(item, expansion: expansion)
+            let slot = Slot(frame: CGRect(x: region.midX - breadth / 2, y: region.minY + visible - curve(back) - length, width: breadth, height: length),
+                            opacity: curve.opacity(back + length / 2))
+            items.append((item, slot))
+            guard case .entry(let entry) = item else { continue }
             switch entry {
-            case .pane(let value) where value == pane: return frame
-            case .family(let family) where family.pane == pane && !family.onStage: return Self.parentFrame(in: frame)
-            default: continue
+            case .pane(let pane): faces[pane.id] = slot
+            case .instance(let instance): faces[instance.id] = slot
+            case .family:
+                let open = expansion.first == entry.id
+                place(entry, in: slot, path: open ? expansion.dropFirst() : nil,
+                      viewport: open ? DockViewport(length: length, offset: familyOffset) : nil)
             }
+        }
+    }
+
+    /// 家族格里各头像的位置。path 为 nil 是收着（同 DockGroup.foldedSlots）：父代理在胶囊最上面，子代理往下每个错开三分之一格、往后渐隐，
+    /// 露不出来的藏在最后一个后面，孙辈跟着它所在的子代理。展开着的照 DockGroup.openPlacement 排开，里面再展开的往里接着算。
+    private mutating func place(_ entry: DockEntry, in slot: Slot, path: ArraySlice<String>?, viewport: DockViewport?) {
+        guard case .family(let family) = entry else { return }
+        let cell = slot.frame
+        guard let path else {
+            let width = Metrics.dragBubble, inset = DockGroup.inset(width), size = width - 2 * inset
+            for (index, member) in entry.members.enumerated() {
+                let frame = CGRect(x: cell.minX + inset, y: cell.minY + inset + CGFloat(min(index, DockGroup.shownChildren)) * width / 3,
+                                   width: size, height: size)
+                let face = Slot(frame: frame, opacity: slot.opacity * DockGroup.foldedOpacity(index))
+                for id in index == 0 ? [family.parent.id] : member.instanceIDs {
+                    faces[id] = face
+                    if index > 0 { tucked.insert(id) }
+                }
+            }
+            return
+        }
+        let placement = DockGroup.openPlacement(entry, path: path, viewport: viewport)
+        for (index, (member, spot)) in zip(entry.members, placement.members).enumerated() {
+            let box = DockGroup.box(member, path: path)
+            let face = Slot(frame: CGRect(x: cell.midX - box.across / 2, y: cell.minY + spot.along, width: box.across, height: box.along),
+                            opacity: slot.opacity * spot.opacity)
+            switch member {
+            case .family where index > 0:
+                let open = path.first == member.id
+                place(member, in: face, path: open ? path.dropFirst() : nil, viewport: nil)
+            default:
+                faces[index == 0 ? family.parent.id : member.instanceIDs.first ?? member.id] = face
+            }
+        }
+    }
+
+    /// 实例的各格，带编号的悬停标签按它浮。
+    var entries: [(entry: DockEntry, slot: Slot)] {
+        items.compactMap { if case .entry(let entry) = $0.item { (entry, $0.slot) } else { nil } }
+    }
+
+    /// 添加实例那一格：新建的窗口从这里展开，没选插件就关掉的新建页收回这里。
+    var add: CGRect? {
+        items.first { if case .addInstance = $0.item { true } else { false } }?.slot.frame
+    }
+
+    /// 实例的头像画在哪：家族格里的按它在胶囊里的位置（见 faces），其余的就是它那一格。
+    func face(of instance: String) -> Slot? { faces[instance] }
+
+    /// 卡片缩小后停在哪：pane 就是实例（草稿、新建页是本机的 pane），家族格里的父代理在胶囊最上面。
+    func slot(of pane: Pane) -> Slot? { faces[pane.id] }
+
+    /// 悬停标签对着的范围：家族格的对着父代理的头像那一行，不对着整格；布局文件夹、实例按它那一格。
+    func hoverFrame(of id: String) -> CGRect? {
+        if let found = items.first(where: { $0.item.id == id }) {
+            guard case .entry(.family(let family)) = found.item, let face = faces[family.parent.id] else { return found.slot.frame }
+            let cell = found.slot.frame
+            return CGRect(x: cell.minX, y: face.frame.minY, width: cell.width, height: face.frame.height)
+        }
+        for prefix in ["instance:", "pane:"] where id.hasPrefix(prefix) {
+            return faces[String(id.dropFirst(prefix.count))]?.frame
         }
         return nil
-    }
-
-    /// 悬停标签对着的范围：家族格的对着最上面父代理的头像，不对着整格。
-    func hoverFrame(of entry: DockEntry, cell: CGRect, mini: Bool = false) -> CGRect {
-        var frame = cell
-        if case .family = entry {
-            let face = Self.parentFrame(in: cell)
-            frame = CGRect(x: frame.minX, y: face.minY, width: frame.width, height: face.height)
-        }
-        return frame
-    }
-
-    /// 面板最高多高：照原来的间距排开八格。
-    static var panelLimit: CGFloat { 2 * DockGroup.padding + 8 * Metrics.dragBubble + 7 * Metrics.gap }
-
-    /// 展开的家族格从格子原地拉长成的面板：先往下，放不下再往上，最高 panelLimit（停靠栏没那么高时到停靠栏全高），
-    /// 再多就在里面滚动，照紧凑布局的底栏堆叠（见 DockGroup.viewport）。extent 是里面排开时的长，比面板高时要滚动。
-    static func panel(_ entry: DockEntry, from cell: CGRect, path: ArraySlice<String>, regions: WindowRegions) -> (frame: CGRect, extent: CGFloat) {
-        let extent = DockGroup.extent(entry, path: path), breadth = DockGroup.breadth(entry, path: path)
-        let height = min(extent, panelLimit, regions.dock.height)
-        let top = max(min(cell.minY - DockGroup.padding, regions.dock.maxY - height), regions.dock.minY)
-        return (CGRect(x: regions.dock.midX - breadth / 2, y: top, width: breadth, height: height), extent)
-    }
-
-    /// 能展开的各格收着时的格子和展开后的面板，按格子的 ID；path 是展开着的那一格里又展开到哪。
-    func unfolds(path: ArraySlice<String>, regions: WindowRegions) -> [String: (cell: CGRect, panel: CGRect)] {
-        var frames: [String: (cell: CGRect, panel: CGRect)] = [:]
-        for (entry, frame) in cells where entry.expands {
-            frames[entry.id] = (frame, Self.panel(entry, from: frame, path: path, regions: regions).frame)
-        }
-        return frames
-    }
-
-    /// 竖排家族格里父代理的位置，胶囊最上面。
-    static func parentFrame(in cell: CGRect) -> CGRect { faceFrame(in: cell, at: 0) }
-
-    /// 竖排家族格里第 index 个头像的位置，同 DockGroup 收着时：父代理是 0，往下每个错开三分之一格。
-    static func faceFrame(in cell: CGRect, at index: Int) -> CGRect {
-        let inset = DockGroup.inset(cell.width), size = cell.width - 2 * inset
-        return CGRect(x: cell.minX + inset, y: cell.minY + inset + CGFloat(index) * cell.width / 3, width: size, height: size)
     }
 }
