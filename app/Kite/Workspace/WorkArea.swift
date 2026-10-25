@@ -376,7 +376,8 @@ final class WorkArea: Identifiable {
         if stillClosing != closingInstances { closingInstances = stillClosing }
         instances = remote.instances.filter { !closingInstances.contains($0.id) }
             .map { archivingInstances.contains($0.id) ? $0.archived : $0 } + openingInstances
-        layout.reconcile(Self.panes(of: instances, definitions: definitions, draft: draftPane, chooser: chooserOpen ? chooserPane : nil))
+        layout.reconcile(Self.panes(of: instances, definitions: definitions, draft: draftPane, chooser: chooserOpen ? chooserPane : nil),
+                         complete: pluginClient != nil)
         if let pendingShow, layout.panes.contains(Pane(pendingShow)) {
             self.pendingShow = nil
             layout.activate(Pane(pendingShow))

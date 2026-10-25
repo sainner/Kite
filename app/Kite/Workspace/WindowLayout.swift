@@ -165,12 +165,15 @@ final class WindowLayout {
 
     /// 工作机决定实例是否存在（工作区在 WorkArea 里按停靠栏的顺序给出全部窗口）。本机只保留这些 ID 的台面集合与排布，新窗口只收进停靠栏，
     /// 由本机的动作放上台面。展开的那张没了先按还原处理。
-    func reconcile(_ available: [Pane]) {
+    /// complete 是工作机给的完整清单：这时存档里排着、却不在清单里的窗口（上次退出时的草稿和新建页、已经没了的实例）也从台面拿掉，
+    /// 不然占着一块空白、没有卡片（2026-10-26 实测）。托管目录还没加载实例时不算完整，见 init。
+    func reconcile(_ available: [Pane], complete: Bool = true) {
         guard !isFixed else { return }
         motionKind = .settle
         let allowed = Set(available)
-        guard stored != available else { return }
-        let removed = Set(stored).subtracting(allowed)
+        let stale = complete ? Set(root?.panes ?? []).subtracting(allowed).subtracting(stored) : []
+        guard stored != available || !stale.isEmpty else { return }
+        let removed = Set(stored).subtracting(allowed).union(stale)
         if !removed.isEmpty {
             drag = nil
             if let expansion, removed.contains(expansion.pane), holdsExpansion { goBack() }
