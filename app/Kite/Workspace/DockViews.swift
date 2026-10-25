@@ -272,8 +272,8 @@ struct DockHoverReport: ViewModifier {
     }
 }
 
-/// 宽屏台面的停靠栏里按住一格拖出去：同拖卡片，卡片缩成停靠形状跟着指针，放到台面上展开、放回停靠栏回到自己那一格。
-/// 只在 Mac 的台面上（dockStage）；触屏上停靠栏要滚动，按住拖动留给滚动，点开代替。
+/// 宽屏台面（dockStage）的停靠栏里按住一格拖出去：同拖卡片，卡片缩成停靠形状跟着指针，放到台面上展开、放回停靠栏回到自己那一格。
+/// iPad 上手指长按起拖、指针按住挪动起拖，见 DockCellTouch；紧凑布局没有台面，不拖。
 struct DockPaneDrag: ViewModifier {
     let pane: Pane?
     @Environment(WorkArea.self) private var area
@@ -295,7 +295,7 @@ struct DockPaneDrag: ViewModifier {
             content
         }
         #else
-        content
+        content.modifier(DockCellTouch(pane: stage == nil ? nil : pane))
         #endif
     }
 }

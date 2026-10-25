@@ -109,6 +109,8 @@ final class PhoneStageView: UIView, StageDotsReporting {
         dockOverlay.layer.zPosition = 2
         dockRail.hitRegion = { [weak self] in self?.dockHitRegion }
         dockOverlay.hitRegion = { [weak self] in self?.overlayHitRegion }
+        // 停靠栏的格子拖出去：手指长按、指针按住挪动
+        DockTouchDrag.install(on: dockRail, stage: self)
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:)))
         addGestureRecognizer(hover)
         NotificationCenter.default.addObserver(self, selector: #selector(sidebarDragged), name: SidebarDrag.changed, object: model.sidebarDrag)
