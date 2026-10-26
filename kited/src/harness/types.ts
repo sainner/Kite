@@ -280,8 +280,8 @@ export interface HarnessOptions {
   compactionFiles?(range: { from: number; to: number }, signal: AbortSignal): Promise<string | undefined>;
 }
 
-/** 手动压缩时 from、through 是范围首尾两条输入的 id；自动压缩覆盖全部已有历史。 */
-export type CompactionRequest = { id: string } & ({ from: string; through: string } | { automatic: true });
+/** 手动压缩时 from、through 是范围首尾两条输入的 id；不给起止时覆盖全部已有历史，自动压缩也是这样。 */
+export type CompactionRequest = { id: string } & ({ from: string; through: string } | { automatic?: true });
 
 /** 驱动一个 Thread 的执行实例；实例关闭后，同一 Thread 仍可从原记录恢复。 */
 export interface ThreadRunner {

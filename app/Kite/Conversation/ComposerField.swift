@@ -165,7 +165,7 @@ final class ComposerField: NSTextField {
         view.subviews.flatMap { $0 is NSTextInsertionIndicator ? [$0] : indicators(in: $0) }
     }
 
-    /// 字段编辑器把命令先交给控件的代理：上下键、Tab 先问 intercept，回车发送，Shift+回车换行，其余照系统的。
+    /// 字段编辑器把命令先交给控件的代理：上下键、Tab、Esc 先问 intercept，回车发送，Shift+回车换行，其余照系统的。
     /// 系统没给 Shift+回车单独的命令，同样是 insertNewline，要看按键时的修饰键。
     private final class Coordinator: NSObject, NSTextFieldDelegate {
         weak var field: ComposerField?
@@ -178,6 +178,7 @@ final class ComposerField: NSTextField {
                 case #selector(NSResponder.moveUp(_:)): .up
                 case #selector(NSResponder.moveDown(_:)): .down
                 case #selector(NSResponder.insertTab(_:)): .tab
+                case #selector(NSResponder.cancelOperation(_:)): .escape
                 default: nil
                 }
                 if let key, let action = field?.intercept?(key) {

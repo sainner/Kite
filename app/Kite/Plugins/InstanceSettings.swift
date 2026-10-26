@@ -292,11 +292,14 @@ struct InstanceSettingsPresentation: ViewModifier {
         }
         .modifier(ArchiveInstanceConfirmation(instance: $area.archiveRequest))
         .modifier(ArchiveIdleSubagentsConfirmation(parent: $area.archiveIdleRequest))
+        .modifier(ClearContextConfirmation(instance: $area.clearRequest))
         // 归档先在本机生效、弹窗当场关掉，工作机归档不成时报在这里
         .alert("归档失败", isPresented: Binding(get: { area.archiveError != nil }, set: { if !$0 { area.archiveError = nil } })) {
             Button("好", role: .cancel) { area.archiveError = nil }
         } message: { Text(area.archiveError ?? "") }
-        .onChange(of: model.revision(for: area)) { area.settingsInstance = nil; area.archiveRequest = nil; area.archiveIdleRequest = nil }
+        .onChange(of: model.revision(for: area)) {
+            area.settingsInstance = nil; area.archiveRequest = nil; area.archiveIdleRequest = nil; area.clearRequest = nil
+        }
     }
 }
 
@@ -332,6 +335,35 @@ struct ArchiveInstanceConfirmation: ViewModifier {
             toast?.show("已归档")
             archived()
         } catch { self.error = error.localizedDescription }
+    }
+}
+
+/// 清空上下文的确认：旧代理归档，台面上原处换上同样配置的新代理（见 AppModel.clearContext）。说明同归档。
+struct ClearContextConfirmation: ViewModifier {
+    @Binding var instance: RemotePluginInstance?
+    @Environment(AppModel.self) private var model
+    @Environment(WorkArea.self) private var area
+    @State private var error: String?
+
+    func body(content: Content) -> some View {
+        content
+            .alert("清空「\(instance?.title ?? "")」的上下文？", isPresented: Binding(get: { instance != nil }, set: { if !$0 { instance = nil } }),
+                   presenting: instance) { target in
+                Button("清空", role: .destructive) { clear(target) }
+                Button("取消", role: .cancel) {}
+            } message: { target in
+                let children = area.subagents(of: target).count
+                let who = children > 0 ? "它和它开出的 \(children) 个子代理" : "它"
+                Text("会归档\(who)，在原处换上一个同样配置的新代理，输入框里没发的内容一起带过去。旧会话保留在工作机上，目前还不能在界面里查看或恢复已归档的实例。")
+            }
+            .alert("清空失败", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
+                Button("好", role: .cancel) { error = nil }
+            } message: { Text(error ?? "") }
+    }
+
+    /// 清空当场生效，这里只报发不出去的原因；工作机归档不成报在工作区一层，同归档。
+    private func clear(_ target: RemotePluginInstance) {
+        do { try model.clearContext(target, in: area) } catch { self.error = error.localizedDescription }
     }
 }
 

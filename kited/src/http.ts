@@ -711,7 +711,10 @@ export function serve(kite: Kite, listen: Listen) {
         return { ok: true };
       }) },
       '/threads/:id/compactions': { POST: bound(async (req) => {
-        const parsed = z.object({ id: z.string().min(1), from: z.string().min(1), through: z.string().min(1) }).strict().safeParse(await body(req));
+        // 不给起止时压缩全部已有历史
+        const id = z.string().min(1);
+        const parsed = z.union([z.object({ id, from: z.string().min(1), through: z.string().min(1) }).strict(), z.object({ id }).strict()])
+          .safeParse(await body(req));
         if (!parsed.success) throw new KiteError('压缩请求无效');
         await kite.compact(req.params.id, parsed.data);
         return { ok: true };

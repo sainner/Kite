@@ -342,6 +342,23 @@ final class WindowLayout {
         saveSoon()
     }
 
+    /// 台面上 old 的位置原地换成 new（清空上下文时旧代理归档、新代理的草稿接在原处），刀和比例不变；new 已在台面别处的先从那里拿掉。
+    /// 展开着的是 old 时，展开那一步跟着换成 new。old 不在台面上时照常把 new 放上台面。
+    func replace(_ old: Pane, with new: Pane) {
+        guard !isFixed, stored.contains(new) else { return }
+        guard let current = root?.removing(new), current.panes.contains(old) else { return activate(new) }
+        withLayoutAnimation(.settle) {
+            drag = nil
+            carriedFocus = nil
+            root = current.replacing(old, with: .pane(new))
+            if let expansion, expansion.pane == old {
+                self.expansion = ExpansionMemory(pane: new, before: expansion.before.map { SavedTile($0.tile.removing(new)?.replacing(old, with: .pane(new)) ?? .pane(new)) })
+            }
+            focused = new
+        }
+        saveSoon()
+    }
+
     /// 缩小：本机把它从台面拿掉，对实例什么都不做。缩小展开的那张先还原（2026-10-25 用户定）。
     func minimize(_ pane: Pane) {
         guard !isFixed else { return }

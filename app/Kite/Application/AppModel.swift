@@ -679,6 +679,41 @@ final class AppModel {
         }
     }
 
+    /// 清空上下文：台面上这个代理的位置当场换成一个新代理的草稿，角色、模型与思考强度、工具、审批模式和 MCP 照它的实例配置，
+    /// 输入框里没发的字和附件带过去，再把它（连同各层子代理）归档；发出第一条消息时建成新代理（见 startThread）。
+    /// 归档同 archiveInstances，不等工作机，归档不成时旧代理放回停靠栏、报在归档失败的提示里，草稿留着。
+    func clearContext(_ instance: RemotePluginInstance, in area: WorkArea) throws {
+        guard canClearContext(instance, in: area) else { return }
+        let client = try activeClient(in: area)
+        guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
+        guard area.creatingInstance == nil else { throw KitedError(message: "新代理正在建，建好后再清空") }
+        let config = instance.config
+        let draft = area.replaceWithDraft(Pane(instance.id))
+        func adoptRole() {
+            draft.role = config?.role.flatMap { role in roles(in: area)?.roles.first { $0.id == role.id } }
+            // 角色后来加了必需的工具时补上，不然新代理建不出来
+            if let required = draft.role?.role.tools.required, var tools = draft.draftChoice?.tools {
+                tools += required.filter { !tools.contains($0) }
+                draft.draftChoice?.tools = tools
+            }
+        }
+        draft.draftChoice = DraftAgentChoice(model: config?.agent?.model, tools: config?.agent?.tools, approval: config?.approval, mcp: config?.mcp ?? [])
+        adoptRole()
+        if draft.role == nil, config?.role != nil {
+            Task {
+                try? await ensureRoles(in: area)
+                if draft.isDraft, draft.role == nil { adoptRole() }
+            }
+        }
+        area.threads.first { $0.id == instance.id }?.copyDraft(to: draft)
+        try archiveInstances([instance], in: area)
+    }
+
+    /// 只有顶层代理能清空上下文：子代理归父代理管，Line 由收件箱认着，都不换。
+    func canClearContext(_ instance: RemotePluginInstance, in area: WorkArea) -> Bool {
+        area.isAgent(instance) && !area.isSubagent(instance.id) && instance.config?.role?.id != Self.lineRole
+    }
+
     /// 把实例放上本机的台面（在台面上就聚焦），要看的不是它当前的视图就先换视图：本机先按新视图显示（见 WorkArea.switchLocally），
     /// 工作机确认后以它为准，换不成退回。view 为 nil 时照它当前的视图。
     func showInstance(_ id: String, view: String? = nil, in area: WorkArea) {

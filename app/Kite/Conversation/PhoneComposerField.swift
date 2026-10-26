@@ -119,6 +119,7 @@ final class ComposerField: UITextView, UITextViewDelegate {
         case .up: UIKeyCommand.inputUpArrow
         case .down: UIKeyCommand.inputDownArrow
         case .tab: "\t"
+        case .escape: UIKeyCommand.inputEscape
         }
     }
 

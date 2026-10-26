@@ -211,7 +211,7 @@ export async function openClaudeHost(options: {
     const settings = options.compaction;
     if (!settings) return Promise.reject(new KiteError('这台工作机未开放 Claude 线程的压缩', 409));
     if (closing || compacting || stopping || phase !== 'idle') return Promise.reject(new KiteError('会话正在执行，空闲后才能压缩', 409));
-    const automatic = 'compact' in action && 'automatic' in action.compact;
+    const automatic = 'compact' in action && !('from' in action.compact) && action.compact.automatic === true;
     const abort = new AbortController();
     let checked = false;
     let recorded = false;

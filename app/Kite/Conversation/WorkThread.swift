@@ -54,6 +54,8 @@ final class WorkThread: Identifiable {
     private var outbox: [Message] = []
     private(set) var failed: Set<String> = []
     private var sending: Set<String> = []
+    /// 撤回请求还在路上的消息：按住上键连发、连点撤回时不再撤一次。
+    private var cancelling: Set<String> = []
     private var returned: Set<String> = []
     /// 收起回应卡片时发的消息跳过哪一项等待，按消息 ID 记，重试照样带上。
     private var skips: [String: String] = [:]
@@ -70,6 +72,8 @@ final class WorkThread: Identifiable {
     var showStop: Bool { stopRequest != nil || !outbox.isEmpty || state?.capabilities.interrupt == true }
     var canCancel: Bool { stopRequest == nil && connected && state?.capabilities.cancel == true }
     var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
+    /// 压缩全部要有内容、空闲着：工作机只在空闲时压缩。
+    var canCompactAll: Bool { canCompact && hasTranscript && !showStop && state?.compacting != true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
     /// 圆环的阶段：在等人回应时是 waiting，圆环换警示黄、明暗起伏；正在压缩是 running 的子状态 compacting，弧画满再收掉。
     var statusPhase: String {
@@ -156,6 +160,15 @@ final class WorkThread: Identifiable {
             draftAttachments.append(item)
             item.upload(to: source)
         }
+    }
+
+    /// 输入框里还没发的字和附件抄给另一个会话（清空上下文时的新代理草稿），附件接着传；对方输入框里已有字时接在后面。
+    /// 自己的留着：清空时这个会话正原地淡出，输入框不先变空；归档不成放回来时也还在。
+    func copyDraft(to other: WorkThread) {
+        if !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            other.draft = other.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? draft : other.draft + "\n" + draft
+        }
+        other.draftAttachments += draftAttachments.filter { item in !other.draftAttachments.contains { $0 === item } }
     }
 
     /// 还能放几个：一条消息最多带 maxAttachments 个。
@@ -374,9 +387,17 @@ final class WorkThread: Identifiable {
         }
     }
 
+    /// 排在最后、此刻能撤回的那条人发的消息（正在发出的等它有了结果）；输入框空着时按上键撤回它，见 ThreadControlsModel.keyAction。
+    var lastWithdrawable: Message? {
+        guard canCancel else { return nil }
+        return transcript.pending.last { $0.sender == nil && !sending.contains($0.id) && !cancelling.contains($0.id) }?.message
+    }
+
     func cancel(_ message: Message, editing: Bool = false) {
-        guard let client, canCancel, !sending.contains(message.id) else { return }
+        guard let client, canCancel, !sending.contains(message.id), !cancelling.contains(message.id) else { return }
+        cancelling.insert(message.id)
         Task {
+            defer { cancelling.remove(message.id) }
             do {
                 // HTTP 返回失败也可能已经落盘，先由服务核查是否仍能撤回。
                 try await client.post("/threads/\(id)/messages/\(message.id)/cancel")
@@ -456,6 +477,18 @@ final class WorkThread: Identifiable {
         Task {
             do {
                 try await client.post("/threads/\(id)/compactions", body: ["id": UUID().uuidString, "from": start, "through": message])
+                error = nil
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    /// 压缩全部已有历史，同 compact(through:)。
+    func compactAll() {
+        guard let client, canCompactAll else { return }
+        compactionStart = nil
+        Task {
+            do {
+                try await client.post("/threads/\(id)/compactions", body: ["id": UUID().uuidString])
                 error = nil
             } catch { self.error = error.localizedDescription }
         }

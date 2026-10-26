@@ -126,7 +126,7 @@ final class ControlsBarView: UIView {
             controls?.setFieldText(text)
             contentChanged()
         }
-        field.intercept = { [weak self] in self?.controls?.skillKeyAction($0) }
+        field.intercept = { [weak self] in self?.controls?.keyAction($0) }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in self.fontChanged() }
     }
 

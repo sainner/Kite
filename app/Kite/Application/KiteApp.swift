@@ -107,6 +107,23 @@ struct KiteCommands: Commands {
             Menu("外观") { AppearancePicker() }
         }
         #endif
+        // 作用在台面上聚焦的代理，同会话窗口更多菜单里的「上下文」一节；停止在输入框里按 Esc（见 ThreadControlsModel.keyAction）
+        CommandMenu("会话") {
+            Button("压缩全部") {
+                onFocusedPane { area, pane in area.thread(in: pane)?.compactAll() } otherwise: {}
+            }
+            .keyboardShortcut("k", modifiers: [.command, .shift])
+            .disabled(area == nil)
+            Button("清空上下文") {
+                onFocusedPane { area, pane in
+                    guard let instance = area.instance(of: pane), model.canClearContext(instance, in: area),
+                          model.isConnected(area), area.creatingInstance == nil else { return }
+                    area.clearRequest = instance
+                } otherwise: {}
+            }
+            .keyboardShortcut("k")
+            .disabled(area == nil)
+        }
         CommandMenu("排布") {
             Button("缩小窗口") {
                 onFocusedPane { area, pane in area.layout.minimize(pane) } otherwise: {

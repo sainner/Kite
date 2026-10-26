@@ -34,6 +34,8 @@ final class WorkArea: Identifiable {
     @ObservationIgnored private var replacedChooser: String?
     /// 新建页刚变成会话的草稿：会话的原生外框接上时淡入，和淡出的新建页正文交叠（见 takeFadeIn）。
     @ObservationIgnored private var fadingIn: Set<String> = []
+    /// 清空上下文时接在原处的草稿：卡片在原位淡入，和原地淡出的旧代理交叠，不从停靠栏飞出来（见 takeReplacement）。
+    @ObservationIgnored private var replacements: Set<String> = []
     let layout: WindowLayout
     /// 正在发出的草稿：期间输入区禁用，草稿不能关。
     var creatingInstance: String?
@@ -55,6 +57,8 @@ final class WorkArea: Identifiable {
     var archiveError: String?
     var settingsInstance: RemotePluginInstance?
     var archiveRequest: RemotePluginInstance?
+    /// 要清空上下文的代理，见 ClearContextConfirmation。
+    var clearRequest: RemotePluginInstance?
     /// 要归档哪个代理空闲的子代理，见 ArchiveIdleSubagentsConfirmation。
     var archiveIdleRequest: RemotePluginInstance?
     /// 代理的活动摘要，按实例 ID。目录快照与单条推送谁新用谁，见 updateActivity。
@@ -545,6 +549,22 @@ final class WorkArea: Identifiable {
         draftThread.role = role
         return draftThread.id
     }
+
+    /// 清空上下文：台面上 pane 的位置原地换成新代理的草稿（已有草稿就挪过来用这一份，一份草稿不同时摆在两个窗口里），返回草稿。
+    /// 旧代理随后归档，见 AppModel.clearContext。
+    func replaceWithDraft(_ pane: Pane) -> WorkThread {
+        if draftPane == nil {
+            draftThread = makeDraftThread(id: Self.newPaneID())
+            draftPane = draftThread.id
+            replacements.insert(draftThread.id)
+            rebuild()
+        }
+        layout.replace(pane, with: Pane(draftThread.id))
+        return draftThread
+    }
+
+    /// 这张卡片是不是清空上下文时接在原处的草稿，问过一次就不再算，见 replacements。
+    func takeReplacement(_ pane: Pane) -> Bool { replacements.remove(pane.id) != nil }
 
     /// 正在发出的草稿不能关：工作机可能已经建好了代理。
     func closeDraft() {

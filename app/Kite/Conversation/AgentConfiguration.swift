@@ -79,6 +79,8 @@ nonisolated struct InstanceAgentConfig: Decodable, Sendable {
     var preview: PreviewSpec?
     /// 审批模式：工作机建代理时写入解析好的（草稿、角色、工作机的默认依次取）；monitor 等不是代理的实例没有。
     var approval: ApprovalMode?
+    /// 打开的外部 MCP 服务，按服务名；一个都没开时工作机不写。
+    var mcp: [String]?
 }
 
 nonisolated struct AgentConfigurationSnapshot: Decodable, Sendable {

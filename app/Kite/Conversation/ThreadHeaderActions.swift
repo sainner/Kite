@@ -128,6 +128,15 @@ struct ThreadHeaderActions: View {
                                    options: ApprovalMode.allCases.map { mode in .init(title: mode.title, selected: mode == approval) { chooseApproval(mode) } }),
                            at: min(1, general.count))
         }
+        // 上下文：压缩全部、清空（归档后在原处换上同样配置的新代理），单独一节
+        var context: [ThreadHeaderCommand] = []
+        if let instance {
+            context.append(.init(title: "压缩全部", symbol: "rectangle.compress.vertical", enabled: thread.canCompactAll) { thread.compactAll() })
+            if model.canClearContext(instance, in: area) {
+                context.append(.init(title: "清空上下文", symbol: "eraser", enabled: model.isConnected(area) && area.creatingInstance == nil,
+                                     destructive: true) { area.clearRequest = instance })
+            }
+        }
         // 调试：对话区和原始记录来回换，单独一节放最后
         let debug: [ThreadHeaderCommand] = instance == nil ? [] : [
             .init(title: thread.raw == nil ? "原始记录" : "返回对话",
@@ -136,7 +145,7 @@ struct ThreadHeaderActions: View {
             },
         ]
         // 停止与继续都归输入区。
-        return [windowActions?.commands ?? [], general, debug].filter { !$0.isEmpty }
+        return [windowActions?.commands ?? [], general, context, debug].filter { !$0.isEmpty }
     }
 
     /// 审批模式：越界请求（连名单外的主机、申请出沙箱）怎么处理。已有代理改工作机上的实例，运行中也能改，下一次越界时生效；

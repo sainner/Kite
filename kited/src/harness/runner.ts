@@ -193,7 +193,7 @@ export class HarnessRunner implements ThreadRunner {
     let from: number;
     let until: number | undefined;
     let range: string;
-    if ('automatic' in request) {
+    if (!('from' in request)) {
       const first = this.history.segments[0];
       if (!first) throw new Error('压缩范围内没有内容');
       from = first.seq;
@@ -216,7 +216,7 @@ export class HarnessRunner implements ThreadRunner {
     this.pumping = (async () => {
       const prepared = this.options.prepareRequest({ afterNotification: this.history.notificationCursor });
       const { context, configuration } = this.configure(prepared);
-      await this.summarize({ id: request.id, from, until, automatic: 'automatic' in request, range,
+      await this.summarize({ id: request.id, from, until, automatic: !('from' in request) && request.automatic === true, range,
         prepared, context, configuration, signal: controller.signal, turnId: request.id });
     })().catch((error: unknown) => {
       if (!controller.signal.aborted) this.emit({ type: 'error', message: `上下文压缩失败：${message(error)}` });

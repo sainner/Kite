@@ -116,7 +116,7 @@ final class CardPresentation {
     /// closing 是这个 pane 已经不在了（实例关闭、归档，草稿、新建页关掉）、正飞走。
     /// 拖着的卡片缩成停靠形状跟着指针；关闭时交给了后台实例的新建页飞进那个实例的格子（见 WorkArea.handedOff），否则原地淡出。
     /// appearing 是台面排好以后才打开的窗口，和让位的窗口一起动：已有的实例从它在停靠栏的那一格展开，新建的（新建页、草稿、本机先建的实例）
-    /// 从停靠栏的添加入口 addButton 展开（自己已有一格的从那一格），没有停靠栏时原地淡入；台面头一次排的窗口直接摆好。
+    /// 从停靠栏的添加入口 addButton 展开（自己已有一格的从那一格），没有停靠栏时、清空上下文接在原处的草稿原地淡入；台面头一次排的窗口直接摆好。
     /// 没选插件就关掉的新建页收回添加入口。添加入口没有底色，在那一头卡片整个透明：从它那里长出来、底色跟着淡入，收回去时淡没，露出的就是底下的加号。
     /// addStart 是添加入口上一轮画在哪：新建页的格子插在它前面，添加入口正往后挪，新建的窗口从它挪动前的地方长出来。
     /// tucked 是收在家族胶囊里只露一截的子代理：缩小时外框缩到自己的头像上淡没，露出家族格画的头像，恢复时从那里透明地长出来。
@@ -161,8 +161,10 @@ final class CardPresentation {
                                 contentOpacity: minimized || closing ? 0 : 1,
                                 iconOpacity: minimized && !parked ? iconOpacity : 0)
         let created = appearing && (group.workspace.map { area in area.instance(of: pane).map { area.isOpening(instance: $0.id) } ?? true } ?? false)
-        let fromAdd = created && addButton != nil && (dockFrame == nil || chooser)
-        let start = fromAdd ? addStart ?? addButton : dockFrame ?? returnTarget
+        // 清空上下文时接在原处的草稿原地淡入，和原地淡出的旧代理交叠
+        let inPlace = appearing && group.workspace?.takeReplacement(pane) == true
+        let fromAdd = !inPlace && created && addButton != nil && (dockFrame == nil || chooser)
+        let start = inPlace ? nil : fromAdd ? addStart ?? addButton : dockFrame ?? returnTarget
         let fresh = motion == nil
         let motion = prepare(target: target, start: fresh ? start : nil, startOpacity: iconOpacity, fromAdd: fromAdd, fadesIn: appearing,
                              startsHidden: tucked, size: rect?.size, contentSize: contentSize, appearance: appearance,

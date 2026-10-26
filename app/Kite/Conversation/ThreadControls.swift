@@ -86,11 +86,16 @@ struct ThreadControls: View {
                 .lineLimit(1...8)
                 .focused(typing)
                 .scrollsOnlyWhileTyping(typing.wrappedValue)
-                .onKeyPress(keys: [.upArrow, .downArrow, .tab], phases: [.down, .repeat]) { press in
+                .onKeyPress(keys: [.upArrow, .downArrow, .tab, .escape], phases: [.down, .repeat]) { press in
                     guard press.modifiers.intersection([.shift, .control, .option, .command]).isEmpty,
                           (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return .ignored }
-                    let key: ComposerKey = press.key == .tab ? .tab : press.key == .upArrow ? .up : .down
-                    guard let action = controls.skillKeyAction(key) else { return .ignored }
+                    let key: ComposerKey = switch press.key {
+                    case .tab: .tab
+                    case .escape: .escape
+                    case .upArrow: .up
+                    default: .down
+                    }
+                    guard let action = controls.keyAction(key) else { return .ignored }
                     action()
                     return .handled
                 }
