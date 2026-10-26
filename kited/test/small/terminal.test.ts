@@ -195,10 +195,12 @@ test('终端输入有回显并执行，后接入的设备画面里有之前的�
 
 /*
  * 配合：进程退出回调与关闭实例都在工作区控制队列里改实例；用户开的终端自己退出时留着、记下退出码。
+ * 真实 bug：停下就是关闭，可进程已经自己结束的终端再调 terminal.stop 原来直接返回，实例一直不回收。
+ * 这里自己退出的那个用 terminal.stop 收掉（与关闭实例走同一处回收），还在跑的那个用关闭实例收掉。
  * 时序：关闭还在跑的终端是先停进程、等它退出再回收，接口返回时两件事都已做完；停进程触发的退出回调不能把已回收的实例记回去，
  * 再关闭得 404。依赖 sh：交互式 sh 开着作业控制，前台命令在自己的进程组，停终端时它也要结束（僵尸算已结束）。
  */
-test('终端自己退出记为 exited 留着，关闭实例才回收；关闭还在跑的终端，返回时 shell 与前台命令都已结束、实例已回收，再关闭是 404', async () => {
+test('终端自己退出记为 exited 留着，再 terminal.stop 就回收；关闭还在跑的终端，返回时 shell 与前台命令都已结束、实例已回收，再关闭是 404', async () => {
   const { k, machineId } = await start();
   const devices: Device[] = [];
   // sleep 的参数带上本次的随机数，清理时按命令行找它，不按可能被复用的 pid。
@@ -217,8 +219,11 @@ test('终端自己退出记为 exited 留着，关闭实例才回收；关闭还
     }, '终端退出后记为 exited');
     expect(exited).toMatchObject({ phase: 'exited', exitCode: 5 });
     b.close();
-    await closeInstance(k, foreground.instanceId);
-    expect(instanceIn(await aggregate(k, workspaceId), foreground.instanceId)).toBeUndefined();
+    const stopped = await k.call('POST', `/workspaces/${workspaceId}/operations/terminal.stop`,
+      { operationId: crypto.randomUUID(), instanceId: foreground.instanceId });
+    expect(stopped.status).toBe(200);
+    expect(stopped.body).toMatchObject({ ok: true });
+    await workspaceUntil(k, workspaceId, (model) => !instanceIn(model, foreground.instanceId), '自己退出的终端在 terminal.stop 后回收');
 
     const busy = await openTerminal(k, workspaceId);
     const c = new Device(k.url, machineId, busy.instanceId);

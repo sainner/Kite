@@ -25,7 +25,7 @@ import { defaultRoleId, instanceRole } from '../roles.ts';
 import { pluginToolBindings, pluginToolGranted, pluginToolSource, type PluginToolBinding, type PluginToolSource } from '../plugins/tools.ts';
 
 type OperationServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'roles' | 'workspace' | 'plugins' | 'receipts' | 'threadState' | 'startAgent' | 'send' | 'reports' | 'waits' | 'interrupt' | 'resume' | 'mergeWorkspace' | 'selectFile' | 'writeFile'
-  | 'monitors' | 'monitor' | 'archiveInstance' | 'lineInbox' | 'terminals' | 'approveScript' | 'approveDevice' | 'previews'>;
+  | 'monitors' | 'monitor' | 'archiveInstance' | 'closeInstance' | 'lineInbox' | 'terminals' | 'approveScript' | 'approveDevice' | 'previews'>;
 
 export interface OperationToolSelection {
   plugins: Tool[];
@@ -475,6 +475,8 @@ export class InstanceOperations {
         const target = this.kite.store.instance(args.instanceId as string)!;
         const owner = caller.kind !== 'ui' && target.origin?.instanceId === caller.instanceId;
         const what = name === 'preview.stop' ? '预览' : owner ? '命令' : '终端';
+        // 停下就是关闭：进程已经自己结束了的 stop 不回收，按关闭实例回收；还在跑的停下后由终端回收
+        if (!this.kite.terminals.running(target.id)) { await this.kite.closeInstance(target.id); return { ok: true }; }
         await this.kite.terminals.stop(target.id, caller.kind === 'ui' ? '已在界面上停止' : owner ? `代理自己停下了这个${what}` : `另一个代理停下了这个${what}`, { quiet: owner });
         return { ok: true };
       }
