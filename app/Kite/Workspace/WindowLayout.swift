@@ -268,7 +268,8 @@ final class WindowLayout {
     private var floorShown: Bool {
         // 同一个 ID 已经是正式的窗口（新建页原地变成了实例）时不再垫底
         guard let floor, !isFixed, !stored.contains(floor) else { return false }
-        return presentation == .compact ? stored.isEmpty : root?.panes.isEmpty ?? true
+        // 往空台面拖卡片、预览里落点占了台面时先退下，拖回停靠栏再出来，同点停靠栏的格子放上台面时一样让位
+        return presentation == .compact ? stored.isEmpty : (root?.panes.isEmpty ?? true) && drag?.layout == nil
     }
 
     /// 全部窗口，按停靠栏的顺序；垫底的窗口顶上来时排在最后。
@@ -466,7 +467,9 @@ final class WindowLayout {
         pointer = location
         if drag == nil { clearPendingPreview() }
         let regions = regions(in: bounds)
-        let fitted = fittedRoot
+        // 垫底的窗口不算台面上的：台面空着时剩下的就是空台面，落点是整个内容区，不然它会跟着进排布
+        var fitted = fittedRoot
+        if let floor { fitted = fitted?.removing(floor) }
         // 接着指针最近所在的落点判断，缝里保留的也是它
         var next = pendingDrag ?? drag ?? CardDrag(pane: pane, rest: fitted?.removing(pane))
         // 按脱离后、插占位之前的排布判断落点：预览一变卡片就挪位置，按预览判断会来回跳。
