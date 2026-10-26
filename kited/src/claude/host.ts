@@ -41,7 +41,9 @@ export async function openClaudeHost(options: {
   outside?: ShellOutside;
   /** check 工具要的检出、日志目录与出沙箱的判断，见 CheckHost。 */
   check?: CheckHost;
-  prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; contextUpdate: string; tools: Tool[]; allowed: Set<string>;
+  /** roster 是基础上下文里的工作区现况（模板没用时没有），instancesChanged 给出它从上次的变成这次的通知正文。 */
+  prepare(afterNotification: number): { agent: AgentDefinition; instructions: string; stable: string; roster?: string; contextUpdate: string;
+    instancesChanged(previous: string): string; tools: Tool[]; allowed: Set<string>;
     notificationText: string; through: number };
   events: RuntimeEvents;
   /** 人发的消息带的附件里的图片交给模型的样子，交给进程时现取；见 workspace/attachments.ts。 */
@@ -139,10 +141,11 @@ export async function openClaudeHost(options: {
   const boundaryContext = () => {
     options.skills.refresh();
     const prepared = options.prepare(data.through);
-    const update = (data.context ?? data.initialContext) !== prepared.instructions ? prepared.contextUpdate : '';
+    const update = data.context !== prepared.stable ? prepared.contextUpdate
+      : data.roster !== undefined && prepared.roster !== undefined && data.roster !== prepared.roster ? prepared.instancesChanged(data.roster) : '';
     const text = [update, prepared.through > data.through ? prepared.notificationText : ''].filter(Boolean).join('\n\n');
     // hook 返回即交接给上游的下一次请求；失败后不自动重投已交接通知。
-    data.context = prepared.instructions; data.through = prepared.through; save();
+    data.context = prepared.stable; data.roster = prepared.roster; data.through = prepared.through; save();
     return text;
   };
   /** 进程中途退出（异常或停止）时收尾这一回合；回合之间退出没有回合可收，下一条消息到来时 resume。 */
@@ -295,7 +298,7 @@ export async function openClaudeHost(options: {
       data.exited = false; interruptionNote = undefined;
     }
     const entry = data.inputs.find((item) => item.status === 'queued')!;
-    data.initialContext ??= prepared.instructions;
+    if (data.initialContext === undefined) { data.initialContext = prepared.instructions; data.context = prepared.stable; data.roster = prepared.roster; }
     currentModel = prepared.agent.model.model;
     if (data.contextWindow?.model !== currentModel) data.contextWindow = undefined;
     measured = undefined;

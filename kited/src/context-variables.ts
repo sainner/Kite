@@ -14,6 +14,7 @@ import type { ContextBinding, ContextValues } from './harness/context/types.ts';
 import type { Machine, Project, ThreadContext, Workspace } from './model.ts';
 import type { ProjectConstraints } from './account-data/registry.ts';
 import type { McpServers } from './mcp/servers.ts';
+import type { WorkspaceInstances } from './workspace-instances.ts';
 import { instanceMcp } from './mcp/tools.ts';
 import { pluginToolBindings } from './plugins/tools.ts';
 import type { ProjectToolRule } from './roles.ts';
@@ -31,8 +32,12 @@ export function environmentVariables(machine: Machine) {
 
 const text = (value: () => string) => (): ContextBinding => ({ text: value() });
 
-/** 这台工作机装的 MCP 服务；没给时 mcp.servers 为空。 */
+/** 这台工作机装的 MCP 服务。 */
 export type McpView = Pick<McpServers, 'effective' | 'description'>;
+/** 代理的工作区现况。 */
+export type InstancesView = Pick<WorkspaceInstances, 'roster'>;
+/** 代理层变量要从 Kite 取的来源：skill 的几层、MCP 服务与工作区现况；后两个没给时 mcp.servers、workspace.instances 为空。 */
+export interface VariableSources { skills: SkillSources; mcp?: McpView; instances?: InstancesView }
 /** 变量用到的项目约束：工具规则、执行授权、禁用的 MCP 服务。 */
 export type VariableConstraints = Partial<Pick<ProjectConstraints, 'tools' | 'execution' | 'mcp'>>;
 
@@ -64,8 +69,8 @@ export function workspaceVariables(model: { machine: Machine; project: Project; 
  * thread 是取值时的状态：生成通知时传入变化之后的配置，变量取新值。每个值在模板引用时才取。
  * constraints 是项目约束，允许的工具、生效的执行授权与 MCP 服务按它过滤，与配置通知一致。
  */
-export function threadVariables(thread: ThreadContext, constraints: VariableConstraints | undefined, skills: SkillSources,
-  mcp: McpView | undefined): ContextValues {
+export function threadVariables(thread: ThreadContext, constraints: VariableConstraints | undefined,
+  { skills, mcp, instances }: VariableSources): ContextValues {
   const agent = () => instanceAgent(thread);
   return {
     ...workspaceVariables(thread, skills),
@@ -79,6 +84,7 @@ export function threadVariables(thread: ThreadContext, constraints: VariableCons
     // 按实例列出获准的插件工具：自研 harness 以实例 ID 为分组用 tool_search 加载，Claude 按名字用 ToolSearch 搜；name 是调用用的名字。
     'plugin.tools': text(() => JSON.stringify([...Map.groupBy(pluginToolBindings(thread), (binding) => binding.instanceId)]
       .map(([instanceId, bindings]) => ({ instanceId, tools: bindings.map((binding) => ({ name: binding.modelName, tool: binding.toolName })) })))),
+    'workspace.instances': text(() => instances?.roster(thread) ?? ''),
     'mcp.servers': text(() => (mcp?.effective(instanceMcp(thread), constraints?.mcp?.deny) ?? []).map((server) => {
       const description = mcp!.description(server);
       return description ? `- ${server}：${description}` : `- ${server}`;
@@ -87,10 +93,10 @@ export function threadVariables(thread: ThreadContext, constraints: VariableCons
 }
 
 /** 按线程当前保存的状态取值。 */
-export function storedThreadVariables(store: Store, id: string, skills: SkillSources, mcp: McpView): ContextValues {
+export function storedThreadVariables(store: Store, id: string, sources: VariableSources): ContextValues {
   const thread = store.threadContext(id);
   if (!thread) throw new Error(`没有这个线程：${id}`);
-  return threadVariables(thread, store.workspaceConstraints(thread.workspaceId), skills, mcp);
+  return threadVariables(thread, store.workspaceConstraints(thread.workspaceId), sources);
 }
 
 /**
@@ -106,27 +112,27 @@ const layerOf = (name: PublicVariable) =>
   (Object.keys(contextLayers) as ContextLayer[]).find((layer) => contextLayers[layer].variables.some((variable) => variable.name === name))!;
 
 /** 范围能取到的层、各变量的取值，以及来自文件的变量往上找的起点。 */
-function scopeValues(store: Store, scope: VariableScope, skills: SkillSources, mcp?: McpView): { layers: ContextLayer[]; values: ContextValues; cwd?: string } {
+function scopeValues(store: Store, scope: VariableScope, sources: VariableSources): { layers: ContextLayer[]; values: ContextValues; cwd?: string } {
   switch (scope.kind) {
     case 'machine':
       return { layers: ['environment'], values: environmentVariables(store.machine) };
     case 'workspace': {
       const model = store.workspaceModel(scope.id);
       if (!model) throw new KiteError(`没有这个工作区：${scope.id}`, 404);
-      return { layers: ['environment', 'project', 'workspace'], cwd: model.workspace.cwd, values: workspaceVariables(model, skills) };
+      return { layers: ['environment', 'project', 'workspace'], cwd: model.workspace.cwd, values: workspaceVariables(model, sources.skills) };
     }
     case 'instance': {
       const thread = store.threadContext(scope.id);
       if (!thread) throw new KiteError(`没有这个线程：${scope.id}`, 404);
       return { layers: ['environment', 'project', 'workspace', 'agent'], cwd: thread.workspace.cwd,
-        values: threadVariables(thread, store.workspaceConstraints(thread.workspaceId), skills, mcp) };
+        values: threadVariables(thread, store.workspaceConstraints(thread.workspaceId), sources) };
     }
   }
 }
 
-export function previewVariable(store: Store, scope: VariableScope, name: string, skills: SkillSources, mcp?: McpView): VariablePreview {
+export function previewVariable(store: Store, scope: VariableScope, name: string, sources: VariableSources): VariablePreview {
   if (!isPublicVariable(name)) throw new KiteError(`${name} 不是公共变量，场景材料只在生成时才有`, 404);
-  const { layers, values, cwd } = scopeValues(store, scope, skills, mcp);
+  const { layers, values, cwd } = scopeValues(store, scope, sources);
   const layer = layerOf(name);
   if (!layers.includes(layer)) throw new KiteError(`${name} 在${contextLayers[layer].title}层，这里取不到`);
   try {
@@ -158,5 +164,5 @@ export function writeVariableFile(store: Store, workspaceId: string, name: strin
   if (current !== input.expectedSha256) throw new KiteError('文件已在别处修改，请重新读取', 409);
   mkdirSync(dirname(input.path), { recursive: true });
   writeFileSync(input.path, input.content);
-  return previewVariable(store, { kind: 'workspace', id: workspaceId }, name, skills);
+  return previewVariable(store, { kind: 'workspace', id: workspaceId }, name, { skills });
 }

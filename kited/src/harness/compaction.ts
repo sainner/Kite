@@ -22,7 +22,7 @@ export const compactTemplate: ContextDefinition = {
 };
 
 /** 描述当前状态的通知：范围之后有同类就丢弃，否则保留最新一条。从 Claude 导入的宿主通知按 hook 事件归类。 */
-const stateKinds = new Set(['context.updated', 'agent.configuration.changed', 'execution.permissions.changed', 'plugin.tools.changed']);
+const stateKinds = new Set(['context.updated', 'agent.configuration.changed', 'execution.permissions.changed', 'plugin.tools.changed', 'instances.changed']);
 const isState = (kind: string) => stateKinds.has(kind) || kind.startsWith('claude.');
 /** 估算用量达到窗口的这个比例时自动压缩。 */
 export const AUTO_COMPACT_RATIO = 0.85;

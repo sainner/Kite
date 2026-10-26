@@ -1,8 +1,7 @@
 /** 会话标题的材料、触发规则和保存边界；模型调用由轻任务入口提供。 */
 import { assembleContext, bindContext, sceneValues } from './harness/context/assembler.ts';
-import { threadVariables, type McpView } from './context-variables.ts';
+import { threadVariables, type VariableSources } from './context-variables.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
-import type { SkillSources } from './harness/context/skills.ts';
 import type { AgentInstance } from './model.ts';
 import type { Store } from './store.ts';
 import type { DisplayRecord, History } from './transcript/protocol.ts';
@@ -85,14 +84,12 @@ export class ThreadTitles {
   private closed = false;
 
   constructor(private store: Store, private tasks: LightTasks, private templates: ContextTemplates, private host: {
-    /** Kite 的 skill 来源，模板引用 skill 清单时用。 */
-    skills: SkillSources;
     history(id: string): Promise<History>;
     changed(thread: AgentInstance): void;
     /** 生成的标题与原来的不同；原样返回的只推进生成进度，不算改名。 */
     renamed(id: string): void;
-    /** 这台工作机的 MCP 服务，公共变量 mcp.servers 用。 */
-    mcp: McpView;
+    /** 模板引用的公共变量从这里取。 */
+    variables: VariableSources;
   }) {}
 
   refresh(id: string): Promise<void> {
@@ -157,7 +154,7 @@ export class ThreadTitles {
     // 每次生成读取已保存的模板；本次展开后固定，不受后续编辑影响。
     const template = this.templates.get(titleTemplate.id, 'thread.title');
     const { instructions, input } = assembleContext(bindContext(template.definition, {
-      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId), this.host.skills, this.host.mcp),
+      ...threadVariables(thread, this.store.workspaceConstraints(thread.workspaceId), this.host.variables),
       ...sceneValues<'thread.title'>({ 'title.current': JSON.stringify(title.title), 'title.messages': content.input }),
     }));
     let text: string;

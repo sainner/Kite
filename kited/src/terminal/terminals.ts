@@ -33,7 +33,7 @@ import { numberedTitle, type PluginInstance } from '../model.ts';
 import type { AppProcess } from '../preview/app-windows.ts';
 import type { Store } from '../store.ts';
 import { systemCommand } from '../system-command.ts';
-import { terminalState, type TerminalState } from './state.ts';
+import { exitResult, terminalState, type TerminalState } from './state.ts';
 
 export const terminalDefinitionId = 'kite.terminal';
 
@@ -53,7 +53,7 @@ export const terminalExitContextDefinition: ContextDefinition = {
 /** 实例配置：转到后台的命令记下命令与完整日志的位置；用户开的终端与预览实例没有。 */
 const configSchema = z.object({ command: z.string(), log: z.string() }).strict();
 /** 代理的 shell 转到后台的命令：跑在那个代理的沙箱里。 */
-const adoptedCommand = (instance: Pick<PluginInstance, 'config'>) =>
+export const adoptedCommand = (instance: Pick<PluginInstance, 'config'>) =>
   instance.config.terminal === undefined ? undefined : configSchema.parse(instance.config.terminal);
 
 const sizeSchema = z.object({ cols: z.number().int().min(2).max(1000), rows: z.number().int().min(1).max(1000) }).strict();
@@ -506,7 +506,7 @@ export class Terminals {
    * 告诉启动它的代理命令结束了；代理归档了就不送。投递失败稍后用同一 ID 补送几次。ID 带上进程号：预览在同一个实例里重新起过的，每一轮各通知一次。
    */
   private notify(instance: PluginInstance, target: string, state: TerminalState, output: string, pid: number): void {
-    const result = state.reason ?? (state.signal ? `被信号 ${state.signal} 停下` : `退出码 ${state.exitCode ?? '未知'}`);
+    const result = exitResult(state);
     const text = assembleContext(bindContext(this.host.template(), { ...this.host.variables(target), ...sceneValues<'terminal.exit'>({
       'terminal.title': instance.title, 'terminal.id': instance.id, 'terminal.result': result,
       'terminal.output': output.trim() || '（没有输出）',

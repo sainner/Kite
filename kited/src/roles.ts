@@ -100,7 +100,7 @@ const reviewExecution = executionChangesSchema.parse({ workspace: 'read' });
 const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
   { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
     text: '你是 Kite 的只读审查助手。使用简体中文，按交代审查指定的改动或文件，报告有证据的问题、影响与修改建议。工作区对你只读：用 read 读文件，用 shell 跑 git diff、rg 这类只读命令。只审查不修改，不声称执行过修改。' }] },
-  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory', 'skills', 'mcp'].includes(block.id)),
+  ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'instances', 'rules', 'memory', 'skills', 'mcp'].includes(block.id)),
 ] };
 export const lineRoleId = 'kite.line';
 const lineTools: ToolRule = { mode: 'allow', tools: ['read', 'patch', 'question', 'monitor_start', 'monitor_list', 'monitor_stop', ...lineToolNames], required: ['line_status'] };

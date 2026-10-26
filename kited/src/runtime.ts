@@ -9,7 +9,7 @@ import type { RuntimeEvent } from './events.ts';
 import type { RunnerState } from './claude/runner.ts';
 import { openClaudeHost } from './claude/host.ts';
 import { assembleContext, restoreContext } from './harness/context/assembler.ts';
-import { contextUpdateContext } from './harness/context/notifications.ts';
+import { contextUpdateContext, instancesChangedContext, rosterOf } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
 import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
 import { deepseekKey, harnessModel } from './harness/adapters.ts';
@@ -18,7 +18,7 @@ import { agentPolicy, harnessPolicy } from './execution/policy.ts';
 import { effectiveExecution, executionRevision, instanceExecutionChanges } from './execution/grants.ts';
 import { projectContext, SkillCatalog } from './harness/context/project.ts';
 import { skillsBinding, type SkillSources } from './harness/context/skills.ts';
-import { effectiveTools, threadVariables, type McpView } from './context-variables.ts';
+import { effectiveTools, threadVariables, type InstancesView, type McpView } from './context-variables.ts';
 import type { ProjectConstraints } from './account-data/registry.ts';
 import type { McpServers } from './mcp/servers.ts';
 import { instanceMcp, MCP_TOOL_PREFIX } from './mcp/tools.ts';
@@ -108,6 +108,7 @@ export interface RuntimeHost {
   /** 宿主提供的 Kite 工具：协作操作（另须授权）与线程自己的提问。 */
   operations: { tools: Tool[]; prepare(instance: PluginInstance): OperationToolSelection };
   contextUpdateTemplate(): ContextDefinition;
+  instancesTemplate(): ContextDefinition;
   compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
   /** 两个时刻之间工作区的净文件变化。 */
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
@@ -118,6 +119,8 @@ export interface RuntimeHost {
   constraints(): ProjectConstraints | undefined;
   /** 这台工作机的外部 MCP 服务；生效的服务的工具按需加载，每次请求和调用前按此刻的开关与约束取。 */
   mcp?: McpView & Pick<McpServers, 'tools'>;
+  /** 公共变量 workspace.instances 的取值，见 workspace-instances.ts。 */
+  instances?: InstancesView;
   /** 命令连接名单外的主机时交给它决定：按问的那一刻实例的审批模式放行、拒绝或问人，中途改模式对运行中的命令也生效。 */
   askNetwork: NetworkAsk;
   /** shell 的长命令转到后台终端：超时、用户插话或模型要求时接管，见 terminal/terminals.ts。 */
@@ -150,7 +153,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
   const basePolicy = await harnessPolicy({ cwd, env: process.env, home, repository: host.repository });
   // 两个宿主在请求边界刷新它；工具、沙箱放行和这里给代理的清单用同一份。
   const skills = new SkillCatalog(cwd, host.skills);
-  const variables = (current: ThreadContext) => ({ ...threadVariables(current, host.constraints(), host.skills, host.mcp),
+  const variables = (current: ThreadContext) => ({ ...threadVariables(current, host.constraints(), { skills: host.skills, mcp: host.mcp, instances: host.instances }),
     'project.skills': () => skillsBinding(skills.skills) });
   const policy = () => agentPolicy(basePolicy, cwd, instanceExecutionChanges(host.current()), host.constraints()?.execution, host.secretFiles());
   const mcpTools = (current: ThreadContext) => host.mcp?.tools(host.mcp.effective(instanceMcp(current), host.constraints()?.mcp?.deny)) ?? [];
@@ -184,8 +187,15 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const allowed = new Set([...agent.tools.filter(permitted), ...plugins.map((tool) => tool.name), ...external.map((tool) => tool.name)]);
         const updates = host.notifications(afterNotification);
         const values = variables(current);
-        const instructions = assembleContext(projectContext(agent.context, values)).instructions;
-        return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, values, host.contextUpdateTemplate())).instructions,
+        const assembled = assembleContext(projectContext(agent.context, values));
+        const { instructions, stable } = assembled;
+        const roster = rosterOf(assembled);
+        return { agent, instructions, stable, ...(roster !== undefined ? { roster } : {}),
+          contextUpdate: assembleContext(contextUpdateContext(instructions, values, host.contextUpdateTemplate())).instructions,
+          instancesChanged: (previous: string) => {
+            const changed = instancesChangedContext(previous, roster!, values, host.instancesTemplate());
+            return changed ? assembleContext(changed).instructions : '';
+          },
           tools: [...web, ...operations.tools, ...plugins, ...external], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
@@ -229,6 +239,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         },
         instructions: projectContext(agent.context, values), variables: values,
         contextUpdateTemplate: host.contextUpdateTemplate(),
+        instancesTemplate: host.instancesTemplate(),
         compactionTemplates: host.compactionTemplates(),
         settings: { model: choice, contextWindow,
           execution: { grants: execution, revision: executionRevision(execution) },

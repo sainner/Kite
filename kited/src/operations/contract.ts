@@ -302,10 +302,13 @@ const targets = z.discriminatedUnion('kind', [
 ]);
 export type GrantTargets = z.infer<typeof targets>;
 export type GrantRange = z.infer<typeof range>;
+/** 按协作范围列实例的 list 操作；预览的 list 不分范围。 */
+export const listOperations = ['agent.list', 'monitor.list', 'terminal.list'] as const;
+export type ListOperation = typeof listOperations[number];
 export const operationGrantsSchema = z.array(z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('plugin.call'), instanceId: id, tools: z.array(id).min(1) }).strict(),
   z.object({ operation: z.literal('agent.start'), roleIds: z.array(id) }).strict(),
-  ...(['agent.list', 'monitor.list', 'terminal.list'] as const).map((operation) => z.object({ operation: z.literal(operation), targets: range }).strict()),
+  ...listOperations.map((operation) => z.object({ operation: z.literal(operation), targets: range }).strict()),
   ...(['agent.send', 'agent.stop', 'agent.merge', 'monitor.stop', 'terminal.read', 'terminal.stop'] as const).map((operation) => z.object({ operation: z.literal(operation), targets }).strict()),
   z.object({ operation: z.literal('monitor.start') }).strict(),
   /** 预览的操作不分目标：本工作区的预览都能起、看、操作和停，不限创建来源。 */

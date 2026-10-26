@@ -18,3 +18,6 @@ export const stateSchema = z.object({
 export type TerminalState = z.infer<typeof stateSchema>;
 export const terminalState = (instance: Pick<PluginInstance, 'state'>): TerminalState | undefined =>
   instance.state.terminal === undefined ? undefined : stateSchema.parse(instance.state.terminal);
+/** 结束的原因：被停下时是停下的原因，否则是信号或退出码。 */
+export const exitResult = (state: TerminalState): string =>
+  state.reason ?? (state.signal ? `被信号 ${state.signal} 停下` : `退出码 ${state.exitCode ?? '未知'}`);

@@ -14,7 +14,11 @@ const schema = z.object({
     status: z.enum(['queued', 'submitted', 'active', 'done', 'cancelled']), delivered: z.boolean(), midTurn: z.boolean().default(false) })),
   stops: z.array(z.object({ id: z.string(), request: z.string(), returned: z.array(input), completed: z.boolean().default(false), by: stopBy.optional() })),
   processes: processGroupsSchema,
-  initialContext: z.string().optional(), context: z.string().optional(), through: z.number().default(0),
+  /**
+   * initialContext 是系统提示；context 是最近交给模型的基础上下文去掉另由通知告知的变量后的正文（ContextAssembly.stable），比它决定要不要重发；
+   * roster 是那时代理已知的工作区现况，比它决定要不要补现况变化的通知。
+   */
+  initialContext: z.string().optional(), context: z.string().optional(), roster: z.string().optional(), through: z.number().default(0),
   paused: z.boolean().default(false),
   /** 切换后端前由另一后端处理过的输入，重发同一 ID 不再投递。 */
   importedInputs: z.array(z.string()).default([]),

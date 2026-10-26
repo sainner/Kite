@@ -17,7 +17,7 @@ import type { AgentInstance, PluginInstance, ThreadContext } from './model.ts';
 import { roleOperationGrants, type OperationGrant } from './operations/contract.ts';
 import { agentToolCatalog } from './plugins/definitions.ts';
 import { pluginToolBindings, pluginToolGranted, type PluginToolBinding } from './plugins/tools.ts';
-import { effectiveTools, threadVariables } from './context-variables.ts';
+import { effectiveTools, threadVariables, type VariableConstraints } from './context-variables.ts';
 import { checkTools, instanceRole, roleAgent, toolLimits, type ProjectToolRule, type RoleBinding, type RoleSelection } from './roles.ts';
 import type { Runtime } from './runtime.ts';
 import { instanceMcp } from './mcp/tools.ts';
@@ -30,7 +30,7 @@ const MAX_TRUSTED_SCRIPTS = 50;
 export const trustedScripts = (instance: Pick<PluginInstance, 'config'>): string[] =>
   z.array(z.string()).catch([]).parse(instance.config.trustedScripts);
 
-type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'skillSources' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history'
+type ConfigurationServices = Pick<Kite, 'store' | 'home' | 'variableSources' | 'workspace' | 'operations' | 'plugins' | 'catalog' | 'contextTemplates' | 'roles' | 'history'
   | 'terminals' | 'mcp'>;
 
 interface ConfigurationControl {
@@ -161,7 +161,7 @@ export class InstanceConfiguration {
     return {
       id: randomUUID(), kind: 'execution.permissions.changed', source, authority: 'instruction',
       context: assembleContext(executionPermissionsContext(executionRevision(effective),
-        threadVariables(thread, { ...this.constraints(thread.workspaceId), execution: project }, this.kite.skillSources, this.kite.mcp),
+        this.variables(thread, { ...this.constraints(thread.workspaceId), execution: project }),
         this.kite.contextTemplates.get(executionPermissionsContextDefinition.id, executionPermissionsContextDefinition.scene).definition)).snapshot,
     } as const;
   }
@@ -250,9 +250,9 @@ export class InstanceConfiguration {
   private projectExecution(workspaceId: string): ProjectExecution | undefined {
     return this.constraints(workspaceId)?.execution;
   }
-  /** 通知里的公共变量取 thread 给出的变化之后的状态。 */
-  private variables(thread: ThreadContext) {
-    return threadVariables(thread, this.constraints(thread.workspaceId), this.kite.skillSources, this.kite.mcp);
+  /** 通知里的公共变量取 thread 与 constraints 给出的变化之后的状态。 */
+  private variables(thread: ThreadContext, constraints: VariableConstraints | undefined = this.constraints(thread.workspaceId)) {
+    return threadVariables(thread, constraints, this.kite.variableSources);
   }
   /** 这个代理可开的工具：代理插件声明的全部工具，经创建时角色的规则约束；项目约束另作实时过滤。 */
   private toolLimits(instance: PluginInstance) {
@@ -300,8 +300,7 @@ export class InstanceConfiguration {
     return {
       id: randomUUID(), kind: 'agent.configuration.changed', source, authority: 'instruction',
       context: assembleContext(agentConfigurationContext(agentRevision(agent),
-        threadVariables({ ...thread, config: { ...thread.config, agent } }, { ...this.constraints(thread.workspaceId), tools: project },
-          this.kite.skillSources, this.kite.mcp),
+        this.variables({ ...thread, config: { ...thread.config, agent } }, { ...this.constraints(thread.workspaceId), tools: project }),
         this.kite.contextTemplates.get(agentConfigurationContextDefinition.id, agentConfigurationContextDefinition.scene).definition)).snapshot,
     } as const;
   }

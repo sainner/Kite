@@ -140,6 +140,8 @@ export interface HarnessRequest {
   variables?: ContextValues;
   /** 本次基础上下文变化时使用的通知模板；独立宿主未指定时使用内置定义。 */
   contextUpdateTemplate?: ContextDefinition;
+  /** 工作区现况变化时使用的通知模板；未指定时使用内置定义。 */
+  instancesTemplate?: ContextDefinition;
   /** 压缩指令与摘要包装（thread.compact）及净文件变化通知（thread.file_changes）；未指定时使用内置定义。 */
   compactionTemplates?: { compact?: ContextDefinition; fileChanges?: ContextDefinition };
   settings: RequestSettings;

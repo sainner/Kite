@@ -27,7 +27,7 @@
 
 ### 公共变量
 
-公共变量只收变化不频繁的状态。基础上下文在每次请求边界重新组装，正文一变就追加一整份基础上下文更新；未提交改动、diff、检查结果、快照和排队输入这类随工具批次变化的状态不做公共变量，由工具按需读取。每个变量的说明写明内容、何时为空和何时变化，编辑器据此提示。
+公共变量只收变化不频繁的状态。基础上下文在每次请求边界重新组装，正文一变就追加一整份基础上下文更新；例外是 `workspace.instances`：比对正文变没变时当它为空，它的变化另由 `thread.instances_changed` 通知告知（见 [工作区现况](实例操作.md#工作区现况)），基础上下文因别的变化重发时取当时的名单。未提交改动、diff、检查结果、快照和排队输入这类随工具批次变化的状态不做公共变量，由工具按需读取。每个变量的说明写明内容、何时为空和何时变化，编辑器据此提示。
 
 | 层 | 变量 | 内容与变化 |
 |---|---|---|
@@ -45,6 +45,7 @@
 | | `agent.model`、`agent.reasoning`、`agent.tools` | 实例配置；工具用顿号分隔，一个都没有时是「无」 |
 | | `execution.grants` | 当前执行授权，JSON |
 | | `plugin.tools` | 已授权的插件工具及目标实例，JSON；全部撤回时是 `[]` |
+| | `workspace.instances` | 工作区现况：本工作区里这个代理用得上的实例，每行一个，取法见 [工作区现况](实例操作.md#工作区现况)；一个都没有时为空，变化不重发基础上下文 |
 | | `mcp.servers` | 这个代理能用的外部 MCP 服务，每条一行：服务名，有说明时接一句；只列实例打开、本机装了、项目没禁的，一个都没有时为空 |
 
 规则是指令，记忆索引是背景，两者分开提供，角色各自决定标题、引导语和位置；例如 Line 的记忆索引是关于用户的记忆，普通代理的是项目里积累的决定。工作树边界写在默认角色的提示词里，宿主不在工作树里另外追加段落。规则的来源分层见 [产品架构](产品架构.md#两层协议与上下文)：角色提示词就是用户层，项目层经 `project.rules` 进入模板，机器层有内容时再加变量。
@@ -68,6 +69,7 @@ skill 清单只给名字和说明，正文由模型用 `skill` 工具按名字�
 | `thread.plugin_tools_changed` | 全部 | 无 | 插件工具授权变化 |
 | `line.monitor` | 全部 | `monitor.delegated`、`monitor.results`、`monitor.briefing` | 唤醒 Line：交给它的事项、它发起的工作的结果与回来时的简报 |
 | `monitor.events` | 全部 | `monitor.title`、`monitor.id`、`monitor.events` | 代理开的 monitor 投来的新事件 |
+| `thread.instances_changed` | 全部 | `instances.change` | 工作区现况变化：这个代理看得到的变化，新的名单取公共变量 `workspace.instances`，见 [工作区现况](实例操作.md#工作区现况) |
 | `agent.report` | 全部 | `report.title`、`report.id`、`report.result`、`report.reply` | 交代给子代理的回合结束了：子代理的标题与实例 ID、结果、最后回复的末尾 |
 | `agent.workspace` | 全部 | `child.workspace`、`child.id`、`child.result` | 用 isolation 开出的子工作区有了结果：合回或没能合回、没准备好 |
 | `template.emblem` | 环境 | `template.title`、`template.content` | 按角色名称与提示词设计点阵签名 |

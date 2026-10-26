@@ -44,6 +44,7 @@ export const contextLayers = {
       { name: 'agent.tools', title: '允许的工具', description: '允许的工具名称，已按项目约束过滤，工作树里没有 .kite/check 时不含 check，用顿号分隔；一个都没有时是「无」，修改配置或项目约束后变化。' },
       { name: 'execution.grants', title: '执行授权', description: '工作目录、额外读写路径与网络访问的当前授权，JSON 格式；修改执行授权后变化。' },
       { name: 'plugin.tools', title: '插件工具', description: '已授权的插件工具按实例分组，JSON 格式：每项是实例 ID 与它的工具，name 是调用用的名字；全部撤回时是 []，修改授权后变化。' },
+      { name: 'workspace.instances', notified: true, title: '工作区现况', description: '本工作区里这个代理用得上的实例，每行一个：同伴代理、终端、预览与 monitor，只列它调对应 list 工具看得到的，不含代理转到后台的命令。带种类、标题与实例 ID，终端与预览带在跑还是已结束，预览带分给目标的端口，它自己开的注明。一个都没有时为空。变化不重发基础上下文，另由「工作区现况变化」通知告知。' },
       { name: 'mcp.servers', title: 'MCP 服务', description: '这个代理能用的外部 MCP 服务，每条一行：服务名，有说明时接一句说明。只列实例打开、这台工作机装了、项目约束没禁的；一个都没有时为空，开关服务、改项目约束或在这台工作机上增删服务后变化。' },
     ],
   },
@@ -177,6 +178,13 @@ export const contextScenes = {
       { name: 'terminal.output', title: '输出的末尾', description: '最后约 3000 个字符的输出；没有输出时写明。' },
     ],
   },
+  'thread.instances_changed': {
+    title: '工作区现况变化',
+    layers: allLayers,
+    variables: [
+      { name: 'instances.change', title: '变化', description: '这个代理看得到的变化，每行一条：多了、关掉或归档了、起来了或结束了（带原因）的实例，各带实例 ID。' },
+    ],
+  },
   'agent.report': {
     title: '子代理回报',
     layers: allLayers,
@@ -220,6 +228,10 @@ export function sceneVariables(scene: ContextScene): SceneVariable[] {
     ...layers.flatMap((layer) => contextLayers[layer].variables.map((variable) => ({ ...variable, group: contextLayers[layer].title, layer }))),
   ];
 }
+
+/** 标了 notified 的公共变量变化时不重发基础上下文、另由通知告知：比对基础上下文变没变时当它为空，见 ContextAssembly.stable。 */
+export const notifiedVariables: ReadonlySet<string> = new Set(Object.values(contextLayers)
+  .flatMap((layer) => layer.variables.flatMap((variable) => 'notified' in variable && variable.notified ? [variable.name] : [])));
 
 export const isPublicVariable = (name: string): name is PublicVariable =>
   Object.values(contextLayers).some((layer) => layer.variables.some((variable) => variable.name === name));

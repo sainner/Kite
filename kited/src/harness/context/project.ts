@@ -34,6 +34,8 @@ export const defaultContextDefinition: ContextDefinition = {
     paragraph('verification', '交付', '不要擅自部署。'),
     paragraph('worktree-boundary', '工作树边界',
       '当前目录是 Kite 为这个工作区创建的工作树，同一工作区的其他线程可能同时在改文件。Kite 在工具批次和回合结束后保存快照；提交和推送只由 Kite 做，你不提交也不推送，集成或回退由用户决定。'),
+    material('workspace.instances', 'instances', '工作区现况',
+      '下面是这个工作区里你用得上的实例：同伴代理、终端、预览和 monitor，用对应的工具带实例 ID 操作。之后有变化会另行通知你，以最新的名单为准。\n'),
     material('project.rules', 'rules', '项目规则'),
     material('project.memory', 'memory', '记忆索引'),
     material('project.skills', 'skills', '可用 skill',

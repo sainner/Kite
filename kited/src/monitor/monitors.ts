@@ -44,6 +44,8 @@ const configSchema = z.union([
 ]);
 export type MonitorConfig = z.infer<typeof configSchema>;
 export const monitorConfig = (instance: Pick<PluginInstance, 'config'>): MonitorConfig => configSchema.parse(instance.config.monitor);
+/** 代理开的 monitor；Line 的收件箱也是 monitor，不算。 */
+export const agentMonitor = (instance: Pick<PluginInstance, 'config'>): boolean => 'sources' in monitorConfig(instance);
 
 const eventSchema = z.object({
   seq: z.number().int(), at: z.number(), source: z.string(),
@@ -157,7 +159,7 @@ export class Monitors {
 
   /** 工作区里代理开的 monitor 与来源状态；Line 的收件箱也是 monitor，不列。 */
   list(workspaceId: string) {
-    return this.monitors(workspaceId).filter((instance) => instance.status === 'open' && 'sources' in monitorConfig(instance))
+    return this.monitors(workspaceId).filter((instance) => instance.status === 'open' && agentMonitor(instance))
       .map((instance) => this.summary(instance));
   }
 

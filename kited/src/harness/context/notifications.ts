@@ -3,7 +3,7 @@
  * values 是宿主给的公共变量，取变化之后的状态，通知在生成时取值并随通知固定。
  */
 import { bindContext, sceneValues } from './assembler.ts';
-import type { ContextDefinition, ContextSource, ContextValues } from './types.ts';
+import type { ContextAssembly, ContextDefinition, ContextSource, ContextValues } from './types.ts';
 
 export const pluginToolsContextDefinition: ContextDefinition = {
   version: 2, id: 'kite.plugin-tools', title: '插件工具授权变更', scene: 'thread.plugin_tools_changed',
@@ -100,3 +100,50 @@ export function contextUpdateContext(
   return bindContext(definition, { ...values, ...sceneValues<'thread.context_updated'>({ 'context.instructions': instructions }) });
 }
 
+
+export const instancesChangedContextDefinition: ContextDefinition = {
+  version: 2, id: 'kite.instances-changed', title: '工作区现况变化', scene: 'thread.instances_changed',
+  blocks: [
+    { type: 'paragraph', id: 'change', title: '变化', parts: [
+      { type: 'text', text: '工作区里你用得上的实例有变化：\n' }, { type: 'variable', name: 'instances.change' },
+    ] },
+    { type: 'condition', id: 'current', title: '现在的名单', variable: 'workspace.instances',
+      cases: [{ id: 'current-none', title: '没有', equals: '', blocks: [
+        { type: 'paragraph', id: 'current-empty', title: '没有', parts: [{ type: 'text', text: '现在没有你用得上的实例。' }] },
+      ] }],
+      otherwise: { id: 'current-some', title: '有', blocks: [
+        { type: 'paragraph', id: 'current-list', title: '名单', parts: [
+          { type: 'text', text: '现在的名单，替代先前给你的：\n' }, { type: 'variable', name: 'workspace.instances' },
+        ] },
+      ] } },
+    { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text', text: '这是告知，不用回应。' }] },
+  ],
+};
+
+/** 基础上下文里的工作区现况；模板没用这个变量时为 undefined，不跟踪变化。 */
+export const rosterOf = (assembly: ContextAssembly): string | undefined => assembly.snapshot.bindings['workspace.instances']?.text;
+
+/**
+ * 工作区现况从 previous 变成 current 时给代理的通知：多了、变了、不在了的各一行，附上新的名单；代理自己开的实例出现时它从工具结果里已经知道，
+ * 不算，只有这种变化时为 undefined。两个后端在请求边界、基础上下文没有整份重发时调用。
+ * 名单每行的写法见 workspace-instances.ts 的 line，按「实例 ID」后面的编号对上前后两份。
+ */
+export function instancesChangedContext(
+  previous: string, current: string, values: ContextValues = {}, definition: ContextDefinition = instancesChangedContextDefinition,
+): ContextSource | undefined {
+  if (definition.scene !== 'thread.instances_changed') throw new Error('工作区现况通知须使用 thread.instances_changed 场景');
+  const items = (roster: string) => new Map(roster.split('\n').filter(Boolean).map((line) => {
+    const item = line.replace(/^- /, '');
+    return [/实例 ID ([^，\s]+)/.exec(item)?.[1] ?? item, item];
+  }));
+  const before = items(previous);
+  const after = items(current);
+  const changes = [
+    ...[...after].flatMap(([id, item]) => before.get(id) === item || !before.has(id) && item.endsWith('，你开的') ? []
+      : [`- ${before.has(id) ? '变了' : '多了'}：${item}`]),
+    ...[...before].flatMap(([id, item]) => after.has(id) ? [] : [`- 不在了：${/^.*?实例 ID [^，\s]+/.exec(item)?.[0] ?? item}`]),
+  ];
+  if (!changes.length) return undefined;
+  return bindContext(definition, { ...values, ...sceneValues<'thread.instances_changed'>({ 'instances.change': changes.join('\n') }),
+    'workspace.instances': () => ({ text: current }) });
+}

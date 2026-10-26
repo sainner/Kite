@@ -1,5 +1,6 @@
 /** Journal 的同步投影：请求、工具与压缩段共享同一份历史状态。 */
 import { restoreContext } from './context/assembler.ts';
+import { rosterOf } from './context/notifications.ts';
 import { roughTokens, SKILL_LOADED } from './compaction.ts';
 import { fromUser, sameInput } from './input.ts';
 import type { ContextItem, Input, JournalRecord, ModelItem, Outcome, ToolDefinition, ToolImage, ToolResult } from './types.ts';
@@ -77,7 +78,10 @@ export class HarnessHistory {
   readonly contexts = new Set<string>();
   readonly configurations = new Set<string>();
   baseInstructions?: string;
-  currentInstructions?: string;
+  /** 最近一次请求的基础上下文去掉另由通知告知的变量后的正文（见 ContextAssembly.stable），比它决定要不要重发。 */
+  currentStable?: string;
+  /** 最近一次请求时代理已知的工作区现况，比它决定要不要补现况变化的通知；不知道时为 undefined。 */
+  currentRoster?: string;
   toolDefinitions?: ToolDefinition[];
   notificationCursor = 0;
   readonly deliveredNotifications = new Set<string>();
@@ -111,12 +115,17 @@ export class HarnessHistory {
       const current = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === last.contextId);
       const configuration = records.find((row) => row.type === 'request.configured' && row.snapshot.id === last.configurationId);
       if (base?.type === 'context.prepared') this.baseInstructions = restoreContext(base.snapshot).instructions;
-      if (current?.type === 'context.prepared') this.currentInstructions = restoreContext(current.snapshot).instructions;
+      if (current?.type === 'context.prepared') {
+        const restored = restoreContext(current.snapshot);
+        this.currentStable = restored.stable;
+        this.currentRoster = rosterOf(restored);
+      }
       if (configuration?.type === 'request.configured') this.toolDefinitions = structuredClone(configuration.snapshot.tools);
       // 另一后端在此后已告知的基础上下文，不再作为更新重复投递。
       const imported = records.findLast((row) => row.type === 'context.imported');
       if (imported?.type === 'context.imported' && imported.seq > last.seq && imported.instructions !== undefined) {
-        this.currentInstructions = imported.instructions;
+        this.currentStable = imported.instructions;
+        this.currentRoster = undefined;
       }
     }
   }

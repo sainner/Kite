@@ -60,6 +60,8 @@ export type ResolvedContextBlock =
 
 export interface ContextAssembly {
   instructions: string;
+  /** 另由通知告知的变量（notifiedVariables）当作空的正文，判断基础上下文要不要重发时比它。 */
+  stable: string;
   input?: string;
   /** 定义保留全部页签，这里只记录实际选择的分支及 chip 的展开值。 */
   blocks: ResolvedContextBlock[];

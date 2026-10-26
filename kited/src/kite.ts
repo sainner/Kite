@@ -41,7 +41,8 @@ import { instanceAgent, type AgentDefinition } from './agents/definition.ts';
 import { InstanceLifecycle, type AgentChoice } from './instance-lifecycle.ts';
 import { ContextTemplates } from './context-templates.ts';
 import { defaultRoleId, instanceRole, lineRoleId, Roles, type RoleSelection, type RoleSnapshot } from './roles.ts';
-import { environmentVariables, previewVariable, storedThreadVariables, writeVariableFile, type VariableScope } from './context-variables.ts';
+import { environmentVariables, previewVariable, storedThreadVariables, writeVariableFile, type VariableScope, type VariableSources } from './context-variables.ts';
+import { WorkspaceInstances } from './workspace-instances.ts';
 import { LibrarySync, type LibraryChanges } from './library-sync.ts';
 import { agentDefinitionId, agentToolCatalog, agentTools } from './plugins/definitions.ts';
 import { addWorktree, excludeAttachments, excludeSecretFiles, removeSecretFile, removeWorktree, runSetup, writeSecretFiles } from './workspace/worktrees.ts';
@@ -49,7 +50,7 @@ import { Attachments, attachmentStore } from './workspace/attachments.ts';
 import { checkLogs } from './check.ts';
 import {
   agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
-  pluginToolsContextDefinition,
+  instancesChangedContextDefinition, pluginToolsContextDefinition,
 } from './harness/context/notifications.ts';
 import { defaultApprovalMode, effectiveExecution, instanceExecutionChanges, unsandboxedVerdict } from './execution/grants.ts';
 import { agentPolicy, harnessPolicy, withReads } from './execution/policy.ts';
@@ -177,6 +178,12 @@ export class Kite {
   readonly subscriptionLogins: SubscriptionLogins;
   readonly modelAccounts: ModelAccounts;
   readonly operations: InstanceOperations;
+  /** 每个代理的工作区现况，公共变量 workspace.instances 的取值。 */
+  readonly workspaceInstances: WorkspaceInstances;
+  /** 公共变量要从这里取的来源。 */
+  readonly variableSources: VariableSources;
+  /** 按线程当前保存的状态取公共变量，通知在生成时用。 */
+  private threadValues = (threadId: string) => storedThreadVariables(this.store, threadId, this.variableSources);
   readonly receipts: OperationReceipts;
   readonly catalog: PluginCatalog;
   readonly contextTemplates: ContextTemplates;
@@ -335,24 +342,26 @@ export class Kite {
       titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate, commitMessageTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
       pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
-      agentReportContextDefinition, agentWorkspaceContextDefinition,
+      agentReportContextDefinition, agentWorkspaceContextDefinition, instancesChangedContextDefinition,
     ]);
     this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
       catalog: this.catalog, skills: this.skills, changed: (changes) => this.libraryChanged(changes) });
     this.receipts = new OperationReceipts(store);
     this.operations = new InstanceOperations(this);
+    this.workspaceInstances = new WorkspaceInstances({ store, operations: this.operations });
     this.waits = new Waits((threadId, waiting) => bus.emit({ type: 'waiting', threadId, ...(waiting ? { waiting } : {}) }));
     this.asks = new Asks(store, (threadId, asks) => bus.emit({ type: 'asks', threadId, asks }));
     this.plugins = new PluginHost(this);
     this.mcp = new McpServers(home, (catalog) => bus.emit({ type: 'mcp.changed', ...(catalog ? { catalog } : {}) }),
       (references) => this.credentials.resolve(references));
+    this.variableSources = { skills: this.skillSources, mcp: this.mcp, instances: this.workspaceInstances };
     this.peers = new Peers({ self: () => ({ id: store.machine.id, name: store.machine.name, url: this.serving?.url }),
       machines: options.peers?.directory ?? (async () => this.directory.list()),
       fetch: (address, path, init) => this.peerFetch(address, path, init) });
     this.reports = new AgentReports({
       template: (scene) => this.contextTemplates.get({ 'agent.report': agentReportContextDefinition, 'agent.workspace': agentWorkspaceContextDefinition }[scene].id,
         scene).definition,
-      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources, this.mcp),
+      variables: this.threadValues,
       open: (instanceId) => store.instance(instanceId)?.status === 'open',
       title: (instanceId) => store.instance(instanceId)?.title ?? instanceId,
       reply: async (threadId) => (await this.reply(threadId)).reply?.text,
@@ -363,7 +372,7 @@ export class Kite {
     this.monitor = new LineMonitor({ store, peers: this.peers,
       line: () => this.lineInstance(), inbox: () => this.lineInbox(true), deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(lineMonitorContextDefinition.id, 'line.monitor').definition,
-      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources, this.mcp),
+      variables: this.threadValues,
       focused: () => this.attention.devices().length > 0,
       notify: (notification) => bus.emit({ type: 'line.notification', notification }),
       changed: () => bus.emit({ type: 'line.inbox' }) });
@@ -381,7 +390,7 @@ export class Kite {
       },
       deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(monitorEventsContextDefinition.id, 'monitor.events').definition,
-      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources, this.mcp),
+      variables: this.threadValues,
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       updated: (workspaceId, instanceId) => bus.emit({ type: 'monitor.changed', workspaceId, instanceId }),
@@ -441,7 +450,7 @@ export class Kite {
       collect: (instance) => this.instances.collect(instance),
       deliver: (threadId, text, inputId, notice) => this.send(threadId, text, inputId, { source: 'kite', notice }),
       template: () => this.contextTemplates.get(terminalExitContextDefinition.id, 'terminal.exit').definition,
-      variables: (threadId) => storedThreadVariables(store, threadId, this.skillSources, this.mcp),
+      variables: this.threadValues,
       forward: (ports) => this.serving?.network?.forward(ports),
       ...(options.terminalShell ? { shell: options.terminalShell } : {}),
       ...(options.terminalPortScanMs !== undefined ? { portScanMs: options.terminalPortScanMs } : {}) });
@@ -471,8 +480,8 @@ export class Kite {
         }))),
       });
       this.titles = new ThreadTitles(store, this.lightTasks, this.contextTemplates, {
-        skills: this.skillSources, history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
-        renamed: (id) => this.workspaceNames.follow(id), mcp: this.mcp,
+        history: (id) => this.history(id), changed: (thread) => this.threadChanged(thread),
+        renamed: (id) => this.workspaceNames.follow(id), variables: this.variableSources,
       });
     }
     this.workspaceNames = new WorkspaceNames(store, this.lightTasks, this.contextTemplates, this.skillSources, (id) => this.changed(id));
@@ -1514,7 +1523,7 @@ export class Kite {
   mcpSettings(id: string) { return this.configuration.mcpSettings(id); }
   configureMcpSettings(id: string, value: unknown) { return this.configuration.configureMcpSettings(id, value); }
   agentCapabilities(id: string) { return this.configuration.agentCapabilities(id); }
-  contextVariable(scope: VariableScope, name: string) { return previewVariable(this.store, scope, name, this.skillSources, this.mcp); }
+  contextVariable(scope: VariableScope, name: string) { return previewVariable(this.store, scope, name, this.variableSources); }
   writeContextVariableFile(workspaceId: string, name: string, input: { path: string; content: string; expectedSha256: string | null }) {
     return writeVariableFile(this.store, workspaceId, name, input, this.skillSources);
   }
@@ -1691,6 +1700,7 @@ export class Kite {
           approve: (request, signal) => this.waits.approve(id, request, signal) }) : [])],
       prepare: (instance) => this.operations.prepareTools(instance) },
       contextUpdateTemplate: () => this.contextTemplates.get(contextUpdateContextDefinition.id, contextUpdateContextDefinition.scene).definition,
+      instancesTemplate: () => this.contextTemplates.get(instancesChangedContextDefinition.id, instancesChangedContextDefinition.scene).definition,
       compactionTemplates: () => ({
         compact: this.contextTemplates.get(compactTemplate.id, compactTemplate.scene).definition,
         fileChanges: this.contextTemplates.get(fileChangesContextDefinition.id, fileChangesContextDefinition.scene).definition,
@@ -1702,6 +1712,7 @@ export class Kite {
       approveCheck: (script, reason, signal) => this.approveScript(id, { tool: 'check', name: '.kite/check', content: script, reason }, signal),
       constraints: () => this.store.projectConstraints(t.project.id),
       mcp: this.mcp,
+      instances: this.workspaceInstances,
       // web_fetch 读网页也经这里，按同一份网络许可问；记住的许可两边通用。
       askNetwork: ({ host, port, tool = 'shell', reason = '命令要连接网络许可之外的主机' }, signal) => {
         const bracketed = host.includes(':') ? `[${host}]` : host;

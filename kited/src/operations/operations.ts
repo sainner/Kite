@@ -7,7 +7,7 @@ import { KiteError, OperationError, operationError } from '../errors.ts';
 import type { Kite } from '../kite.ts';
 import { holds, type PluginInstance } from '../model.ts';
 import { callerDenied, definitionGrantDenied, grantTools, operationContracts, operationGrantsSchema, scopedOperations, type GrantTargets, type OperationCaller,
-  type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
+  type ListOperation, type OperationGrant, type OperationInput, type OperationName } from './contract.ts';
 import { effectiveExecution, instanceExecutionChanges } from '../execution/grants.ts';
 import { terminalDefinitionId } from '../terminal/terminals.ts';
 import { TARGETS_DIR } from '../preview/targets.ts';
@@ -242,20 +242,26 @@ export class InstanceOperations {
     }
   }
 
+  /** source 这项 list 授权够得着哪些实例；list 操作与工作区现况都按它筛。 */
+  listRange(source: PluginInstance, name: ListOperation): (target: PluginInstance) => boolean {
+    const grant = this.grants(source.id).grants.find((grant) => grant.operation === name);
+    const range = grant && 'targets' in grant ? grant.targets : undefined;
+    return (target) => !!range && this.reaches(source, target, range);
+  }
+
   /**
    * 一次 list 的筛选与每项共有的字段，调用方只查一次。
    * 列出调用方够得着的实例：界面看这个工作区的全部，代理与插件按这项 list 授权的范围，含子工作区里的后代；workspaces 是要找的工作区。
    */
-  private listing(caller: OperationCaller, workspaceId: string, name: 'agent.list' | 'monitor.list' | 'terminal.list') {
+  private listing(caller: OperationCaller, workspaceId: string, name: ListOperation) {
     const source = caller.kind === 'ui' ? undefined : this.kite.store.instance(caller.instanceId)!;
-    const grant = source && this.grants(source.id).grants.find((grant) => grant.operation === name);
-    const range = grant && 'targets' in grant ? grant.targets : undefined;
+    const inRange = source ? this.listRange(source, name) : undefined;
     const self = this.kite.store.workspace(workspaceId)!;
     const workspaces = source ? [self, ...this.kite.store.descendantWorkspaces(workspaceId)] : [self];
     const names = new Map(workspaces.map((w) => [w.id, w.name]));
     return {
       workspaces: workspaces.map((w) => w.id),
-      visible: (target: PluginInstance) => !source || !!range && this.reaches(source, target, range),
+      visible: (target: PluginInstance) => !inRange || inRange(target),
       item: (instance: PluginInstance) => ({ instanceId: instance.id, title: instance.title, createdBy: instance.origin?.instanceId ?? null,
         createdAt: instance.createdAt,
         ...(instance.workspaceId !== workspaceId ? { workspace: { id: instance.workspaceId, name: names.get(instance.workspaceId) ?? '' } } : {}),

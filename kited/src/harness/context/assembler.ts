@@ -1,7 +1,7 @@
 /** 预览和实际请求共用的纯组装器。不执行模板表达式、不改会话历史；自己不读文件，变量取值交给调用方给的函数。 */
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { contextScenes, sceneVariables, type ContextScene, type ContextVariable } from './scenes.ts';
+import { contextScenes, notifiedVariables, sceneVariables, type ContextScene, type ContextVariable } from './scenes.ts';
 import type {
   ContextAssembly, ContextBinding, ContextBlock, ContextDefinition, ContextSnapshot, ContextSource, ContextValues, ResolvedContextBlock,
 } from './types.ts';
@@ -136,13 +136,13 @@ function renderContext(snapshot: ContextSnapshot): ContextAssembly {
     if (!Object.hasOwn(snapshot.bindings, variable)) throw new Error(`上下文变量未提供：${variable}`);
     return snapshot.bindings[variable]!;
   };
-  const render = (blocks: ContextBlock[], paragraphs: string[]): ResolvedContextBlock[] => blocks.map((item) => {
+  const render = (blocks: ContextBlock[], paragraphs: string[], value = binding): ResolvedContextBlock[] => blocks.map((item) => {
     if (item.type === 'condition') {
-      const value = binding(item.variable).text;
-      const branch = item.cases.find((candidate) => candidate.equals === value) ?? item.otherwise;
-      return { type: 'condition', id: item.id, branchId: branch.id, blocks: render(branch.blocks, paragraphs) };
+      const text = value(item.variable).text;
+      const branch = item.cases.find((candidate) => candidate.equals === text) ?? item.otherwise;
+      return { type: 'condition', id: item.id, branchId: branch.id, blocks: render(branch.blocks, paragraphs, value) };
     }
-    const parts = item.parts.map((part) => part.type === 'text' ? part : { ...part, ...binding(part.name) });
+    const parts = item.parts.map((part) => part.type === 'text' ? part : { ...part, ...value(part.name) });
     const text = parts.map((part) => part.text).join('');
     if (text.length > 0) paragraphs.push(text);
     return { type: 'paragraph', id: item.id, text, parts };
@@ -151,8 +151,13 @@ function renderContext(snapshot: ContextSnapshot): ContextAssembly {
   const blocks = render(snapshot.definition.blocks, paragraphs);
   const input: string[] = [];
   const inputBlocks = snapshot.definition.input === undefined ? undefined : render(snapshot.definition.input, input);
+  const instructions = paragraphs.join('\n\n');
+  // 另由通知告知的变量当作空再排一遍；当作空时走到的分支里可能有没取值的变量，也当作空
+  const notified = Object.keys(snapshot.bindings).some((variable) => notifiedVariables.has(variable));
+  const stable: string[] = [];
+  if (notified) render(snapshot.definition.blocks, stable, (variable) => notifiedVariables.has(variable) ? { text: '' } : snapshot.bindings[variable] ?? { text: '' });
   return {
-    instructions: paragraphs.join('\n\n'), blocks,
+    instructions, stable: notified ? stable.join('\n\n') : instructions, blocks,
     ...(inputBlocks === undefined ? {} : { input: input.join('\n\n'), inputBlocks }),
     snapshot,
   };

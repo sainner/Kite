@@ -6,7 +6,7 @@ import { HarnessHistory, type ContextUnit } from './history.ts';
 import { inputSchema, returnedOnStop, sameInput } from './input.ts';
 import { loadedDefinitions, sameDefinition, TOOL_SEARCH } from './tool-search.ts';
 import { assembleContext, literalContext, restoreContext } from './context/assembler.ts';
-import { contextUpdateContext } from './context/notifications.ts';
+import { contextUpdateContext, instancesChangedContext, rosterOf } from './context/notifications.ts';
 import { notificationSchema, requestSnapshot } from './request-config.ts';
 import { AUTO_COMPACT_RATIO, compactInstructions, compactionItems, compactTemplate, summaryText } from './compaction.ts';
 import type { ContextAssembly } from './context/types.ts';
@@ -523,9 +523,15 @@ export class HarnessRunner implements ThreadRunner {
         cursor = notification.sequence;
       }
     }
-    if (this.history.currentInstructions !== undefined && this.history.currentInstructions !== context.instructions) notifications.push({
+    const roster = rosterOf(context);
+    const instances = roster !== undefined && this.history.currentRoster !== undefined && roster !== this.history.currentRoster
+      ? instancesChangedContext(this.history.currentRoster, roster, prepared.variables, prepared.instancesTemplate) : undefined;
+    if (this.history.currentStable !== undefined && this.history.currentStable !== context.stable) notifications.push({
       id: randomUUID(), kind: 'context.updated', source: 'host.context', authority: 'instruction',
       context: assembleContext(contextUpdateContext(context.instructions, prepared.variables, prepared.contextUpdateTemplate)).snapshot,
+    });
+    else if (instances) notifications.push({
+      id: randomUUID(), kind: 'instances.changed', source: 'host.instances', authority: 'observation', context: assembleContext(instances).snapshot,
     });
     await this.autoCompact(turn, prepared, context, configuration, notifications.map(({ context, ...notification }) => ({
       type: 'notification', notification, text: restoreContext(context).instructions })));
@@ -535,7 +541,8 @@ export class HarnessRunner implements ThreadRunner {
     this.record({ type: 'request.started', ...ids, inputIds: [...this.history.pending], contextId: context.snapshot.id,
       configurationId: configuration.id, notifications });
     this.history.baseInstructions ??= context.instructions;
-    this.history.currentInstructions = context.instructions;
+    this.history.currentStable = context.stable;
+    this.history.currentRoster = roster;
     this.history.toolDefinitions = structuredClone(configuration.tools);
     const saved = this.history.requests.get(requestId)!;
     let needsFollowUp = false;
