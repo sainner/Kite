@@ -18,7 +18,7 @@ export interface RequestTokens {
   /** Claude 的 1 小时缓存写入。 */
   cacheWrite1h?: number;
   output: number;
-  /** Claude 的快速模式，各类单价都翻倍。 */
+  /** 快速模式（Claude 的 fast、OpenAI 的 priority），各类单价都翻倍；OpenAI 2026-10-26 核对，长上下文档也是两倍。 */
   fast?: boolean;
 }
 

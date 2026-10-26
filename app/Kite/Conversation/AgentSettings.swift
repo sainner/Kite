@@ -108,6 +108,13 @@ extension AppModel {
         try requireCurrent()
         if let index = area.instances.firstIndex(where: { $0.id == id }) { area.instances[index].config = updated.instance.config }
     }
+
+    /// 开关实例的快速模式：不在代理配置里，不用版本号；存好先改本机这份实例配置，不等工作机推回。
+    func setFastMode(_ enabled: Bool, instance id: String, in area: WorkArea) async throws {
+        struct Update: Codable { let enabled: Bool }
+        let result = try await activeClient(in: area).request("/instances/\(id)/fast-mode", method: "PUT", body: Update(enabled: enabled), as: Update.self)
+        if let index = area.instances.firstIndex(where: { $0.id == id }) { area.instances[index].config?.fast = result.enabled }
+    }
 }
 
 /// 新代理草稿的配置：在所选角色允许的范围内调整工具与 MCP 服务；模型与思考强度在标题栏和输入区改。完成只改本机草稿。

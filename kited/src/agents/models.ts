@@ -22,6 +22,10 @@ export function catalogVendor(model: string): ModelVendor | undefined {
   return modelVendors.find((vendor) => vendor.models.some((entry) => entry.id === model));
 }
 
+/** 能开快速模式的型号，以目录里的 fast 为准；目录外的不算。 */
+export const supportsFast = (model: string): boolean => modelVendors.some((vendor) =>
+  vendor.models.some((entry) => entry.id === model && 'fast' in entry && entry.fast));
+
 /** 目录外的模型（如环境变量覆盖）按 OpenAI 处理。 */
 export const vendorOfModel = (model: string): ModelVendor => catalogVendor(model) ?? modelVendors[0];
 

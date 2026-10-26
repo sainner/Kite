@@ -130,9 +130,10 @@ export async function scanClaudeUsage(directory: string): Promise<HourlyUsage> {
   return usage;
 }
 
-/** 请求所用的模型在请求配置里：配置只在第一次用到时记一行，请求开始时引用它的 ID。 */
+/** 请求所用的模型与快速模式在请求配置里：配置只在第一次用到时记一行，请求开始时引用它的 ID。 */
+const configuredModel = z.object({ model: z.string(), fast: z.boolean().optional() });
 const kiteRecord = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('request.configured'), snapshot: z.object({ id: z.string(), settings: z.object({ model: z.object({ model: z.string() }) }) }) }),
+  z.object({ type: z.literal('request.configured'), snapshot: z.object({ id: z.string(), settings: z.object({ model: configuredModel }) }) }),
   z.object({ type: z.literal('request.started'), requestId: z.string(), configurationId: z.string() }),
   z.object({ type: z.literal('request.completed'), at: z.number(), requestId: z.string(), usage: z.object({
     input_tokens: z.number().finite(), output_tokens: z.number().finite(), total_tokens: z.number().finite().optional(),
@@ -159,23 +160,23 @@ export async function scanHarnessUsage(kiteHome: string, codexDirectory: string)
   const usage = (login: ModelVendor['login']) => logins.get(login) ?? logins.set(login, new Map()).get(login)!;
   const seen = new Set<string>();
   for (const file of await filesUnder(join(kiteHome, 'sessions'), (file) => basename(file) === 'journal.jsonl')) {
-    const configurations = new Map<string, string>(), requests = new Map<string, string>();
+    const configurations = new Map<string, z.infer<typeof configuredModel>>(), requests = new Map<string, z.infer<typeof configuredModel>>();
     for await (const raw of jsonLines(file, '"request.configured"', '"request.started"', '"request.completed"')) {
       const parsed = kiteRecord.safeParse(raw);
       if (!parsed.success) continue;
       const record = parsed.data;
-      if (record.type === 'request.configured') configurations.set(record.snapshot.id, record.snapshot.settings.model.model);
+      if (record.type === 'request.configured') configurations.set(record.snapshot.id, record.snapshot.settings.model);
       else if (record.type === 'request.started') {
-        const model = configurations.get(record.configurationId);
-        if (model) requests.set(record.requestId, model);
+        const configured = configurations.get(record.configurationId);
+        if (configured) requests.set(record.requestId, configured);
       } else if (!seen.has(record.requestId)) {
         seen.add(record.requestId);
-        const model = requests.get(record.requestId);
+        const configured = requests.get(record.requestId);
         const tokens = record.usage, details = tokens.input_tokens_details, time = new Date(record.at);
         // 读不到请求配置的按 ChatGPT 计，金额记为未计价。
-        addTokens(usage(model ? vendorOfModel(model).login : 'chatgpt'), time, tokens.total_tokens ?? tokens.input_tokens + tokens.output_tokens,
-          requestCost(model, openaiTokens(tokens.input_tokens, details?.cached_tokens ?? 0,
-            details?.cache_write_tokens ?? 0, tokens.output_tokens), time));
+        addTokens(usage(configured ? vendorOfModel(configured.model).login : 'chatgpt'), time, tokens.total_tokens ?? tokens.input_tokens + tokens.output_tokens,
+          requestCost(configured?.model, { ...openaiTokens(tokens.input_tokens, details?.cached_tokens ?? 0,
+            details?.cache_write_tokens ?? 0, tokens.output_tokens), fast: configured?.fast }, time));
       }
     }
   }

@@ -55,12 +55,7 @@ struct ThreadControls: View {
         .contentShape(.interaction, shape)
         .glassEffect(.regular.interactive(), in: shape)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
-        .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
-            Button("好", role: .cancel) { state.effortError = nil }
-        } message: { Text(state.effortError ?? "") }
-        .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
-            Button("好", role: .cancel) { state.voiceError = nil }
-        } message: { Text(state.voiceError ?? "") }
+        .controlsFailureAlert(state)
     }
 
     private func composer(_ controls: ThreadControlsModel, fading: FadingText?) -> some View {

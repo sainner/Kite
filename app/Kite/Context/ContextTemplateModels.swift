@@ -218,6 +218,7 @@ struct CreateThreadRequest: Encodable {
     var approval: ApprovalMode? = nil
     /// 草稿里选的 MCP 服务；没选时用角色的默认。
     var mcp: [String]? = nil
+    var fast: Bool? = nil
     /// 本机草稿的 ID，就是代理实例（也是线程）的 ID：建好后草稿原地变成这个代理，卡片不换。
     var instanceId: String? = nil
     var messageId: String? = nil

@@ -1491,6 +1491,7 @@ export class Kite {
   executionGrants(id: string) { return this.configuration.executionGrants(id); }
   approvalMode(id: string) { return this.configuration.approvalMode(id); }
   configureApprovalMode(id: string, value: unknown) { return this.configuration.configureApprovalMode(id, value); }
+  configureFastMode(id: string, value: unknown) { return this.configuration.configureFastMode(id, value); }
   configureExecutionGrants(id: string, expectedRevision: string, value: unknown) {
     return this.configuration.configureExecutionGrants(id, expectedRevision, value);
   }

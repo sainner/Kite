@@ -218,8 +218,7 @@ final class ControlsBarView: UIView {
         applyPose(fading: fading)
         if fading == nil { shownFading = nil }
         // 失败提示
-        if let error = controls.state.effortError { present("修改思考强度失败", error) { controls.state.effortError = nil } }
-        if let error = controls.state.voiceError { present("无法开始语音输入", error) { controls.state.voiceError = nil } }
+        if let failure = controls.state.failure { present(failure.title, failure.message) { controls.state.failure = nil } }
     }
 
     /// 回形针菜单里选了照片或文件：从最上面那一层弹出选择器。

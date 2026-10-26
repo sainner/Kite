@@ -19,9 +19,27 @@ private struct ClickPointer: ViewModifier {
 
 #if os(macOS)
 extension EnvironmentValues {
-    /// 托管在原生视图里、外层又是 SwiftUI 的内容（输入区里的回应卡片）：pointerStyle 轮不到，cursorUpdate 被外层收走设回箭头。
-    /// 指针进出可点的控件时报给托管它的原生视图，由它按 NativeCursor 给手形（见 ControlsBarView 的 ResponseClip）。
+    /// 托管在原生视图里、外层又是 SwiftUI 的内容（输入区里的回应卡片、思考强度）：pointerStyle 轮不到，cursorUpdate 被外层收走设回箭头。
+    /// 指针进出可点的控件时报给托管它的原生视图，由它按 NativeCursor 给手形（见 ClickPointerHost）。
     @Entry var clickPointerHover: (@MainActor (Bool) -> Void)?
+}
+
+/// 收 clickPointerHover 的原生视图：数着指针停在几个可点的控件上（进出成对报，相邻的两个可能先进后出），有就给手形。
+@MainActor protocol ClickPointerHost: NativeCursor {
+    var hoveredControls: Int { get set }
+}
+
+extension ClickPointerHost {
+    var nativeCursor: NSCursor? { hoveredControls > 0 ? .pointingHand : nil }
+
+    /// 离开控件时按指针下面的设：移到卡片里的输入框上是文字光标（见 nativeCursorUnderPointer），不一律设回箭头。
+    func hover(_ entered: Bool) {
+        hoveredControls = max(hoveredControls + (entered ? 1 : -1), 0)
+        (nativeCursor ?? nativeCursorUnderPointer() ?? .arrow).set()
+    }
+
+    /// 换掉托管的内容时清零：旧内容不会再报离开。
+    func resetHover() { hoveredControls = 0 }
 }
 #endif
 

@@ -188,6 +188,25 @@ export class InstanceConfiguration {
     });
   }
 
+  /**
+   * 快速模式是实例配置里的开关，不在代理配置里：只改请求怎么发，模型看不到，不发配置通知，运行中也能改，下一次模型请求生效。
+   * 开着才写 fast；当前型号不支持（见 supportsFast）时开关留着、请求照常发。
+   */
+  configureFastMode(id: string, value: unknown) {
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(value);
+    if (!parsed.success) throw new KiteError('快速模式开关无效');
+    const { enabled } = parsed.data;
+    return this.control.run(this.control.context(id).workspaceId, async () => {
+      const instance = this.control.openThread(id);
+      if ((instance.config.fast === true) !== enabled) {
+        const { fast: _fast, ...config } = instance.config;
+        this.kite.store.setInstanceConfig(id, enabled ? { ...config, fast: true } : config);
+        this.control.changed(instance.workspaceId);
+      }
+      return { enabled };
+    });
+  }
+
   /** 这台工作机装的服务与此刻的连接状态，给开关列表用。 */
   private mcpCatalog() {
     return this.kite.mcp.list().map(({ name, config, status }) => ({ name, description: config.description, phase: status.phase }));

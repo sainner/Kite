@@ -7,10 +7,10 @@
     { "id": "haiku", "tier": "haiku", "name": "haiku-5.5", "maxContextWindow": 1000000 }
   ],
   "models": [
-    { "id": "gpt-6-astra", "tier": "astra", "name": "astra-6", "maxContextWindow": 872000 },
-    { "id": "gpt-6.1-sol", "tier": "sol", "name": "sol-6.1", "maxContextWindow": 872000 },
-    { "id": "gpt-5.6-terra", "tier": "terra", "name": "terra-5.6", "maxContextWindow": 872000 },
-    { "id": "gpt-6-luna", "tier": "luna", "name": "luna-6", "maxContextWindow": 872000 }
+    { "id": "gpt-6-astra", "tier": "astra", "name": "astra-6", "maxContextWindow": 872000, "fast": true },
+    { "id": "gpt-6.1-sol", "tier": "sol", "name": "sol-6.1", "maxContextWindow": 872000, "fast": true },
+    { "id": "gpt-5.6-terra", "tier": "terra", "name": "terra-5.6", "maxContextWindow": 872000, "fast": true },
+    { "id": "gpt-6-luna", "tier": "luna", "name": "luna-6", "maxContextWindow": 872000, "fast": true }
   ],
   "deepseek": [
     { "id": "deepseek-flash", "tier": "flash", "name": "flash-4.1", "maxContextWindow": 1000000 }

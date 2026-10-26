@@ -46,12 +46,7 @@ struct MacControlsBar: View {
         .padding(.horizontal, Metrics.paneMargin)
         .padding(.bottom, Metrics.paneMargin)
         .frame(maxWidth: .infinity)
-        .alert("修改思考强度失败", isPresented: Binding(get: { state.effortError != nil }, set: { if !$0 { state.effortError = nil } })) {
-            Button("好", role: .cancel) { state.effortError = nil }
-        } message: { Text(state.effortError ?? "") }
-        .alert("无法开始语音输入", isPresented: Binding(get: { state.voiceError != nil }, set: { if !$0 { state.voiceError = nil } })) {
-            Button("好", role: .cancel) { state.voiceError = nil }
-        } message: { Text(state.voiceError ?? "") }
+        .controlsFailureAlert(state)
     }
 }
 
@@ -212,7 +207,9 @@ final class ControlsBarView: RepresentedRoot {
             effortKey = key
             // 刻度展开、收起时宽由 TimelineView 逐帧变，托管视图的固有尺寸不跟着逐帧报：框停在收着的宽，内容在框里居中、
             // 档位名被挤得换行，右边的刻度落在框外，指针移过去算移开（2026-10-14 Mac 实测）。按理想大小画、靠左，宽高由内容自己的几何报
+            effort.resetHover()
             effort.rootView = AnyView(ThreadEffortControl(controls: controls)
+                .environment(\.clickPointerHover) { [weak island = effort] in island?.hover($0) }
                 .fixedSize()
                 .onGeometryChange(for: CGSize.self) { $0.size } action: { [weak self] in self?.effortResized($0) }
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -539,20 +536,9 @@ final class ControlsBarView: RepresentedRoot {
 }
 
 /// 裁卡片的那一层和玻璃一样大：自己不接点击、不挡光标，卡片收起时下面的输入框照常点得中。
-/// 卡片里可点的控件的手形也由它给：托管的 SwiftUI 的 pointerStyle 轮不到（见 clickPointerHover），指针在控件上时按 NativeCursor 给手形。
-private final class ResponseClip: NSView, NativeCursor {
-    /// 指针正停在几个可点的控件上（进出成对报，相邻的两个可能先进后出）。
-    private var hovered = 0
-
-    var nativeCursor: NSCursor? { hovered > 0 ? .pointingHand : nil }
-
-    /// 离开控件时按指针下面的设：移到卡片里的输入框上是文字光标（见 nativeCursorUnderPointer），不一律设回箭头。
-    func hover(_ entered: Bool) {
-        hovered = max(hovered + (entered ? 1 : -1), 0)
-        (nativeCursor ?? nativeCursorUnderPointer() ?? .arrow).set()
-    }
-
-    func resetHover() { hovered = 0 }
+/// 卡片里可点的控件的手形也由它给：托管的 SwiftUI 的 pointerStyle 轮不到，见 ClickPointerHost。
+private final class ResponseClip: NSView, ClickPointerHost {
+    var hoveredControls = 0
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
@@ -560,8 +546,10 @@ private final class ResponseClip: NSView, NativeCursor {
     }
 }
 
-/// 思考强度的托管视图，按里面报的理想大小摆。
-private final class EffortIsland: NSHostingView<AnyView> {
+/// 思考强度的托管视图，按里面报的理想大小摆。快速模式开关的手形由它给，见 ClickPointerHost。
+private final class EffortIsland: NSHostingView<AnyView>, ClickPointerHost {
+    var hoveredControls = 0
+
     override var mouseDownCanMoveWindow: Bool { false }
 }
 #endif

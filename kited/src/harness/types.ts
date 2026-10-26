@@ -115,7 +115,7 @@ export interface ThreadNotification {
 
 export interface RequestSettings {
   execution?: { revision: string; grants: import('../execution/grants.ts').ExecutionGrants };
-  model?: { model: string; reasoning: string };
+  model?: { model: string; reasoning: string; fast?: boolean };
   /** 宿主为这次请求采用的上下文窗口；显示与自动压缩共用，未知时省略。 */
   contextWindow?: number;
   agent?: { definitionId: string; revision: string };

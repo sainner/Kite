@@ -10,8 +10,9 @@ import SwiftUI
     /// 正在选、还没存下的思考强度。
     var effortDraft: Effort?
     fileprivate(set) var savingEffort = false
-    var effortError: String?
-    var voiceError: String?
+    fileprivate(set) var savingFast = false
+    /// 输入区操作失败的提示：开始语音输入、改思考强度或快速模式。
+    var failure: (title: String, message: String)?
     /// 只在这次输入的候选里保留键盘选中项；换会话或改了前缀后回到第一项。
     var skillSelection: (thread: ObjectIdentifier, text: String, name: String)?
 }
@@ -19,7 +20,7 @@ import SwiftUI
 /// 输入框让外面先接管的按键（两端原生输入框的 intercept，Mac 窄窗口的 onKeyPress）：没按修饰键、没在组字时的上下键和 Tab。
 enum ComposerKey: CaseIterable { case up, down, tab, escape }
 
-/// 会话输入区的逻辑：发送、停止、继续、语音、思考强度，占位文字和哪些按钮显示。各个输入区共用，每次更新按当时的环境现做一份；
+/// 会话输入区的逻辑：发送、停止、继续、语音、思考强度与快速模式，占位文字和哪些按钮显示。各个输入区共用，每次更新按当时的环境现做一份；
 /// 读的都是会话、App 模型和 state 里的可观察属性，SwiftUI 版在 body 里读、原生版在 withObservationTracking 里读，都跟着变。
 struct ThreadControlsModel {
     let thread: WorkThread
@@ -314,12 +315,12 @@ struct ThreadControlsModel {
                     case .partial(let value), .final(let value): write(base + value)
                     case .failed(let message):
                         voice.stop(owner: owner)
-                        state.voiceError = message
+                        state.failure = ("无法开始语音输入", message)
                     }
                 }
                 started()
             } catch {
-                state.voiceError = error.localizedDescription
+                state.failure = ("无法开始语音输入", error.localizedDescription)
             }
         }
     }
@@ -338,7 +339,7 @@ struct ThreadControlsModel {
     var effortHelp: String { thread.agentCapabilities?.explanation ?? "正在读取模型能力" }
 
     var availableEfforts: [Effort] {
-        let levels = thread.agentCapabilities?.model(agentModel?.model ?? "")?.reasoning ?? []
+        let levels = catalogModel?.reasoning ?? []
         return Effort.allCases.filter { levels.contains($0.name) }
     }
 
@@ -374,7 +375,43 @@ struct ThreadControlsModel {
             defer { state.savingEffort = false; state.effortDraft = nil }
             do {
                 try await model.updateAgent(in: area, id: instance.id) { $0.model.reasoning = effortDraft.name }
-            } catch { state.effortError = error.localizedDescription }
+            } catch { state.failure = ("修改思考强度失败", error.localizedDescription) }
+        }
+    }
+
+    /// 当前模型在能力目录里的条目。
+    private var catalogModel: AgentCapabilities.Model? { thread.agentCapabilities?.model(agentModel?.model ?? "") }
+
+    // MARK: - 快速模式
+
+    /// 当前模型能开快速模式时才显示开关。
+    var fastAvailable: Bool { catalogModel?.fast == true }
+
+    /// 实例配置里的开关，不在代理配置里：草稿取本机选择；已有代理取工作区里最新的实例配置，不用这个窗口拿到的快照。
+    var fast: Bool {
+        guard let instance else { return thread.draftChoice?.fast == true }
+        return area.instances.first { $0.id == instance.id }?.config?.fast == true
+    }
+
+    /// 运行中也能改，下一次模型请求生效。
+    var canChangeFast: Bool {
+        guard fastAvailable, model.isConnected(area) else { return false }
+        return instance == nil ? choice != nil : !state.savingFast
+    }
+
+    func toggleFast() {
+        guard canChangeFast else { return }
+        let on = !fast
+        guard let instance else {
+            thread.draftChoice?.fast = on
+            return
+        }
+        let state = state, model = model, area = area
+        state.savingFast = true
+        Task {
+            defer { state.savingFast = false }
+            do { try await model.setFastMode(on, instance: instance.id, in: area) }
+            catch { state.failure = ("修改快速模式失败", error.localizedDescription) }
         }
     }
 
@@ -428,12 +465,35 @@ struct FadingText {
     static let bleed: CGFloat = 12
 }
 
-/// 思考强度：读得到档位时是 EffortPicker，读不到退成文字菜单。两版输入区共用；Mac 宽屏的原生输入区把它放进单独的托管视图，
-/// 只在它自己改宽（刻度展开、收起）时重排。
+extension View {
+    /// 输入区操作失败的提示，SwiftUI 的两版输入区（MacControlsBar、ThreadControls）共用；iPhone 的原生输入区自己弹。
+    func controlsFailureAlert(_ state: ThreadControlsState) -> some View {
+        alert(state.failure?.title ?? "", isPresented: Binding(get: { state.failure != nil }, set: { if !$0 { state.failure = nil } })) {
+            Button("好", role: .cancel) { state.failure = nil }
+        } message: { Text(state.failure?.message ?? "") }
+    }
+}
+
+/// 思考强度：读得到档位时是 EffortPicker，读不到退成文字菜单；模型能开快速模式时左边是它的开关，开着是实心闪电。
+/// 两版输入区共用；Mac 宽屏的原生输入区把它放进单独的托管视图，只在它自己改宽（刻度展开、收起）时重排。
 struct ThreadEffortControl: View {
     let controls: ThreadControlsModel
 
     var body: some View {
+        HStack(spacing: 0) {
+            if controls.fastAvailable {
+                Button(action: controls.toggleFast) { Image(systemName: controls.fast ? "bolt.fill" : "bolt") }
+                    .buttonStyle(PaneButtonStyle())
+                    .disabled(!controls.canChangeFast)
+                    .help("快速模式：出字更快，订阅额度消耗更多")
+                    .accessibilityLabel("快速模式")
+                    .accessibilityValue(controls.fast ? "开" : "关")
+            }
+            effort
+        }
+    }
+
+    @ViewBuilder private var effort: some View {
         let state = controls.state
         if let effort = controls.effort {
             EffortPicker(effort: Binding(get: { state.effortDraft ?? effort }, set: { state.effortDraft = $0 }),

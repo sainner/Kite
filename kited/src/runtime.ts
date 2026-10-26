@@ -24,6 +24,7 @@ import type { McpServers } from './mcp/servers.ts';
 import { instanceMcp, MCP_TOOL_PREFIX } from './mcp/tools.ts';
 import type { ContextDefinition } from './harness/context/types.ts';
 import { agentRevision, instanceAgent } from './agents/definition.ts';
+import { supportsFast } from './agents/models.ts';
 import { agentTools } from './plugins/definitions.ts';
 import type { OperationToolSelection } from './operations/operations.ts';
 import { lineToolNames, operationToolNames } from './operations/contract.ts';
@@ -210,7 +211,9 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       // 声明顺序取代理插件的工具目录，与实例配置一致。
       const available = [...tools, ...web, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
-      const { model, contextWindow } = harnessModel(agent.model, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
+      // 快速模式是实例配置里的开关，当前型号支持才生效；请求配置记下这次是否生效，用量按它折算。
+      const choice = current.config.fast === true && supportsFast(agent.model.model) ? { ...agent.model, fast: true } : agent.model;
+      const { model, contextWindow } = harnessModel(choice, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
         ...(credentials ? { apiKeys: () => credentials.apiKeys() } : {}), ...(host.chatgptLimits ? { observeLimits: host.chatgptLimits } : {}) });
       // 插件与 MCP 工具不进声明，经 tool_search 按插件实例或服务名加载；搜得到的是此刻获准的。
       const external = mcpTools(current);
@@ -227,7 +230,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         instructions: projectContext(agent.context, values), variables: values,
         contextUpdateTemplate: host.contextUpdateTemplate(),
         compactionTemplates: host.compactionTemplates(),
-        settings: { model: agent.model, contextWindow,
+        settings: { model: choice, contextWindow,
           execution: { grants: execution, revision: executionRevision(execution) },
           agent: { definitionId: current.definitionId, revision: agentRevision(agent) },
           pluginTools: selection.sources },

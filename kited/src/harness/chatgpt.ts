@@ -38,6 +38,7 @@ export class ChatGPTModel implements Model {
         parallel_tool_calls: true, store: false, stream: true,
         include: ['reasoning.encrypted_content'],
         reasoning: { effort: this.options.reasoning ?? 'medium', summary: 'concise' },
+        ...(this.options.fast ? { service_tier: 'priority' } : {}),
         prompt_cache_key: this.options.threadId,
       }),
     }));

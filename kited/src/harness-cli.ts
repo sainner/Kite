@@ -12,7 +12,7 @@ import { harnessPolicy } from './execution/policy.ts';
 import { defaultContextDefinition, directoryVariables, projectContext, SkillCatalog, today } from './harness/context/project.ts';
 import { systemSkillSources } from './harness/context/skills.ts';
 import type { HarnessEvent } from './harness/types.ts';
-import { defaultAgentModel, vendorOfModel } from './agents/models.ts';
+import { defaultAgentModel, supportsFast, vendorOfModel } from './agents/models.ts';
 
 const USAGE = `用法：
   bun run harness --cwd <目录>                     开始对话
@@ -22,6 +22,7 @@ const USAGE = `用法：
 选项：
   --model <名称>         默认 ${defaultAgentModel}，可用 KITE_MODEL 设置
   --reasoning <强度>     默认 medium
+  --fast                快速模式，模型目录里标了 fast 的型号才生效：出字更快，订阅额度消耗更多
   --auth <文件>         ChatGPT 登录凭据，默认 $KITE_HOME/auth/chatgpt/auth.json（KITE_HOME 默认 ~/.kite）；
                          DeepSeek 型号改读 DEEPSEEK_API_KEY
 
@@ -32,7 +33,7 @@ const USAGE = `用法：
 export async function runHarnessCLI(args = process.argv.slice(2)): Promise<number> {
   const { values } = parseArgs({ args, strict: true, options: {
     cwd: { type: 'string' }, prompt: { type: 'string' }, resume: { type: 'string' },
-    model: { type: 'string' }, reasoning: { type: 'string' }, auth: { type: 'string' },
+    model: { type: 'string' }, reasoning: { type: 'string' }, fast: { type: 'boolean' }, auth: { type: 'string' },
     help: { type: 'boolean', short: 'h' },
   } });
   if (values.help) { console.log(USAGE); return 0; }
@@ -45,10 +46,12 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   const cwd = resolve(values.cwd ?? saved?.cwd ?? process.cwd());
   const modelName = values.model ?? saved?.settings?.model?.model ?? process.env.KITE_MODEL ?? defaultAgentModel;
   const reasoning = values.reasoning ?? saved?.settings?.model?.reasoning ?? 'medium';
+  const fast = supportsFast(modelName) && (values.fast ?? saved?.settings?.model?.fast ?? false);
+  const choice = { model: modelName, reasoning, ...(fast ? { fast } : {}) };
   // 启动时尽早发现登录问题，每次请求仍重新读取，以跟上独立认证目录的更新。
   if (vendorOfModel(modelName).id !== 'deepseek') await readSubscriptionCredentials(values.auth);
   else if (!await deepseekKey()) throw new Error('DeepSeek 型号需要设置 DEEPSEEK_API_KEY');
-  const { model, contextWindow } = harnessModel({ model: modelName, reasoning },
+  const { model, contextWindow } = harnessModel(choice,
     { threadId: basename(directory), ...(values.auth ? { chatgptAuth: values.auth } : {}) });
   let rl: Interface | undefined;
   let textOpen = false;
@@ -87,7 +90,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
       lastWasBusy = event.state.busy;
     }
   };
-  const settings = { model: { model: modelName, reasoning }, contextWindow };
+  const settings = { model: choice, contextWindow };
   // 独立终端直接在指定目录工作，没有 Kite 的工作机、项目与实例，只提供目录本身取得到的变量；不提供 skill 发现，也不接外部 MCP 服务（docs/kited.md「终端试用」），两份清单为空。
   // skill 来源只有系统层，skill 工具按名字还能加载系统层与项目层的。
   const variables = { 'environment.date': today, ...directoryVariables(cwd, systemSkillSources), 'project.skills': () => ({ text: '' }),
@@ -100,7 +103,7 @@ export async function runHarnessCLI(args = process.argv.slice(2)): Promise<numbe
   // 终端里恢复的会话：上次被退出打断的接着做，同 kited 启动时。
   await host.continueInterrupted();
   const status = () => line(JSON.stringify(host.runner.state, null, 2));
-  line(`Kite · ${modelName} · ${reasoning}\n工作目录：${cwd}\n会话：${basename(directory)}\n记录：${directory}`);
+  line(`Kite · ${modelName} · ${reasoning}${fast ? ' · 快速' : ''}\n工作目录：${cwd}\n会话：${basename(directory)}\n记录：${directory}`);
   const restoreInputs = (inputs: import('./harness/types.ts').Input[]) => {
     const text = inputs.map((input) => input.text).join('\n\n');
     // readline.write 会将换行当作重新提交，退回内容只打印，留给用户重新编辑。

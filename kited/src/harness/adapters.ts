@@ -4,7 +4,7 @@ import { vendorOfModel, type ModelVendor } from '../agents/models.ts';
 import { readSubscriptionCredentials } from './auth.ts';
 import { CHATGPT_CONTEXT_WINDOW, ChatGPTModel } from './chatgpt.ts';
 import { DEEPSEEK_CONTEXT_WINDOW, DeepSeekModel } from './deepseek.ts';
-import type { Model } from './types.ts';
+import type { Model, RequestSettings } from './types.ts';
 
 /** 账号凭据里的第一把 DeepSeek Key（按凭据列表的顺序，同语音识别取 Key），没有时用 kited 环境里的 DEEPSEEK_API_KEY。 */
 export async function deepseekKey(apiKeys?: () => Promise<ApiKey[]>): Promise<string | undefined> {
@@ -22,7 +22,7 @@ export interface HarnessModelOptions {
   observeLimits?(headers: Headers): void;
 }
 
-type Choice = { model: string; reasoning: string };
+type Choice = NonNullable<RequestSettings['model']>;
 type Adapter = (choice: Choice, options: HarnessModelOptions) => { model: Model; contextWindow: number };
 
 /** 目录里每家由 harness 运行的厂商都要有适配器；厂商表加了一家而这里漏了，编译不过。 */

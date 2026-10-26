@@ -13,9 +13,10 @@ import { terminalDefinitionId } from './terminal/terminals.ts';
 import { previewDefinitionId } from './preview/state.ts';
 import { filesDefinitionId } from './workspace/files.ts';
 
-/** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。 */
+/** 新代理在本机草稿里选好的角色与初始参数，创建时一次写入实例配置；省略 revision 时用角色的最新版本。fast 是快速模式，角色不给默认。 */
 export interface AgentChoice extends RoleChoice {
   role?: { id: string; revision?: string };
+  fast?: boolean;
 }
 
 type InstanceServices = Pick<Kite, 'store' | 'home' | 'catalog' | 'workspace' | 'plugins' | 'roles' | 'terminals' | 'previews' | 'pageSelection' | 'pluginGrants'>;
@@ -38,7 +39,7 @@ export class InstanceLifecycle {
     // 执行授权取角色的，角色没给就是在项目基础上不增不减；审批模式总写入解析好的。项目的基础与边界不拷进实例，每次按项目此刻的约束合成。
     // Bun 插件的协作授权拷定义级的。
     const config = bound ? { agent: bound.agent, role: bound.role, grants, ...(bound.execution ? { execution: bound.execution } : {}), approval: bound.approval,
-      ...(bound.mcp.length ? { mcp: bound.mcp } : {}) }
+      ...(bound.mcp.length ? { mcp: bound.mcp } : {}), ...(choice.fast ? { fast: true } : {}) }
       : definition.runtime === 'bun' ? { packageRevision: definition.revision, grants: this.kite.pluginGrants(definitionId).grants } : {};
     return { id: randomUUID(), workspaceId, definitionId, title, config, state: {},
       ...(definition.defaultView ? { view: definition.defaultView } : {}), status: 'open', createdAt: Date.now() };

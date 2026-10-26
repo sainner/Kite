@@ -189,14 +189,14 @@ struct ThreadHeaderActions: View {
     }
 
     private func selectModel(_ name: String) {
-        let levels = thread.agentCapabilities?.model(name)?.reasoning ?? []
+        let models = availableModels
         if choice != nil {
-            guard canChangeModel, availableModels.contains(where: { $0.id == name }), var selected = agentModel else { return }
-            selected.selectModel(name, supportedReasoning: levels)
+            guard canChangeModel, models.contains(where: { $0.id == name }), var selected = agentModel else { return }
+            selected.selectModel(name, in: models)
             thread.draftChoice?.model = selected
             return
         }
-        guard canChangeModel, name != modelName, availableModels.contains(where: { $0.id == name }),
+        guard canChangeModel, name != modelName, models.contains(where: { $0.id == name }),
               let instance else { return }
         savingModel = true
         Task {
@@ -204,7 +204,7 @@ struct ThreadHeaderActions: View {
             do {
                 // 换厂商即换后端，由工作机按模型推出。
                 try await model.updateAgent(in: area, id: instance.id) { agent in
-                    agent.model.selectModel(name, supportedReasoning: levels)
+                    agent.model.selectModel(name, in: models)
                 }
             } catch { modelError = error.localizedDescription }
         }

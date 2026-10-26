@@ -4,15 +4,13 @@ nonisolated struct AgentModelConfiguration: Codable, Equatable, Sendable {
     var model: String
     var reasoning: String
 
-    mutating func selectModel(_ id: String, supportedReasoning levels: [String]) {
+    /// 换模型时思考强度不在新模型的档位里就换成 medium。
+    mutating func selectModel(_ id: String, in models: [AgentCapabilities.Model]) {
+        let levels = models.first { $0.id == id }?.reasoning ?? []
         model = id
         if !levels.contains(reasoning) {
             reasoning = levels.contains("medium") ? "medium" : levels.first ?? "default"
         }
-    }
-
-    mutating func selectModel(_ id: String, in models: [AgentCapabilities.Model]) {
-        selectModel(id, supportedReasoning: models.first { $0.id == id }?.reasoning ?? [])
     }
 }
 
@@ -32,6 +30,8 @@ struct DraftAgentChoice: Equatable {
     var approval: ApprovalMode?
     /// 草稿里改过的 MCP 服务；没改时用角色的默认。
     var mcp: [String]?
+    /// 草稿里开的快速模式；角色不给默认。
+    var fast = false
 }
 
 /// 工具的黑白名单：白名单只准列出的，黑名单排除列出的。角色规则与项目约束共用，开关的含义都是「能用这个工具」。
@@ -81,6 +81,8 @@ nonisolated struct InstanceAgentConfig: Decodable, Sendable {
     var approval: ApprovalMode?
     /// 打开的外部 MCP 服务，按服务名；一个都没开时工作机不写。
     var mcp: [String]?
+    /// 快速模式，不在代理配置里；开着时工作机写 true。
+    var fast: Bool?
 }
 
 nonisolated struct AgentConfigurationSnapshot: Decodable, Sendable {
@@ -127,6 +129,8 @@ nonisolated struct AgentCapabilities: Decodable, Sendable {
         let title: String
         let name: String
         let reasoning: [String]
+        /// 能开快速模式；语音识别的模型目录不给。
+        let fast: Bool?
         let vendor: String
     }
     let vendors: [Vendor]

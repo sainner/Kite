@@ -7,6 +7,8 @@ export interface SubscriptionCredentials {
 export interface SubscriptionModelOptions {
   model: string;
   reasoning?: string;
+  /** 快速模式：请求带 service_tier: priority，出字更快，订阅额度消耗更多。 */
+  fast?: boolean;
   threadId: string;
   credentials(signal: AbortSignal): Promise<SubscriptionCredentials>;
   /** 每个响应的头交给额度观测，不影响请求本身。 */

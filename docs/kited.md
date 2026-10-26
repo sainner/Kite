@@ -28,7 +28,7 @@ CODEX_HOME="${KITE_HOME:-$HOME/.kite}/auth/chatgpt" codex -c 'cli_auth_credentia
 
 harness 每次请求只读加载凭据，模型循环和工具执行不启动 Codex 或 Claude Code。自动刷新、系统钥匙串支持仍未接入；凭据过期或返回 401 时，在同一认证目录重新执行设备登录。无需 Platform API key。
 
-可选型号见 [模型目录](../shared/agent-models.json)。用 `--model`、`--reasoning` 指定模型与推理强度，模型名也可通过 `KITE_MODEL` 设置。DeepSeek 型号（如 `--model deepseek-flash`）改读环境变量 `DEEPSEEK_API_KEY`，不需要 ChatGPT 登录。一次任务跑完就退出：
+可选型号见 [模型目录](../shared/agent-models.json)。用 `--model`、`--reasoning` 指定模型与推理强度，模型名也可通过 `KITE_MODEL` 设置；`--fast` 开快速模式，见下文。DeepSeek 型号（如 `--model deepseek-flash`）改读环境变量 `DEEPSEEK_API_KEY`，不需要 ChatGPT 登录。一次任务跑完就退出：
 
 ```bash
 bun run harness --cwd /你的项目目录 --prompt "读取项目说明，概括目录结构"
@@ -64,7 +64,7 @@ bun run harness --resume <会话id>
 
 后端由模型的厂商决定：Claude 模型经 Claude Code 订阅运行，其他厂商的模型由自研 harness 运行，调用方不单独指定后端。代理可通过 `/instances/:id/agent-config` 换用另一厂商的模型；新厂商属于另一后端时后端随之更换，保留实例和其他配置；同一后端内换模型或只改思考强度时后端不变，在下一次模型请求生效。能力目录列出可选模型。`state.capabilities.switchRuntime` 表示当前能否切换后端：须空闲、没有排队的输入，否则返回 409。
 
-自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
+自研 harness 接 OpenAI 与 DeepSeek。OpenAI 型号用前文独立授权的 ChatGPT 订阅，可开快速模式（同 Codex 的 Fast）：请求带 `service_tier: "priority"`，出字更快，订阅额度消耗更多，用量按标准价的两倍折算。快速模式是实例配置里的开关 `fast`，不在代理配置里，接口见 `/instances/:id/fast-mode`；能力目录里 `fast` 为 `true` 的型号才生效，换到不支持的型号时开关留着、请求照常发。DeepSeek 没有订阅，用 Kite 账号凭据里的 DeepSeek API Key（有几把时取凭据列表里的第一把），账号里没有时用 kited 环境的 `DEEPSEEK_API_KEY`，按量计费；请求走 DeepSeek 的 [Responses 兼容接口](https://api-docs.deepseek.com/zh-cn/guides/responses_api)，按 1M 的上下文窗口自动压缩。两家之间换模型时，助手文字与工具调用照常交给新厂商，推理只交还给产生它的厂商。
 
 切换在回合边界交接上下文，两种后端各保留原生记录。人发消息、Kite 通知、助手文字、工具调用与结果及图片随当前有效上下文交接；压缩或撤销后的结果同样生效。推理内容不跨厂商传递；普通切换只追加历史，保留原后端的推理。Claude 历史经压缩或撤销重组时，只保留未改动前缀中仍有效的 thinking，已退出当前上下文的块不因撤销而恢复。原始记录仍供查看，显示记录不作为原生恢复数据。提示缓存是否复用取决于请求前缀与服务端缓存状态。重复切换不重复导入，翻译失败时不切换。
 
@@ -349,7 +349,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET / PUT | `/plugins/:definitionId/grants` | Bun 插件定义级的协作授权 `{grants, revision}`，新建实例时拷进实例；PUT `{expectedRevision, grants}` 整体替换，版本不符 409、有定义级不收的项 400、不是 Bun 插件定义 404，见 [实例操作](实例操作.md#bun-插件的定义级授权) |
 | GET | `/operations` | 操作输入、输出、错误 schema，以及重试与取消规则 |
 | POST | `/workspaces/:id/operations/:operation` | 调用 agent、文件或插件操作；参数、operationId 和重试语义见 [实例操作](实例操作.md) |
-| GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、这个代理可开的工具（`tools`）与角色必需的工具（`required`）、工具的界面名称与分组（`toolCatalog`），以及配置生效边界；不发模型请求 |
+| GET | `/instances/:id/agent-capabilities` | 按厂商分组的模型与思考档位、能否开快速模式（`fast`）、这个代理可开的工具（`tools`）与角色必需的工具（`required`）、工具的界面名称与分组（`toolCatalog`），以及配置生效边界；不发模型请求 |
 | GET | `/workspaces/:id/agent-options` | 尚无实例的新代理草稿读取模型目录、工具的界面名称与分组（`toolCatalog`）、这台工作机的 MCP 服务与本项目禁用的（`mcp: {available, denied}`），以及各角色在这个工作区可开的工具；角色设了默认打开的 MCP 服务时带 `mcp`；必需工具不可用的角色带 `unavailable` 原因 |
 | GET / PUT | `/instances/:id/agent-config` | 读取绑定配置及 revision；以 expectedRevision 和完整 agent 配置更新，工具不能超出创建时角色的规则，也不能关闭必需工具 |
 | GET / POST | `/roles` | 列出角色（带签名状态，内置角色另带默认内容的版本 `defaultRevision`，与 `revision` 不同即改过），附代理插件的全部工具及其界面名称与分组（`toolCatalog`）、提示词变量、模型目录，以及角色不设审批模式时新建代理用的 `defaultApproval`；以 `{role}` 新建角色 |
@@ -376,6 +376,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |
 | GET / PUT | `/instances/:id/approval-mode` | 读取或设置审批模式 `{mode}`：`allowlist`、`ask` 或 `allow_all`，运行中也可改，下一次越界请求生效；读取另给按项目上限收紧后实际用的 `effective` 与上限 `max`。新建代理时依次取创建请求的 `approval`、角色的默认与 `/roles` 的 `defaultApproval`，写进实例配置的 `approval`，随工作区的 instances 下发 |
+| PUT | `/instances/:id/fast-mode` | 开关快速模式 `{enabled}`，返回同样的 `{enabled}`；只改请求怎么发，不发配置通知，运行中也可改，下一次模型请求生效。开着时实例配置写 `fast: true`，随工作区的 instances 下发；新建代理时取创建请求的 `fast`，角色不给默认 |
 | GET / PUT | `/instances/:id/mcp` | 读取或设置代理打开的 MCP 服务 `{servers}`（服务名，可以有本机没装的，装上后生效），运行中也可改，下一次请求生效；读取另给项目禁用的 `denied` 与这台工作机装的服务 `available: [{name, description?, phase}]`。新建代理时取创建请求的 `mcp`，没给就用角色的默认 |
 | GET / PUT | `/instances/:id/operation-grants` | 读取实例的协作授权及 revision；以 expectedRevision 与 grants 整体更新，代理的协作范围是其中几项授权共用的目标 |
 | POST | `/workspaces/:id/instances` | 新建实例，请求与响应见下文；Bun 插件的实例有没有视图都从这里建 |
@@ -384,7 +385,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/instances/:id/preview/bundle` | App 窗口里那个 App 的 .app 打成的 zip，响应头 `X-Kite-App` 是 .app 的名字（百分号编码）；App 不是 .app 时 409，见 [实例操作 · App 窗口](实例操作.md#app-窗口) |
 | PUT | `/apps/:name` | 请求体是 .app 的 zip，在这台 Mac 上解开到 Kite 目录的 `apps/` 下（同名的换成新的）并打开，返回 `{path}`；只接本机监听的请求 |
 | DELETE | `/instances/:id` | 关闭实例：`closable` 的回收；`process` 的进程还在跑就先停、再回收；`persistent` 的 409（用归档）；已不存在 404。回收后各端的停靠栏与台面一起去掉它 |
-| POST | `/workspaces/:id/threads` | 在已有工作区创建代理 `{prompt, role?, model?, tools?, approval?, mcp?, instanceId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`instanceId` 是客户端生成的 UUID，用作代理实例（也是线程）的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
+| POST | `/workspaces/:id/threads` | 在已有工作区创建代理 `{prompt, role?, model?, tools?, approval?, mcp?, fast?, instanceId?, messageId?, attachments?}`；`attachments` 是第一条消息带的附件 ID，带附件时 `prompt` 可以为空；`instanceId` 是客户端生成的 UUID，用作代理实例（也是线程）的 ID，已用过返回 409，省略时由 kited 生成；`messageId` 是客户端生成的 UUID，用作第一条消息的 ID，省略时由 kited 生成；`role` 为 `{id, revision}`，省略时用默认角色。其余字段覆盖角色的默认值：`model` 为 `{model, reasoning}`，后端随模型确定；`tools` 须在角色规则之内并包含必需工具；`approval` 为审批模式 |
 | GET | `/threads/:id` | 线程和上下文，附带 `runner`、`busy` |
 | GET | `/threads/:id/state` | 只读执行状态，不启动模型 |
 | GET | `/threads/:id/history` | v1 显示历史、pending、state 和 cursor，只读 |

@@ -645,7 +645,7 @@ final class AppModel {
         let choice = draft.draftChoice
         _ = try await client.request("/workspaces/\(area.id)/threads", method: "POST",
             body: CreateThreadRequest(prompt: message.typed, role: newThreadRole(for: draft, in: area)?.selection, model: choice?.model,
-                                      tools: choice?.tools, approval: choice?.approval, mcp: choice?.mcp, instanceId: instance,
+                                      tools: choice?.tools, approval: choice?.approval, mcp: choice?.mcp, fast: choice?.fast, instanceId: instance,
                                       messageId: message.id, attachments: message.attachments.isEmpty ? nil : message.attachments.map(\.id)),
             as: RemoteThread.self)
         // 读回的实例就是草稿的 ID，草稿对象由 WorkArea.update 认领，接着当这个代理
@@ -678,7 +678,7 @@ final class AppModel {
         }
     }
 
-    /// 清空上下文：台面上这个代理的位置当场换成一个新代理的草稿，角色、模型与思考强度、工具、审批模式和 MCP 照它的实例配置，
+    /// 清空上下文：台面上这个代理的位置当场换成一个新代理的草稿，角色、模型与思考强度、工具、审批模式、MCP 和快速模式照它的实例配置，
     /// 输入框里没发的字和附件带过去，再把它（连同各层子代理）归档；发出第一条消息时建成新代理（见 startThread）。
     /// 归档同 archiveInstances，不等工作机，归档不成时旧代理放回停靠栏、报在归档失败的提示里，草稿留着。
     func clearContext(_ instance: RemotePluginInstance, in area: WorkArea) throws {
@@ -696,7 +696,8 @@ final class AppModel {
                 draft.draftChoice?.tools = tools
             }
         }
-        draft.draftChoice = DraftAgentChoice(model: config?.agent?.model, tools: config?.agent?.tools, approval: config?.approval, mcp: config?.mcp ?? [])
+        draft.draftChoice = DraftAgentChoice(model: config?.agent?.model, tools: config?.agent?.tools, approval: config?.approval, mcp: config?.mcp ?? [],
+                                             fast: config?.fast == true)
         adoptRole()
         if draft.role == nil, config?.role != nil {
             Task {

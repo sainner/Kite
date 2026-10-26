@@ -625,6 +625,7 @@ export function serve(kite: Kite, listen: Listen) {
         GET: bound((req) => kite.approvalMode(req.params.id)),
         PUT: bound(async (req) => kite.configureApprovalMode(req.params.id, await body(req))),
       },
+      '/instances/:id/fast-mode': { PUT: bound(async (req) => kite.configureFastMode(req.params.id, await body(req))) },
       '/instances/:id/mcp': {
         GET: bound((req) => kite.mcpSettings(req.params.id)),
         PUT: bound(async (req) => kite.configureMcpSettings(req.params.id, await body(req))),
@@ -640,9 +641,10 @@ export function serve(kite: Kite, listen: Listen) {
         POST: bound(async (req) => {
           const b = await body(req);
           const parsed = z.object({ model: agentDefinitionSchema.shape.model.optional(), tools: agentDefinitionSchema.shape.tools.optional(),
-            approval: z.enum(approvalModes).optional(), mcp: roleSchema.shape.mcp,
+            approval: z.enum(approvalModes).optional(), mcp: roleSchema.shape.mcp, fast: z.boolean().optional(),
             instanceId: z.uuid().optional(), messageId: z.uuid().optional(), attachments: z.array(z.string().min(1)).min(1).optional() })
-            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, mcp: b.mcp, instanceId: b.instanceId, messageId: b.messageId, attachments: b.attachments });
+            .safeParse({ model: b.model, tools: b.tools, approval: b.approval, mcp: b.mcp, fast: b.fast, instanceId: b.instanceId, messageId: b.messageId,
+              attachments: b.attachments });
           if (!parsed.success) throw new KiteError('代理创建参数无效');
           const { instanceId, messageId, attachments, ...choice } = parsed.data;
           return kite.createThread(req.params.id, str(b.prompt, 'prompt'), { ...choice, role: roleSelection(b.role) }, instanceId, messageId, attachments);
