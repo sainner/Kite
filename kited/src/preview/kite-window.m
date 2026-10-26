@@ -306,17 +306,25 @@ static NSString *stringAttribute(AXUIElementRef element, CFStringRef name) {
   return nil;
 }
 
-static void axWalk(AXUIElementRef element, int depth, NSMutableString *out, int *budget) {
-  if (--*budget < 0) return;
-  NSString *role = [stringAttribute(element, kAXRoleAttribute) ?: @"?" stringByReplacingOccurrencesOfString:@"AX" withString:@""];
-  NSString *label = stringAttribute(element, kAXTitleAttribute) ?: stringAttribute(element, kAXDescriptionAttribute);
-  NSString *value = stringAttribute(element, kAXValueAttribute), *identifier = stringAttribute(element, kAXIdentifierAttribute);
+static NSString *roleOf(AXUIElementRef element) {
+  return [stringAttribute(element, kAXRoleAttribute) ?: @"?" stringByReplacingOccurrencesOfString:@"AX" withString:@""];
+}
+
+/** 元素的位置和大小，换成画面上的点，同点按的坐标。 */
+static CGRect shownFrameOf(AXUIElementRef element) {
   CFTypeRef position = NULL, size = NULL;
   CGPoint p = CGPointZero;
   CGSize s = CGSizeZero;
   if (AXUIElementCopyAttributeValue(element, kAXPositionAttribute, &position) == kAXErrorSuccess && position) { AXValueGetValue(position, kAXValueTypeCGPoint, &p); CFRelease(position); }
   if (AXUIElementCopyAttributeValue(element, kAXSizeAttribute, &size) == kAXErrorSuccess && size) { AXValueGetValue(size, kAXValueTypeCGSize, &s); CFRelease(size); }
-  [out appendFormat:@"%*s%@", depth * 2, "", role];
+  return CGRectMake(p.x - windowFrame.origin.x - visibleOffset.x, p.y - windowFrame.origin.y - visibleOffset.y, s.width, s.height);
+}
+
+static void axWalk(AXUIElementRef element, int depth, NSMutableString *out, int *budget) {
+  if (--*budget < 0) return;
+  NSString *label = stringAttribute(element, kAXTitleAttribute) ?: stringAttribute(element, kAXDescriptionAttribute);
+  NSString *value = stringAttribute(element, kAXValueAttribute), *identifier = stringAttribute(element, kAXIdentifierAttribute);
+  [out appendFormat:@"%*s%@", depth * 2, "", roleOf(element)];
   if (label) [out appendFormat:@" \"%@\"", label];
   if (value) [out appendFormat:@" value=%@", value.length > 200 ? [[value substringToIndex:200] stringByAppendingString:@"…"] : value];
   if (identifier) [out appendFormat:@" id=%@", identifier];
@@ -325,8 +333,8 @@ static void axWalk(AXUIElementRef element, int depth, NSMutableString *out, int 
     if (!CFBooleanGetValue(enabled)) [out appendString:@" disabled"];
     CFRelease(enabled);
   }
-  // 位置换成窗口里的点，同点按的坐标
-  [out appendFormat:@" (%.0f,%.0f %.0fx%.0f)\n", p.x - windowFrame.origin.x - visibleOffset.x, p.y - windowFrame.origin.y - visibleOffset.y, s.width, s.height];
+  CGRect frame = shownFrameOf(element);
+  [out appendFormat:@" (%.0f,%.0f %.0fx%.0f)\n", frame.origin.x, frame.origin.y, frame.size.width, frame.size.height];
   CFArrayRef children = NULL;
   if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, (CFTypeRef *)&children) == kAXErrorSuccess && children) {
     for (CFIndex i = 0; i < CFArrayGetCount(children); i++) axWalk(CFArrayGetValueAtIndex(children, i), depth + 1, out, budget);
@@ -368,18 +376,13 @@ static NSDictionary *elementAt(CGPoint point) {
   AXError error = AXUIElementCopyElementAtPosition(app, windowFrame.origin.x + point.x, windowFrame.origin.y + point.y, &element);
   CFRelease(app);
   if (error != kAXErrorSuccess || !element) return nil;
-  NSString *role = [stringAttribute(element, kAXRoleAttribute) ?: @"?" stringByReplacingOccurrencesOfString:@"AX" withString:@""];
   NSString *text = stringAttribute(element, kAXTitleAttribute) ?: stringAttribute(element, kAXDescriptionAttribute)
     ?: stringAttribute(element, kAXValueAttribute) ?: stringAttribute(element, kAXPlaceholderValueAttribute);
   NSString *identifier = stringAttribute(element, kAXIdentifierAttribute);
-  CFTypeRef position = NULL, size = NULL;
-  CGPoint p = CGPointZero;
-  CGSize s = CGSizeZero;
-  if (AXUIElementCopyAttributeValue(element, kAXPositionAttribute, &position) == kAXErrorSuccess && position) { AXValueGetValue(position, kAXValueTypeCGPoint, &p); CFRelease(position); }
-  if (AXUIElementCopyAttributeValue(element, kAXSizeAttribute, &size) == kAXErrorSuccess && size) { AXValueGetValue(size, kAXValueTypeCGSize, &s); CFRelease(size); }
+  CGRect frame = shownFrameOf(element);
+  NSMutableDictionary *found = [@{@"tag" : roleOf(element), @"x" : @(frame.origin.x), @"y" : @(frame.origin.y),
+                                  @"width" : @(frame.size.width), @"height" : @(frame.size.height)} mutableCopy];
   CFRelease(element);
-  NSMutableDictionary *found = [@{@"tag" : role, @"x" : @(p.x - windowFrame.origin.x - visibleOffset.x), @"y" : @(p.y - windowFrame.origin.y - visibleOffset.y),
-                                  @"width" : @(s.width), @"height" : @(s.height)} mutableCopy];
   if (text) found[@"text"] = text.length > 200 ? [text substringToIndex:200] : text;
   if (identifier) found[@"identifier"] = identifier;
   return found;

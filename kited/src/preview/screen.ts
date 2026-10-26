@@ -64,7 +64,7 @@ export interface Screen {
   /** 界面结构的文字：网页是无障碍树，模拟器是控件、文字与位置。 */
   inspect(): Promise<string>;
   /** 指认：画面上这一点是哪个元素，坐标同动作；没有元素时为 null。 */
-  point?(x: number, y: number): Promise<PointedElement | null>;
+  point(x: number, y: number): Promise<PointedElement | null>;
   info(): Promise<ScreenInfo>;
   /** 网页的视口跟着最近操作的那台设备的窗口；模拟器屏幕尺寸固定，没有。 */
   resize?(width: number, height: number): Promise<void>;

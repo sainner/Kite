@@ -69,7 +69,6 @@ struct PaneHeaderActions: View {
     var switcher: PaneViewSwitcher?
     /// 窗口自己的控件，放在各组后面、最右边：浏览的侧栏开关，打开时伸成搜索框。
     var trailing: AnyView?
-    @Environment(\.isEnabled) private var isEnabled
     @State private var lingering = LingeringActions()
 
     var body: some View {
@@ -86,18 +85,28 @@ struct PaneHeaderActions: View {
                         .transition(GlassMergeTransition(edge: .trailing))
                 }
                 ForEach(Array(shownGroups.enumerated()), id: \.offset) { index, group in
-                    PaneHeaderButtonGroup(selected: !group.isEmpty && group.allSatisfy(highlighted)) {
-                        ForEach(Array(group.enumerated()), id: \.offset) { _, action in
-                            PaneHeaderActionButton(action: action)
-                        }
-                    }
-                    .glassMerge(index < groups.count ? .open : .merged(.trailing))
+                    PaneHeaderActionGroup(actions: group)
+                        .glassMerge(index < groups.count ? .open : .merged(.trailing))
                     .transition(GlassMergeTransition(edge: .trailing))
                 }
                 if let trailing { trailing }
             }
             .modifier(PaneGlassContainer())
             .animation(.snappy, value: [switcher != nil ? 1 : 0, groups.count])
+        }
+    }
+}
+
+/// 一组图标按钮，一块玻璃；整组都是开着的开关或能按的确认动作时整块用选中样式。标题栏右组的各组是它，控制区里的开关（预览的指认）也用它。
+struct PaneHeaderActionGroup: View {
+    let actions: [PaneHeaderAction]
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        PaneHeaderButtonGroup(selected: !actions.isEmpty && actions.allSatisfy(highlighted)) {
+            ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+                PaneHeaderActionButton(action: action)
+            }
         }
     }
 

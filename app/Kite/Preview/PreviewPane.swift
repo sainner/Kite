@@ -140,10 +140,10 @@ private struct DeviceWebPreview: View {
             }
         } controls: { typing in
             if let port {
-                WebPageControls(browser: browser) {
+                WebPageControls(canGoBack: browser.canGoBack, canGoForward: browser.canGoForward, back: browser.back, forward: browser.forward) {
                     address(port: port, typing: typing)
                 } trailing: {
-                    pointer.button(area: area, client: client, preview: instance.title)
+                    PaneHeaderActionGroup(actions: [pointer.action(area: area, client: client, preview: instance.title)])
                 }
             } else {
                 HStack(spacing: Metrics.paneButtonGap) {
@@ -284,6 +284,7 @@ private struct ScreenPreview: View {
                 case .simulator: simulatorControls
                 case .app, .none: appControls
                 }
+                PaneHeaderActionGroup(actions: [pointer.action(area: area, client: client, preview: instance.title)])
             }
         }
         .task(id: connection) { await session.run(client: client) }
@@ -295,26 +296,20 @@ private struct ScreenPreview: View {
     }
 
     private func webControls(typing: FocusState<Bool>.Binding) -> some View {
-        HStack(spacing: Metrics.paneButtonGap) {
-            PaneHeaderButtonGroup {
-                ActionButton("后退", icon: "chevron.left") { act(["type": "back"]) }
-                ActionButton("前进", icon: "chevron.right") { act(["type": "forward"]) }
-            }
+        WebPageControls(back: { act(["type": "back"]) }, forward: { act(["type": "forward"]) }) {
             PaneHeaderButtonGroup(expands: true) {
-                Image(systemName: "globe").resizable().scaledToFit().foregroundStyle(.secondary)
-                    .frame(width: Metrics.paneHeaderLogo, height: Metrics.paneHeaderLogo)
+                WebSiteIcon(icon: nil)
                     .padding(.leading, Metrics.paneHeaderButtonGap / 2)
-                    .accessibilityHidden(true)
                 PreviewBrowserMenu(instance: instance, status: status) { actionError = $0 }
                 WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing, reset: pathReset) { act(["type": "navigate", "path": $0]) }
                     .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
                 WebPageMenu(browser: nil, typing: typing.wrappedValue, home: { act(["type": "navigate", "path": "/"]) },
                             reload: { act(["type": "reload"]) }, clear: { pathReset += 1 })
             }
+        } trailing: {
             PaneHeaderButtonGroup {
                 ActionButton("输入文字", icon: "keyboard") { startComposing() }
             }
-            pointer.button(area: area, client: client, preview: instance.title)
         }
     }
 
@@ -334,7 +329,6 @@ private struct ScreenPreview: View {
             PaneHeaderButtonGroup {
                 ActionButton("输入文字", icon: "keyboard") { startComposing() }
             }
-            pointer.button(area: area, client: client, preview: instance.title)
         }
     }
 
@@ -354,7 +348,6 @@ private struct ScreenPreview: View {
                 #endif
                 ActionButton("输入文字", icon: "keyboard") { startComposing() }
             }
-            pointer.button(area: area, client: client, preview: instance.title)
         }
     }
 

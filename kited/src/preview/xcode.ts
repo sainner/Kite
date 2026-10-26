@@ -20,6 +20,8 @@ const CALL_TIMEOUT_MS = 3 * 60_000;
 const FRESH_MS = 2000;
 /** 界面结构给模型的上限。 */
 const HIERARCHY_CHARS = 100_000;
+/** 指认时 Xcode 没给界面结构，隔这么久再要。 */
+const CONTROLS_RETRY_MS = 3000;
 const AGENT_NAME = 'Kite';
 
 type Reply = { result?: { content?: Array<{ type: string; text?: string }>; structuredContent?: Record<string, unknown>; isError?: boolean };
@@ -223,17 +225,16 @@ type Control = { depth: number; tag: string; text?: string; identifier?: string;
 export function parseHierarchy(text: string): Control[] {
   return text.split('\n').flatMap((line) => {
     const frame = /\{\{(-?[\d.]+), (-?[\d.]+)\}, \{([\d.]+), ([\d.]+)\}\}/.exec(line);
-    const tag = /^\s*(\w+)/.exec(line)?.[1];
-    if (!frame || !tag) return [];
+    const head = /^(\s*)(\w+)/.exec(line);
+    if (!frame || !head) return [];
     // 带引号的取到后面紧跟逗号或行尾的那个引号，文字里的逗号不算；不带引号的取到逗号
     const field = (key: string) => {
       const match = new RegExp(`\\b${key}: (?:'(.*?)'(?=,|$)|([^,]*))`).exec(line);
       return (match?.[1] ?? match?.[2])?.trim() || undefined;
     };
     const [x, y, width, height] = frame.slice(1).map(Number) as [number, number, number, number];
-    const label = field('label') ?? /^\s*\w+ "(.*?)"/.exec(line)?.[1]?.trim();
-    return [{ depth: /^\s*/.exec(line)![0].length, tag, x, y, width, height, identifier: field('identifier'),
-      text: (label || field('title') || field('value') || field('placeholderValue'))?.slice(0, 200) }];
+    const text = field('label') || /^\s*\w+ "(.*?)"/.exec(line)?.[1]?.trim() || field('title') || field('value') || field('placeholderValue');
+    return [{ depth: head[1]!.length, tag: head[2]!, x, y, width, height, identifier: field('identifier'), text: text?.slice(0, 200) }];
   });
 }
 
@@ -242,9 +243,9 @@ export function parseHierarchy(text: string): Control[] {
  * 最深的只是没有文字、没有标识的容器时往外找有内容的，都没有就还是最深的。
  */
 export function controlAt(controls: Control[], x: number, y: number): Control | undefined {
-  const covering = controls.map((control, index) => ({ control, index }))
-    .filter(({ control: c }) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
-    .sort((a, b) => b.control.depth - a.control.depth || b.index - a.index).map(({ control }) => control);
+  // 倒过来再按层级稳定排序：同层的靠后的在前
+  const covering = controls.filter((c) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
+    .reverse().sort((a, b) => b.depth - a.depth);
   return covering.find((c) => c.text || c.identifier || !['Other', 'Window', 'Application'].includes(c.tag)) ?? covering[0];
 }
 
@@ -334,11 +335,14 @@ export class SimulatorScreen implements Screen {
   }
 
   async point(x: number, y: number): Promise<PointedElement | null> {
-    const controls = this.controls ??= this.run('', true).then(({ hierarchy }) => parseHierarchy(hierarchy));
-    // Xcode 偶尔不给界面结构（说明里说是无障碍的临时问题），出错、为空的不留，下次再要
-    const list = await controls.catch(() => []);
-    if (!list.length && this.controls === controls) this.controls = undefined;
-    const found = controlAt(list, x, y);
+    if (!this.controls) {
+      const controls = this.controls = this.run('', true).then(({ hierarchy }) => parseHierarchy(hierarchy), () => []);
+      // Xcode 偶尔不给界面结构（说明里说是无障碍的临时问题）：出错、为空的过一会儿再要，不在指针每动一下时都请一次 Xcode
+      void controls.then((list) => {
+        if (!list.length) setTimeout(() => { if (this.controls === controls) this.controls = undefined; }, CONTROLS_RETRY_MS).unref();
+      });
+    }
+    const found = controlAt(await this.controls, x, y);
     if (!found) return null;
     const { depth: _, ...element } = found;
     return element;

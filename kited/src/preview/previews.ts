@@ -676,7 +676,7 @@ export class Previews {
         // 只读页面，不进动作的队列；结果只回问的那台设备
         const { x, y } = data;
         void (async () => {
-          const element = await view.screen?.point?.(x, y).catch(() => null) ?? null;
+          const element = await view.screen?.point(x, y).catch(() => null) ?? null;
           if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'element', x, y, element }));
         })();
         return;

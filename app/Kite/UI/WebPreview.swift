@@ -604,10 +604,14 @@ struct WebPathField: View {
     }
 }
 
-/// 预览的网页画面的控制区（设备自己的网页视图）：左边后退、前进，中间地址栏（由窗口给，首页、重新加载这些在它最右边的菜单里，见 WebPageMenu），右边是窗口给的开关（指认）。
+/// 预览的网页画面的控制区：左边后退、前进，中间地址栏（由窗口给，首页、重新加载这些在它最右边的菜单里，见 WebPageMenu），右边是窗口给的按钮（指认、输入文字）。
+/// 设备自己的网页视图和工作机浏览器传来的网页都用它；后者不知道有没有上一页、下一页，两个都一直能按。
 /// 窄排（narrowPane）时左边只有后退，有下一页时才出现前进。键盘升起时收起键盘顶替左边这组。
 struct WebPageControls<Address: View, Trailing: View>: View {
-    let browser: WebBrowser
+    var canGoBack = true
+    var canGoForward = true
+    let back: () -> Void
+    let forward: () -> Void
     @ViewBuilder let address: Address
     @ViewBuilder let trailing: Trailing
     @Environment(\.narrowPane) private var narrow
@@ -616,11 +620,11 @@ struct WebPageControls<Address: View, Trailing: View>: View {
         HStack(spacing: Metrics.paneButtonGap) {
             KeyboardSwap {
                 PaneHeaderButtonGroup {
-                    ActionButton("后退", icon: "chevron.left", action: browser.back)
-                        .disabled(!browser.canGoBack)
-                    if !narrow || browser.canGoForward {
-                        ActionButton("前进", icon: "chevron.right", action: browser.forward)
-                            .disabled(!browser.canGoForward)
+                    ActionButton("后退", icon: "chevron.left", action: back)
+                        .disabled(!canGoBack)
+                    if !narrow || canGoForward {
+                        ActionButton("前进", icon: "chevron.right", action: forward)
+                            .disabled(!canGoForward)
                     }
                 }
             } shown: {
