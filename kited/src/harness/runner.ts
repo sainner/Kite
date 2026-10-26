@@ -216,8 +216,18 @@ export class HarnessRunner implements ThreadRunner {
     this.pumping = (async () => {
       const prepared = this.options.prepareRequest({ afterNotification: this.history.notificationCursor });
       const { context, configuration } = this.configure(prepared);
-      await this.summarize({ id: request.id, from, until, automatic: !('from' in request) && request.automatic === true, range,
-        prepared, context, configuration, signal: controller.signal, turnId: request.id });
+      // 可重试的失败与回合里的模型请求一样退避重来，见 runTurn。
+      for (let retries = 0; ; retries++) {
+        try {
+          await this.summarize({ id: request.id, from, until, automatic: !('from' in request) && request.automatic === true, range,
+            prepared, context, configuration, signal: controller.signal, turnId: request.id });
+          return;
+        } catch (error) {
+          if (!retryable(error) || controller.signal.aborted) throw error;
+          if (retries === MODEL_RETRIES) throw new Error(`${message(error)}（已重试 ${MODEL_RETRIES} 次）`);
+          await wait(MODEL_RETRY_MS * 2 ** retries, undefined, { signal: controller.signal });
+        }
+      }
     })().catch((error: unknown) => {
       if (!controller.signal.aborted) this.emit({ type: 'error', message: `上下文压缩失败：${message(error)}` });
     }).then(() => {
@@ -418,7 +428,9 @@ export class HarnessRunner implements ThreadRunner {
         prepared, context, configuration, signal: turn.controller.signal, turnId: turn.id });
     } catch (error) {
       this.checkTurn(turn);
-      throw new Error(`上下文压缩失败：${message(error)}`);
+      // 断线、限流这类保留可重试：runTurn 退避后重做这次请求，压缩跟着重来。
+      const failure = `上下文压缩失败：${message(error)}`;
+      throw retryable(error) ? new ModelRequestError(failure, true) : new Error(failure);
     } finally {
       this.compaction = undefined;
       this.emit({ type: 'state', state: this.state });
