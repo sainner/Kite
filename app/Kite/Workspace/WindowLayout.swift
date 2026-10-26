@@ -153,6 +153,8 @@ final class WindowLayout {
         storageKey = nil
         defaults = .standard
         self.root = root
+        // 固定窗口组不经 reconcile，全部窗口就是排布里的这些；不记进来 panes 是空的，台面一张卡片都不画
+        stored = root.panes
         focused = root.panes.first
         Self.all.add(self)
     }
