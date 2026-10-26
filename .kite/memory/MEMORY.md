@@ -58,4 +58,5 @@
 - [工作区模型改造](todo-workspace-model.md) — 已实现、协议号 2；部署前清各工作机旧 kite.db（先征得同意）、真机验收、Line 不提交现场待确认
 - [本机先行的收尾](todo-local-first-actions.md) — 各路径已改为本机先行、待手测；失败时的收回方式；进入工作区卡顿待量（Mac、iPhone）
 - [消息附件收尾](todo-attachments.md) — 输入框那一行待验收、Mac 点开方式待定、真机待测；中途带图交给 Claude 没测
+- [快速模式验收](todo-fast-mode.md) — 已提交待界面验收与真实请求验证；Codex 用量没按快速模式折算待定
 - [会话快捷操作](todo-session-shortcuts.md) — 压缩全部、清空上下文、Esc 停止、上键撤回已提交未验收；压缩全部要新工作机，iPhone 过渡没看
