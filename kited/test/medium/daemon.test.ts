@@ -28,7 +28,7 @@ const temp = useTemp();
 
 const token = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 /** Kite 自己的工具，Claude 里用裸名（不带 MCP 前缀），全部常驻。 */
-const expectedTools = ['read', 'skill', 'patch', 'shell', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send',
+const expectedTools = ['read', 'skill', 'patch', 'shell', 'web_search', 'web_fetch', 'credentials', 'question', 'agent_start', 'agent_list', 'agent_send',
   'agent_stop', 'agent_merge', 'monitor_start', 'monitor_list', 'monitor_stop', 'terminal_list', 'terminal_read', 'terminal_stop',
   'preview_open', 'preview_action', 'preview_inspect', 'preview_read', 'preview_list', 'preview_stop'].sort();
 const tools = (request: Logged): string[] => (request.body.tools ?? []).map((tool: { name: string }) => tool.name);

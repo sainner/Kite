@@ -14,7 +14,7 @@ struct AccountCredential: Decodable, Identifiable, Equatable {
     var reference: String { "{\(projectId == nil ? "account" : "project").\(name)}" }
 }
 
-/// 资源库的凭据页：密钥、Git 账号、模型 API、语音识别各一个固定窗口，同设备的账号页。凭据属于 Kite 账号，经任一台连着的工作机读写，
+/// 资源库的凭据页：密钥、Git 账号、第三方 API Key 各一个固定窗口，同设备的账号页。凭据属于 Kite 账号，经任一台连着的工作机读写，
 /// 不跟某台工作机的连接提示，读写失败写在各窗口的信息区。
 struct CredentialPane: View {
     let pane: Pane
@@ -24,8 +24,7 @@ struct CredentialPane: View {
         let title = PaneGroup.credentials(model.credentialWindows).appearance(of: pane).name
         switch pane.id {
         case "git": GitAccountsPane(title: title)
-        case "api": KeysPane<ApiProvider>(title: title)
-        case "speech": KeysPane<SpeechProvider>(title: title)
+        case "keys": KeysPane(title: title)
         default: SecretsPane(title: title)
         }
     }
@@ -128,7 +127,7 @@ private struct CredentialWindow<Content: View>: View {
 
 /// 空窗口正文里的点阵图案，逐行字符画：B 是满格，b 是半格的细线，其余是静息的点。
 nonisolated enum CredentialGlyph {
-    case key, branch, chip, wave
+    case key, branch, chip
 
     var lines: [String] {
         switch self {
@@ -167,24 +166,17 @@ nonisolated enum CredentialGlyph {
             ".BBBBBBB.",
             "..b.b.b..",
         ]
-        case .wave: [
-            "....B......",
-            "....B.B....",
-            "..B.B.B.B..",
-            "B.B.B.B.B.B",
-            "..B.B.B.B..",
-            "....B.B....",
-            "....B......",
-        ]
         }
     }
 }
 
-/// 一条凭据：前面是厂商或平台的标志（共享密钥没有），名称，下面一行公开信息；右边的更多菜单放替换、删除这类操作。
+/// 一条凭据：前面是厂商或平台的标志（共享密钥没有），名称，下面一行公开信息；右边先是标签（第三方 Key 能做什么），
+/// 再是放替换、删除这类操作的更多菜单。
 private struct CredentialRow<Actions: View>: View {
     var logo: ImageResource?
     let name: String
     let detail: Text
+    var tags: [String] = []
     @ViewBuilder let actions: Actions
 
     var body: some View {
@@ -196,6 +188,7 @@ private struct CredentialRow<Actions: View>: View {
                     .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if !tags.isEmpty { TagRow(titles: tags) }
             Menu { actions } label: {
                 PaneButtonLabel("更多操作", systemImage: "ellipsis")
             }
@@ -518,165 +511,137 @@ private struct GitAccountsPane: View {
     }
 }
 
-/// 一类带 Key 的凭据（模型 API、语音识别）的供应商，连同这一类在凭据窗口和添加表单里的文案。
-protocol KeyProvider: RawRepresentable<String>, CaseIterable, Identifiable, Hashable where AllCases: RandomAccessCollection {
-    /// 工作机上的凭据类型。
-    static var type: String { get }
-    /// 这一类的名称，认不出供应商时代替它。
-    static var category: String { get }
-    /// 窗口的副行：这类 Key 做什么用。
-    static var purpose: String { get }
-    /// 一把都没有时窗口正文的点阵图案和旁边的标题。
-    static var glyph: CredentialGlyph { get }
-    static var empty: String { get }
-    /// 添加按钮和表单的标题。
-    static var addTitle: String { get }
-    static var sheetSubtitle: String { get }
-    var title: String { get }
-    /// 能另填组织管理 Key。
-    var acceptsAdminKey: Bool { get }
-    /// API Key 输入框下的说明。
-    var keyNote: String? { get }
-    /// 添加、替换、删除以后要跟着刷新的。
-    @MainActor static func changed(_ model: AppModel)
-}
+/// 能在凭据页添加 Key 的第三方服务。供应商决定工作机上的凭据类型：DeepSeek 是模型 API（`api`），千问是语音识别（`speech`），
+/// Tavily、Exa 是搜索服务（`search`）；uses 是这把 Key 在 Kite 里拿来做什么，列表和添加表单里标成标签。
+nonisolated enum KeyService: String, CaseIterable, Identifiable {
+    case deepseek, dashscope, tavily, exa
 
-extension KeyProvider {
-    @MainActor static func changed(_ model: AppModel) {}
-}
+    /// 窗口里列的几类凭据。
+    static let types = Set(allCases.map(\.type))
 
-/// 额度查询支持的 API 供应商。
-nonisolated enum ApiProvider: String, KeyProvider {
-    case openai, anthropic, deepseek
+    /// 认不出的（旧版本存的、类型对不上的）为 nil。
+    init?(_ credential: AccountCredential) {
+        guard let service = KeyService(rawValue: credential.meta["provider"]?.string ?? ""), service.type == credential.type else { return nil }
+        self = service
+    }
 
-    static let type = "api"
-    static let category = "模型 API"
-    static let purpose = "只用于查询额度与余额，命令里无法引用"
-    static let glyph = CredentialGlyph.chip
-    static let empty = "还没有 API Key"
-    static let addTitle = "添加 API Key"
-    static let sheetSubtitle = "添加第三方 API Key"
     var id: Self { self }
+    var type: String {
+        switch self {
+        case .deepseek: "api"
+        case .dashscope: "speech"
+        case .tavily, .exa: "search"
+        }
+    }
     var title: String {
         switch self {
-        case .openai: "OpenAI"
-        case .anthropic: "Anthropic"
         case .deepseek: "DeepSeek"
-        }
-    }
-    /// DeepSeek 用调用 Key 查余额；OpenAI、Anthropic 的组织费用要管理 Key。
-    var acceptsAdminKey: Bool { self != .deepseek }
-    var keyNote: String? { acceptsAdminKey ? "只想查询组织费用时可以留空，只填管理 Key。" : nil }
-    @MainActor static func changed(_ model: AppModel) { model.refreshAllModelAccounts() }
-}
-
-/// 语音识别支持的供应商。
-nonisolated enum SpeechProvider: String, KeyProvider {
-    case dashscope
-
-    static let type = "speech"
-    static let category = "语音识别"
-    static let purpose = "只用于识别语音输入，命令里无法引用"
-    static let glyph = CredentialGlyph.wave
-    static let empty = "还没有语音识别 Key"
-    static let addTitle = "添加语音识别 Key"
-    static let sheetSubtitle = "用于语音输入"
-    var id: Self { self }
-    var title: String {
-        switch self {
         case .dashscope: "千问（百炼）"
+        case .tavily: "Tavily"
+        case .exa: "Exa"
         }
     }
-    var acceptsAdminKey: Bool { false }
-    var keyNote: String? { "百炼控制台的 API Key，北京地域。" }
+    var uses: [String] {
+        switch self {
+        case .deepseek: ["模型", "网页搜索", "余额"]
+        case .dashscope: ["语音识别"]
+        case .tavily, .exa: ["网页搜索"]
+        }
+    }
+    /// API Key 输入框下的说明。
+    var keyNote: String? {
+        switch self {
+        case .deepseek: nil
+        case .dashscope: "百炼控制台的 API Key，北京地域。"
+        case .tavily: "Tavily 控制台的 API Key，以 tvly- 开头。"
+        case .exa: "Exa 控制台的 API Key。"
+        }
+    }
+    /// 添加、替换、删除以后要跟着刷新的：DeepSeek 的 Key 带出额度页的余额账号。
+    @MainActor func changed(_ model: AppModel) {
+        if self == .deepseek { model.refreshAllModelAccounts() }
+    }
 }
 
-/// 保存一把 Key 到工作机；查询额度、识别语音时使用，命令里无法引用。替换时供应商不变，填的 Key 整组换掉原来的。
-struct KeySheet<Provider: KeyProvider>: View {
+/// 保存一把第三方 Key 到工作机，命令里无法引用。替换时供应商不变，填的 Key 换掉原来的。
+struct KeySheet: View {
     var replacing: AccountCredential?
     var saved: () -> Void = {}
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var provider: Provider
+    @State private var service: KeyService
     @State private var name: String
     @State private var key = ""
-    @State private var adminKey = ""
     @State private var phase = CardPhase.idle
     @FocusState private var focus: Field?
 
-    private enum Field { case name, key, admin }
+    private enum Field { case name, key }
 
     init(replacing: AccountCredential? = nil, saved: @escaping () -> Void = {}) {
         self.replacing = replacing
         self.saved = saved
-        _provider = State(initialValue: replacing.flatMap { Provider(rawValue: $0.meta["provider"]?.string ?? "") } ?? Provider.allCases.first!)
+        _service = State(initialValue: replacing.flatMap(KeyService.init) ?? .deepseek)
         _name = State(initialValue: replacing?.name ?? "")
     }
 
     private func trimmed(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var valid: Bool { !trimmed(key).isEmpty || (provider.acceptsAdminKey && !trimmed(adminKey).isEmpty) }
+    private var valid: Bool { !trimmed(key).isEmpty }
 
     var body: some View {
-        CardSheet(title: replacing.map { "替换 \($0.name)" } ?? Provider.addTitle,
-                  subtitle: replacing == nil ? Provider.sheetSubtitle : "换成新的 Key",
+        CardSheet(title: replacing.map { "替换 \($0.name)" } ?? "添加 API Key",
+                  subtitle: replacing == nil ? "模型、语音识别和网页搜索用的第三方 Key" : "换成新的 Key",
                   error: phase.error, typing: focus != nil, close: { dismiss() }) {
             CardField(label: "供应商") {
                 Menu {
-                    ForEach(Provider.allCases) { item in
-                        Button(item.title) { provider = item }
+                    ForEach(KeyService.allCases) { item in
+                        Button(item.title) { service = item }
                     }
                 } label: {
-                    Text(provider.title)
+                    HStack(spacing: 8) {
+                        Text(service.title)
+                        Spacer(minLength: 0)
+                        TagRow(titles: service.uses)
+                    }
                 }
                 .menuStyle(.button).buttonStyle(CardSelectStyle()).menuIndicator(.hidden)
                 .disabled(replacing != nil)
             }
             CardField(label: "名称", focused: focus == .name, note: "用来区分同一供应商的多把 Key，留空时使用供应商名。") {
-                TextField(provider.title, text: $name)
+                TextField(service.title, text: $name)
                     .focused($focus, equals: .name).onSubmit(save)
                     .cardInput { focus = .name }
             }
-            CardField(label: "API Key", focused: focus == .key, note: provider.keyNote) {
+            CardField(label: "API Key", focused: focus == .key, note: service.keyNote) {
                 SecureField("粘贴 API Key", text: $key)
                     .focused($focus, equals: .key).onSubmit(save)
                     .cardInput { focus = .key }
-            }
-            if provider.acceptsAdminKey {
-                CardField(label: "组织管理 Key（可选）", focused: focus == .admin, note: "用于查询本月组织费用，需要组织管理员创建。") {
-                    SecureField("粘贴管理 Key", text: $adminKey)
-                        .focused($focus, equals: .admin).onSubmit(save)
-                        .cardInput { focus = .admin }
-                }
             }
         } actions: {
             [[.sheet("保存", busy: phase.working, disabled: !valid || phase.working, action: save)]]
         }
         .endsTyping(focus != nil) { focus = nil }
-        .onChange(of: provider) { _, value in if !value.acceptsAdminKey { adminKey = "" } }
     }
 
     private func save() {
         guard valid else { return }
-        var secret: [String: String] = [:]
-        if !trimmed(key).isEmpty { secret["key"] = trimmed(key) }
-        if provider.acceptsAdminKey, !trimmed(adminKey).isEmpty { secret["adminKey"] = trimmed(adminKey) }
-        let name = trimmed(name).isEmpty ? provider.title : trimmed(name)
-        let provider = provider, replacing = replacing
+        let secret = ["key": trimmed(key)]
+        let name = trimmed(name).isEmpty ? service.title : trimmed(name)
+        let service = service, replacing = replacing
         $phase.run {
             if let replacing {
                 try await model.updateCredential(replacing.id, name: name, secret: secret)
             } else {
-                try await model.createCredential(type: Provider.type, name: name, meta: ["provider": provider.rawValue], secret: secret)
+                try await model.createCredential(type: service.type, name: name, meta: ["provider": service.rawValue], secret: secret)
             }
-            Provider.changed(model)
+            service.changed(model)
             saved()
             dismiss()
         }
     }
 }
 
-/// 一类带 Key 的凭据的窗口：列出公开信息，可添加、替换和删除。
-private struct KeysPane<Provider: KeyProvider>: View {
+/// 第三方 Key 的窗口：模型 API、语音识别、搜索服务三类凭据列在一起，每把右边用标签写它能做什么；可添加、替换和删除。
+private struct KeysPane: View {
     let title: String
     @Environment(AppModel.self) private var model
     @State private var entries: [AccountCredential]?
@@ -684,21 +649,22 @@ private struct KeysPane<Provider: KeyProvider>: View {
     @State private var edit: CredentialEdit?
 
     var body: some View {
-        CredentialWindow(title: title, purpose: Provider.purpose, glyph: Provider.glyph, empty: Provider.empty,
+        CredentialWindow(title: title, purpose: "模型、语音识别和网页搜索用的 Key，命令里无法引用", glyph: .chip, empty: "还没有 API Key",
                          isEmpty: entries.map(\.isEmpty), error: load.error,
-                         actions: PaneHeaderActions(groups: [[PaneHeaderAction(title: Provider.addTitle, systemImage: "plus", disabled: load.working) {
+                         actions: PaneHeaderActions(groups: [[PaneHeaderAction(title: "添加 API Key", systemImage: "plus", disabled: load.working) {
                              edit = .add
                          }]]), reload: reload) {
             if let entries {
                 CardSection {
                     ForEach(entries) { entry in
+                        let service = KeyService(entry)
                         CredentialRow(logo: ThreadModelMenu.logo(vendor: entry.meta["provider"]?.string), name: entry.name,
-                                      detail: Text(detail(entry))) {
+                                      detail: Text(detail(entry, service)), tags: service?.uses ?? []) {
                             MenuButton("替换 Key…", systemImage: "arrow.triangle.2.circlepath") { edit = .replace(entry) }
                             MenuButton("删除", systemImage: "trash", role: .destructive) {
                                 $load.run({
                                     try await model.deleteCredential(entry.id)
-                                    Provider.changed(model)
+                                    service?.changed(model)
                                 }, reload: reload)
                             }
                         }
@@ -708,19 +674,24 @@ private struct KeysPane<Provider: KeyProvider>: View {
             }
         }
         .sheet(item: $edit) { edit in
-            KeySheet<Provider>(replacing: edit.replacing) { Task { await reload() } }
+            KeySheet(replacing: edit.replacing) { Task { await reload() } }
                 .environment(model).appAppearance()
         }
     }
 
-    private func detail(_ entry: AccountCredential) -> String {
-        let provider = Provider(rawValue: entry.meta["provider"]?.string ?? "")?.title ?? Provider.category
+    private func detail(_ entry: AccountCredential, _ service: KeyService?) -> String {
         let hint = entry.meta["hint"]?.string.map { " · …\($0)" } ?? ""
-        return provider + hint + (entry.meta["admin"]?.bool == true ? " · 含管理 Key" : "")
+        // 旧版本存的 OpenAI、Anthropic Key 工作机已不再使用，留着只为能删掉。
+        return (service?.title ?? "\(entry.meta["provider"]?.string ?? "未知供应商") · 已不再使用") + hint
     }
 
+    /// 一次读回各类，留下这几类，按供应商的顺序排，同一家按名称。
     private func reload() async {
-        await $load.read { entries = try await model.credentials(type: Provider.type) }
+        await $load.read {
+            let all = try await model.credentials(type: nil).filter { KeyService.types.contains($0.type) }
+            let order = { (entry: AccountCredential) in KeyService(entry).flatMap { KeyService.allCases.firstIndex(of: $0) } ?? KeyService.allCases.count }
+            entries = all.sorted { (order($0), $0.name) < (order($1), $1.name) }
+        }
     }
 }
 

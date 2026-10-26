@@ -31,7 +31,6 @@ export interface ModelAccount {
   credits?: { value?: number; unlimited: boolean };
   /** Claude 的额外用量：超出套餐额度后按金额计费，金额已按币种的小数位换算。 */
   extraUsage?: { enabled: boolean; currency?: string; used?: number; limit?: number; balance?: number };
-  cost?: { value: number; currency: string; from: number; to: number };
   balances?: Array<{ currency: string; total: number; granted: number; toppedUp: number }>;
   usage?: AccountUsage;
 }
@@ -50,8 +49,6 @@ export interface AccountReadOptions {
   /** 账号保存的 API Key，每次查询前领取；不给时只查本机环境变量。 */
   apiKeys?: () => Promise<ApiKey[]>;
 }
-
-const apiProviders = { openai: 'OpenAI', anthropic: 'Anthropic', deepseek: 'DeepSeek' } as const;
 
 const object = z.record(z.string(), z.unknown());
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 ? value : undefined;
@@ -156,7 +153,7 @@ const unreadApiKeys = (reason: string): ModelAccount => ({ id: 'account-api', pr
 export async function readModelAccounts(home: string, options: AccountReadOptions = {}): Promise<ModelAccountsSnapshot> {
   const transport = options.fetch ?? fetch;
   const checkedAt = Math.floor(Date.now() / 1_000);
-  // 整轮有同一个截止时间，包括费用分页；一个提供方失败不影响其他账号。
+  // 整轮有同一个截止时间；一个提供方失败不影响其他账号。
   const signal = AbortSignal.timeout(12_000);
   async function get(url: string, headers: Record<string, string>) {
     const response = await transport(url, { headers, signal, redirect: 'error' });
@@ -177,23 +174,19 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       account.status = error instanceof AccountReadError ? error.status : 'unavailable';
       account.message = error instanceof AccountReadError ? error.message : '暂时无法查询，请稍后刷新。';
       account.quotas = [];
-      delete account.cost;
       delete account.credits;
       delete account.balances;
       delete account.extraUsage;
     }
     return account;
   }
-  // 账号里的每把 Key 各是一个账号；本机环境变量另作一个账号，未设置时不列出。
+  // 账号里的每把 DeepSeek Key 各是一个账号；本机环境变量 DEEPSEEK_API_KEY 另作一个账号，未设置时不列出。
   let apiKeysError: string | undefined;
   const stored = options.apiKeys ? await options.apiKeys().catch((error: Error) => { apiKeysError = error.message; return []; }) : [];
+  const environmentKey = process.env.DEEPSEEK_API_KEY;
   const apiSources = [
-    ...stored.map((key) => ({ id: `api:${key.id}`, provider: key.provider, identity: key.name, key: key.key, adminKey: key.adminKey })),
-    ...(['openai', 'anthropic', 'deepseek'] as const).flatMap((provider) => {
-      const key = process.env[`${provider.toUpperCase()}_API_KEY`];
-      const adminKey = provider === 'deepseek' ? undefined : process.env[`${provider.toUpperCase()}_ADMIN_KEY`];
-      return key || adminKey ? [{ id: `${provider}-api`, provider, identity: adminKey ? '工作机组织管理凭据' : '工作机 API Key', key, adminKey }] : [];
-    }),
+    ...stored.map((key) => ({ id: `api:${key.id}`, identity: key.name, key: key.key })),
+    ...(environmentKey ? [{ id: 'deepseek-api', identity: '工作机 API Key', key: environmentKey }] : []),
   ];
   async function readDeepSeek(account: ModelAccount, key: string) {
     const data = await get('https://api.deepseek.com/user/balance', { authorization: `Bearer ${key}` });
@@ -208,52 +201,6 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       total: balance.total_balance, granted: balance.granted_balance, toppedUp: balance.topped_up_balance }));
     account.status = 'ready';
     if (!parsed.data.is_available) account.message = '当前余额不足以调用 API。';
-  }
-  async function readOrganizationCost(account: ModelAccount, provider: 'openai' | 'anthropic', admin?: string) {
-    account.status = 'ready';
-    account.message = '供应商未提供此凭据可查询的余额。';
-    if (!admin) {
-    account.message = '已配置 API Key；查询组织费用需要管理凭据，余额暂不可查询。';
-    return;
-    }
-    // 组织费用不是余额，也不等于某个 API Key 的费用；完整取完分页才展示合计。
-    const today = new Date(checkedAt * 1000);
-    const from = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1) / 1000;
-    const url = new URL(provider === 'openai' ? 'https://api.openai.com/v1/organization/costs' : 'https://api.anthropic.com/v1/organizations/cost_report');
-    if (provider === 'openai') {
-      url.searchParams.set('start_time', String(from)); url.searchParams.set('end_time', String(checkedAt));
-    } else {
-      url.searchParams.set('starting_at', new Date(from * 1000).toISOString());
-      url.searchParams.set('ending_at', today.toISOString());
-    }
-    url.searchParams.set('limit', '31');
-    const headers: Record<string, string> = provider === 'openai' ? { authorization: `Bearer ${admin}` }
-      : { 'x-api-key': admin, 'anthropic-version': '2023-06-01' };
-    const pages = new Set<string>();
-    let value = 0;
-    while (true) {
-      const data = await get(url.toString(), headers);
-      if (!Array.isArray(data.data)) throw new AccountReadError('服务返回的费用格式无法识别。');
-      for (const raw of data.data) {
-        const bucket = record(raw);
-        if (!Array.isArray(bucket.results)) throw new AccountReadError('服务返回的费用格式无法识别。');
-        for (const rawResult of bucket.results) {
-          const result = record(rawResult);
-          const amount = provider === 'openai' ? record(result.amount) : result;
-          const cost = provider === 'openai' ? number(amount.value)
-            : typeof amount.amount === 'string' && amount.amount.trim() ? Number(amount.amount) / 100 : undefined;
-          if (cost === undefined || !Number.isFinite(cost) || text(amount.currency)?.toLowerCase() !== 'usd') {
-            throw new AccountReadError('服务返回的费用金额或币种无法识别。');
-          }
-          value += cost;
-        }
-      }
-      if (data.has_more === false) break;
-      const next = text(data.next_page);
-      if (!next || pages.has(next) || pages.size >= 31) throw new AccountReadError('费用分页不完整，请稍后刷新。');
-      pages.add(next); url.searchParams.set('page', next);
-    }
-    account.cost = { value, currency: 'USD', from, to: checkedAt };
   }
   const store = options.usage;
   // 扫本机会话记录并入 kited 保存的按小时汇总，历史不随本地记录清理而丢失；扫描失败时沿用已存的。
@@ -333,10 +280,9 @@ export async function readModelAccounts(home: string, options: AccountReadOption
       account.status = 'ready';
       if (!account.quotas.length) account.message = '服务未返回可查询的订阅额度。';
     }),
-    ...apiSources.map((source) => read(source.id, apiProviders[source.provider], 'api', async (account) => {
+    ...apiSources.map((source) => read(source.id, 'DeepSeek', 'api', async (account) => {
       account.identity = source.identity;
-      if (source.provider === 'deepseek') await readDeepSeek(account, source.key!);
-      else await readOrganizationCost(account, source.provider, source.adminKey);
+      await readDeepSeek(account, source.key);
     })),
     ...(apiKeysError ? [unreadApiKeys(apiKeysError)] : []),
   ]);
@@ -344,7 +290,7 @@ export async function readModelAccounts(home: string, options: AccountReadOption
     await scans;
     for (const account of accounts) if (account.kind === 'subscription') account.usage = localUsage(store.usageDays(account.id));
     // DeepSeek 会话的用量挂在这台工作机的第一个 DeepSeek 账号上，与会话取 Key 的顺序相同；记录里没有用的是哪把，App 的总计按各账号相加。
-    const deepseek = accounts.find((account) => account.id === apiSources.find((source) => source.provider === 'deepseek')?.id);
+    const deepseek = accounts.find((account) => account.id === apiSources[0]?.id);
     if (deepseek) deepseek.usage = localUsage(store.usageDays('deepseek'));
   }
   return { checkedAt, accounts };

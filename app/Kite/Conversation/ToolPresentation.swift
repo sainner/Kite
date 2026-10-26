@@ -114,8 +114,8 @@ extension ToolUse {
         case "Write": .write
         case "Bash", "shell": .command
         case "check": .check
-        case "WebSearch": .webSearch
-        case "WebFetch": .webFetch
+        case "WebSearch", "web_search": .webSearch
+        case "WebFetch", "web_fetch": .webFetch
         case "Agent": .agent
         case "Skill", "skill": .skill
         case "ToolSearch", "tool_search": .tools

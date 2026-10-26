@@ -61,7 +61,7 @@ struct ContextCounting {
 nonisolated struct ContextTokenCounts: Decodable, Sendable {
     struct Result: Decodable, Sendable {
         let tokens: Int?
-        /// api、o200k 或 none。
+        /// o200k 或 none。
         let method: String
         let exact: Bool
     }

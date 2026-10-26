@@ -116,16 +116,17 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 #### 凭据
 
-凭据分四类，类型决定由谁、以什么方式取用，可见范围与类型相互独立：
+凭据分五类，类型决定由谁、以什么方式取用，可见范围与类型相互独立：
 
 | 类型 `type` | 名称 `name` | 公开信息 `meta` | 保密内容 `secret` | 可见范围 | 取用方 |
 |---|---|---|---|---|---|
 | `secret` 共享密钥 | 引用名 | `{kind, path?}`，`kind` 为 `text` 或 `file`；`path` 只用于项目专用的 `file` | `{value}` | 账号共享或项目专用 | 执行命令时按 `{account.名称}`、`{project.名称}` 引用；设了 `path` 的由宿主写进工作区 |
 | `git` Git 凭据 | 主机名，如 `gitlab.com` | `{username}`，默认 `oauth2` | `{token}` | 账号共享 | 访问对应平台的远程时使用 |
-| `api` 模型 API | 用户起的名称 | `{provider, hint, admin}` | `{key?, adminKey?}` | 账号共享 | 查询额度或调用 token 计数接口时使用；DeepSeek 的 Key 也用于 DeepSeek 型号的会话 |
+| `api` 模型 API | 用户起的名称 | `{provider, hint}`，`provider` 目前只有 `deepseek` | `{key}` | 账号共享 | DeepSeek 型号的会话、代理的网页搜索与读网页、余额查询 |
 | `speech` 语音识别 | 用户起的名称 | `{provider, hint}`，`provider` 目前只有 `dashscope`（千问，北京地域） | `{key}` | 账号共享 | 识别语音输入时使用 |
+| `search` 搜索服务 | 用户起的名称 | `{provider, hint}`，`provider` 为 `tavily` 或 `exa` | `{key}` | 账号共享 | 代理用 web_search、web_fetch 时使用，见 [web_search](harness-主循环.md#web_search) |
 
-类型、范围与名称的组合唯一；两台工作机没同步上时各建了同名的一条，取用时用最近改过的那条。同一供应商可以保存多把 API Key，各自作为一个 API 账号查询。命令中无法引用 Git 凭据、API Key 或语音识别 Key。订阅登录不是凭据，仍由各工作机自行完成，见 [模型账号与额度](#模型账号与额度)。
+类型、范围与名称的组合唯一；两台工作机没同步上时各建了同名的一条，取用时用最近改过的那条。同一供应商可以保存多把 API Key，各自作为一个 API 账号查询。命令中无法引用 Git 凭据、API Key、语音识别 Key 或搜索服务 Key。订阅登录不是凭据，仍由各工作机自行完成，见 [模型账号与额度](#模型账号与额度)。
 
 账号共享密钥供各项目的 agent 使用；项目专用密钥只对所属项目的执行开放。同名密钥按引用前缀区分，不回退或互相覆盖。宿主按实例实际归属固定项目 ID，不接受模型自报的项目。当前不细分项目内各 agent 的密钥权限，保存到相应范围即允许该范围内的 agent 使用。执行前按需读取，替换或删除影响后续取用，已经启动的命令不会因此中断。执行中的环境变量、临时文件、输出与清理约定见 [基础工具契约](harness-主循环.md#shell)。
 
@@ -133,7 +134,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 这些文件对 agent 只读：shell 的沙箱不许写，patch 拒绝修改并提示改用密钥请求。要加或改环境变量文件里的一项，agent 用 `credentials` 的请求动作，由用户在卡片里填写或确认（见 [密钥请求](工具审批与提问.md#密钥请求)），宿主按 dotenv 的写法替换这一行，没有就追加。文件只有凭据这一个来源，所以随时整体重写也不会丢改动。写进工作区的文件 agent 能读到，内容可能进入模型上下文，取舍见 [凭据](项目与远程仓库.md#凭据)。
 
-共享密钥的名称以英文字母开头，仅含英文字母、数字、下划线与短横线，最长 64 个字符；内容为 1–65536 个 UTF-16 单元的文本，不含 NUL，文件类型也按 UTF-8 文本使用。Git 主机名为小写域名，可带端口；token 最长 4096 个字符。API 名称为 1–64 个字符；`provider` 为 `openai`、`anthropic` 或 `deepseek`。OpenAI、Anthropic 至少提供调用 Key 或组织管理 Key 之一，DeepSeek 只接受调用 Key；`hint` 是 Key 末四位，`admin` 表示是否含管理 Key，二者由 kited 生成。管理接口只返回公开信息，App 只在新建或替换时提交保密内容。
+共享密钥的名称以英文字母开头，仅含英文字母、数字、下划线与短横线，最长 64 个字符；内容为 1–65536 个 UTF-16 单元的文本，不含 NUL，文件类型也按 UTF-8 文本使用。Git 主机名为小写域名，可带端口；token 最长 4096 个字符。API、语音识别与搜索服务凭据的名称为 1–64 个字符，`hint` 是 Key 末四位，由 kited 生成。旧版本保存的 OpenAI、Anthropic API Key 同步过来后不再使用，只能删除。管理接口只返回公开信息，App 只在新建或替换时提交保密内容。
 
 GitHub 用 Kite 的 OAuth App 做设备码授权绑定，在工作机上完成，不需要 client secret，token 不经过 App。这个 App 开着 Device Flow、关着令牌过期，kited 不做令牌续期；`KITE_GITHUB_CLIENT_ID` 可以换成别的 App。
 
@@ -279,18 +280,17 @@ App 的订阅登录由所选工作机执行原生登录工具，凭据不经过 
 这些接口沿用工作机身份与同账号组网鉴权。弹窗关闭时取消登录，超时十分钟或服务正常关闭时也结束等待。自动续期仍未接入。
 
 
-API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新读取；读取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。kited 进程环境中的 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 与组织管理凭据 `OPENAI_ADMIN_KEY`、`ANTHROPIC_ADMIN_KEY` 另作为本机账号查询，`id` 为 `<供应商>-api`，未设置时不列出。查询 OpenAI、Anthropic 的组织费用需要管理 Key。OpenAI、Anthropic 的 API Key 只用于额度查询与 token 计数，不作会话的模型凭据；DeepSeek 的 Key 同时是 DeepSeek 型号的模型凭据，见 [会话后端与宿主边界](#会话后端与宿主边界)。
+API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 Key 一个账号，`id` 为 `api:<凭据ID>`，`identity` 为用户起的名称；每次查询前重新读取；读取失败时无法得知有哪些账号，改为返回一条 `id` 为 `account-api`、状态为 `unavailable` 的账号说明原因。kited 进程环境中的 `DEEPSEEK_API_KEY` 另作为本机账号查询，`id` 为 `deepseek-api`，未设置时不列出。DeepSeek 的 Key 同时是 DeepSeek 型号的模型凭据，见 [会话后端与宿主边界](#会话后端与宿主边界)。
 
-额度不由客户端轮询，打开账号页也不查询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有查询过就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期；查询结果到达之前，快照只含会话观测到的订阅账号及其周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 费用/余额没有会话来源，保留上次查询结果。刷新时某个账号暂时查询失败（限流、超时、服务错误等，状态为 `unavailable`），该账号沿用上次查询结果与会话观测，只更新状态与提示；未登录或需要重新授权时不沿用。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
+额度不由客户端轮询，打开账号页也不查询。kited 在内存中保留本机最新的账号快照：首个客户端订阅目录事件流时，若还没有查询过就查询一次上游；之后只在显式刷新时查询。会话响应带回的额度按观测时间覆盖对应周期；查询结果到达之前，快照只含会话观测到的订阅账号及其周期：Claude 取 SDK `rate_limit_event` 中的 5 小时与每周周期，ChatGPT 取订阅响应头中的主要、次要周期与 credits。按模型分开的周额度、ChatGPT 附加额度和 API 余额没有会话来源，保留上次查询结果。刷新时某个账号暂时查询失败（限流、超时、服务错误等，状态为 `unavailable`），该账号沿用上次查询结果与会话观测，只更新状态与提示；未登录或需要重新授权时不沿用。快照变化时在目录事件流推送 `model-accounts.changed`（`modelAccounts` 字段），目录首帧 `catalog.snapshot` 也带当前快照，缓存为空时为 `null`。
 
-`GET /model-accounts` 返回当前快照，缓存为空时先查询；`POST /model-accounts/refresh` 立即查询上游，进行中的查询会被复用，结果同时经事件流推送。二者都要求工作机身份与同账号访问授权，返回 `{checkedAt, accounts}`，`checkedAt` 是快照中最新数据的观测时间。每个账号包含 `id`、`provider`、`kind`（`subscription` 或 `api`）、`status`、`quotas`，以及可获得的 `identity`、`plan`、`message`。状态为 `ready`、`unconfigured`、`reauthentication` 或 `unavailable`；`ready` 表示凭据已配置或查询成功，不保证供应商开放余额查询。各提供方独立失败，HTTP 200 不代表所有账号均查询成功；查询之后有会话成功时，该账号按会话结果视为可用。响应不包含令牌、API Key 或上游错误正文。
+`GET /model-accounts` 返回当前快照，缓存为空时先查询；`POST /model-accounts/refresh` 立即查询上游，进行中的查询会被复用，结果同时经事件流推送。二者都要求工作机身份与同账号访问授权，返回 `{checkedAt, accounts}`，`checkedAt` 是快照中最新数据的观测时间。每个账号包含 `id`、`provider`、`kind`（`subscription` 或 `api`）、`status`、`quotas`，以及可获得的 `identity`、`plan`、`message`。状态为 `ready`、`unconfigured`、`reauthentication` 或 `unavailable`；`ready` 表示查询成功。各提供方独立失败，HTTP 200 不代表所有账号均查询成功；查询之后有会话成功时，该账号按会话结果视为可用。响应不包含令牌、API Key 或上游错误正文。
 
 - `quotas` 中的 `label` 是周期名称，`remainingPercent` 是周期剩余百分比，`windowMinutes` 是窗口长度，`resetsAt` 是 Unix 秒。窗口缺失表示未知，不能当成零或无限；只限某个模型或功能的额度分开返回，并以 `model` 标明范围，缺省表示整个账号共用。
 - 订阅的 `plan` 是小写档位名。Claude 取 profile 接口中组织的当前订阅（如 `max 20x`），登录凭据缓存的 `subscriptionType` 升级后不更新，只在 profile 不可用时使用。
 - `usage` 是该账号在这台工作机上的 token 用量，不读供应商的用量统计：`days` 为最近 53 周里有用量的日期（`date` 为 `YYYY-MM-DD`，升序）、当天 `tokens` 与 `hours`（本地时间 0–23 时每小时的 token）、按价格表折算的 `cost` 与 `costHours`（美元）、`unpriced`（价格表里没有对应模型、未计入金额的 token），`lifetimeTokens` 与 `lifetimeCost` 为 kited 保存的全部日子之和。价格表在 `kited/src/token-prices.ts`，取 Claude、OpenAI 与 DeepSeek 官方 API 价格页的标准档，按每次请求的模型与输入、缓存读写、输出分别计价；DeepSeek 按请求时间分高峰与空闲两档（北京时间周一至周五 9–12 时、14–18 时为高峰，法定节假日按国务院公布的放假安排算空闲，还没公布的年份只按星期算）；订阅本身不按 token 计费，金额只是同样用量走 API 的折算。统计来源为本机 Claude Code 会话（含 Kite 的 Claude 会话）、Kite 自研 harness 与 Codex CLI 会话，harness 的请求按模型分到 ChatGPT 或 DeepSeek；本地原始记录清理后已保存的历史仍保留。价格表变化时，仍有原始记录的用量可以重新折算。API 账号中只有这台工作机的第一个 DeepSeek 账号（与会话取 Key 的顺序相同）返回 `usage`，含本机 DeepSeek 型号的全部请求，会话记录不区分用的是哪把 Key；其他 API 账号不返回 `usage`。
 - ChatGPT 的 `credits` 使用供应商的额度单位；`unlimited` 仅在上游明确返回时成立，未返回金额时省略 `value`。
 - Claude 的 `extraUsage` 是额外用量（超出套餐额度后按金额计费）：`enabled` 表示是否开启，`used`、`limit`、`balance` 是按币种小数位换算后的金额，`currency` 为币种；上游没给的项省略。
-- API 的 `cost` 是 UTC 当月到查询时刻的**组织费用**（`value`、`currency`、`from`、`to`），取完所有分页才返回；不是余额，也不是单个 API Key 的费用。普通调用 Key 没有组织费用权限时明确提示，不能推算余额。来源见 [OpenAI Costs](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/usage/methods/costs) 与 [Anthropic Usage and Cost](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)。
 - DeepSeek 的 `balances` 保留各币种的可用余额 `total`、赠金 `granted`、充值余额 `toppedUp`，不混合人民币和美元；余额不足仍保留供应商实际返回值。来源见 [DeepSeek 查询余额](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)。
 
 查询失败后可重试；限流时应等待下一次刷新，不自动重试。每轮请求有总超时，不因一个提供方失败撤销其他查询。账号数据属于工作机，离线时上次结果只能作为历史信息。
@@ -371,7 +371,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/context-templates/:id/reset` | 以 `{expectedRevision}` 把模板恢复默认，等同于保存默认内容 |
 | GET | `/context-variables/:name`、`/workspaces/:id/…`、`/instances/:id/…` | 按工作机、工作区或代理取一个公共变量现在的值（项目层按工作区取），范围取不到变量所在的层时 400；项目规则与记忆索引另带逐级找到的文件，见 [上下文模板](harness-上下文组装.md#模板归属与生效) |
 | PUT | `/workspaces/:id/context-variables/:name/file` | 以 `{path, content, expectedSha256}` 把项目规则或记忆索引的一份文件写回这个工作区的工作树；越出查找位置 400，文件已在别处修改 409 |
-| POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。账号里有对应厂商的 API Key 时用官方计数接口（`method: api`），否则 OpenAI 按 o200k 估算、Claude 不给数；DeepSeek 没有计数接口，按 o200k 估算；`exact` 标明是否准确 |
+| POST | `/token-counts` | 以 `{texts, model?, scene?}` 逐段计数，返回 `{model, results}`；没给模型时按场景推出。OpenAI 与 DeepSeek 按 o200k 分词在本机估算（`method: o200k`），Claude 没有公开分词器、不给数（`method: none`）；`exact` 标明是否准确 |
 | GET / PUT | `/threads/:id/title` | 读取标题与生成进度；以 expectedRevision 手动改名或恢复自动标题 |
 | POST | `/threads/:id/title/regenerate` | 以 expectedRevision 立即重新生成标题，等待结果；不阻塞主会话控制 |
 | GET / PUT | `/instances/:id/execution-grants` | 读取或修改执行授权；须停止，「允许并记住」追加网络许可例外 |

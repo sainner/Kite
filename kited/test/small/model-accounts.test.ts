@@ -7,7 +7,7 @@ import {
 import { useTemp, writeFiles } from '../util.ts';
 
 const temp = useTemp();
-const keys = ['OPENAI_API_KEY', 'OPENAI_ADMIN_KEY', 'ANTHROPIC_API_KEY', 'ANTHROPIC_ADMIN_KEY', 'DEEPSEEK_API_KEY'] as const;
+const keys = ['DEEPSEEK_API_KEY'] as const;
 let savedEnv: Array<string | undefined>;
 beforeEach(() => {
   savedEnv = keys.map((key) => process.env[key]);
@@ -201,79 +201,6 @@ test('订阅认证、限流和畸形响应独立失败且不会回退到 Codex �
     else rmSync(legacyPath, { force: true });
     if (!hadDirectory) rmSync(legacyDir, { recursive: true, force: true });
   }
-}, 1000);
-
-// 组织费用的分页游标、UTC 统计区间和两家金额单位是外部 HTTP 合同；读到部分页面不能展示合计或余额。
-test('API 普通密钥只确认配置，管理密钥完整读分页后才展示本月组织费用', async () => {
-  const home = temp('kite-model-accounts-costs-');
-  Object.assign(process.env, { OPENAI_API_KEY: 'sk-openai-test-secret', ANTHROPIC_API_KEY: 'sk-ant-test-secret' });
-  let scenario = 'complete';
-  const api = endpoint((_request, url) => {
-    const page = url.searchParams.get('page');
-    const isOpenAI = url.pathname === '/v1/organization/costs';
-    const isAnthropic = url.pathname === '/v1/organizations/cost_report';
-    if (!isOpenAI && !isAnthropic) return Response.json({}, { status: 404 });
-    if (page && scenario === (isOpenAI ? 'openai-forbidden' : 'anthropic-throttled')) {
-      return Response.json({ error: isOpenAI ? process.env.OPENAI_ADMIN_KEY : process.env.ANTHROPIC_ADMIN_KEY }, {
-        status: isOpenAI ? 403 : 429,
-      });
-    }
-    const results = isOpenAI
-      ? (page ? [{ amount: { value: 2.25, currency: 'usd' } }]
-        : [{ amount: { value: 1.25, currency: 'usd' } }, { amount: { value: 0.5, currency: 'usd' } }])
-      : (page ? [{ amount: '250', currency: 'USD' }] : [{ amount: '123', currency: 'USD' }, { amount: '77', currency: 'USD' }]);
-    return Response.json({ data: [{ results }], has_more: !page,
-      next_page: page || scenario === 'missing-cursor' ? null : (isOpenAI ? 'openai-second' : 'anthropic-second') });
-  });
-  try {
-    const ordinary = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: noClaudeLogin });
-    for (const id of ['openai-api', 'anthropic-api']) {
-      expect(account(ordinary, id)).toMatchObject({ kind: 'api', status: 'ready', quotas: [] });
-      expect(account(ordinary, id).cost).toBeUndefined();
-      expect(account(ordinary, id).credits).toBeUndefined();
-      expect(account(ordinary, id).message).toBeTruthy();
-    }
-    expect(api.seen).toHaveLength(0);
-    Object.assign(process.env, { OPENAI_ADMIN_KEY: 'sk-openai-admin-test-secret', ANTHROPIC_ADMIN_KEY: 'sk-ant-admin-test-secret' });
-    const now = new Date();
-    const monthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1) / 1000;
-    const complete = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: noClaudeLogin });
-    expect(account(complete, 'openai-api').cost).toMatchObject({ value: 4, currency: 'USD', from: monthStart });
-    expect(account(complete, 'anthropic-api').cost).toMatchObject({ value: 4.5, currency: 'USD', from: monthStart });
-    for (const id of ['openai-api', 'anthropic-api']) expect(account(complete, id).credits).toBeUndefined();
-    // 费用请求恰好每家两页，没有重复。
-    expect(api.seen).toHaveLength(4);
-    for (const [host, cursor] of [['api.openai.com', 'openai-second'], ['api.anthropic.com', 'anthropic-second']]) {
-      const requests = api.seen.filter((value) => value.url.hostname === host);
-      expect(requests).toHaveLength(2);
-      expect(requests[0]!.url.searchParams.get('page')).toBeNull();
-      expect(requests[1]!.url.searchParams.get('page')).toBe(cursor!);
-      for (const request of requests) {
-        if (host === 'api.openai.com') {
-          expect(request.url.searchParams.get('start_time')).toBe(String(monthStart));
-          expect(Number(request.url.searchParams.get('end_time'))).toBeGreaterThanOrEqual(monthStart);
-          expect(request.headers.get('authorization')).toBe(`Bearer ${process.env.OPENAI_ADMIN_KEY}`);
-        } else {
-          expect(Date.parse(request.url.searchParams.get('starting_at')!)).toBe(monthStart * 1000);
-          expect(request.headers.get('x-api-key')).toBe(process.env.ANTHROPIC_ADMIN_KEY!);
-          expect(request.headers.get('anthropic-version')).toBe('2023-06-01');
-        }
-      }
-    }
-    for (const name of ['openai-forbidden', 'anthropic-throttled', 'missing-cursor']) {
-      scenario = name;
-      const snapshot = await readModelAccounts(home, { fetch: api.fetch, claudeLogin: noClaudeLogin });
-      for (const id of ['openai-api', 'anthropic-api']) {
-        const failed = name === 'missing-cursor' || name.startsWith(id.split('-')[0]!);
-        expect(account(snapshot, id).status).toBe(failed ? 'unavailable' : 'ready');
-        if (failed) expect(account(snapshot, id).cost).toBeUndefined();
-        else expect(account(snapshot, id).cost?.value).toBe(id === 'openai-api' ? 4 : 4.5);
-        expect(account(snapshot, id).credits).toBeUndefined();
-      }
-      noSecrets(snapshot, keys.flatMap((key) => process.env[key] ? [process.env[key]!] : []));
-    }
-    noSecrets(complete, keys.flatMap((key) => process.env[key] ? [process.env[key]!] : []));
-  } finally { await api.stop(); }
 }, 1000);
 
 // DeepSeek 余额用金额字符串且可能同时返回多种币种；不可用仍是有数值的余额，不能和接口错误混为零。

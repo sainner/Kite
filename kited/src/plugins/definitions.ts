@@ -48,6 +48,8 @@ export const agentToolCatalog: { name: AgentTool; title: string; group: string }
   { name: 'preview_read', title: operationTitle('preview_read'), group: '预览' },
   { name: 'preview_list', title: operationTitle('preview_list'), group: '预览' },
   { name: 'preview_stop', title: operationTitle('preview_stop'), group: '预览' },
+  { name: 'web_search', title: '搜索网页', group: '网络' },
+  { name: 'web_fetch', title: '读网页', group: '网络' },
   { name: 'credentials', title: '列出密钥引用', group: '凭据' },
   { name: 'question', title: '向用户提问', group: '用户交接' },
   ...operationToolNames.filter((name) => !name.startsWith('terminal_') && !name.startsWith('preview_'))

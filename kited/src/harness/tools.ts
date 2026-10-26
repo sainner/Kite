@@ -1,5 +1,14 @@
 /** 连续可并发调用共享执行区；排他调用是屏障，后面的调用不得越过。 */
-import type { Tool, ToolCall, ToolResult } from './types.ts';
+import { z } from 'zod';
+import type { Json, JsonObject, Tool, ToolCall, ToolResult } from './types.ts';
+
+/** 用 zod 定义参数的宿主工具：声明的参数由 schema 转成 JSON Schema，校验与执行都按它解析。 */
+export const zodTool = <T extends z.ZodType>(name: string, description: string, schema: T,
+  execute: (args: z.output<T>, context: Parameters<Tool['execute']>[1]) => Promise<ToolResult>, parallel = false): Tool => ({
+  name, description, parameters: z.toJSONSchema(schema) as JsonObject, parallel,
+  validate: (args: Json) => { schema.parse(args); },
+  execute: async (args, context) => { context.signal.throwIfAborted(); return execute(schema.parse(args), context); },
+});
 
 export interface BatchOptions {
   cwd: string;

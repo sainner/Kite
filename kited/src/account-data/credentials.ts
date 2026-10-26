@@ -20,13 +20,25 @@ export interface Credential {
   createdAt: number;
   updatedAt: number;
 }
-/** 模型 API Key，只用于查询额度；OpenAI、Anthropic 可以只有组织管理 Key。 */
-export interface ApiKey { id: string; name: string; provider: 'openai' | 'anthropic' | 'deepseek'; key?: string; adminKey?: string }
+/** DeepSeek 的 API Key：跑 DeepSeek 型号的会话、网页搜索与读网页，查余额。 */
+export interface ApiKey { id: string; name: string; key: string }
 export interface SpeechKey { id: string; name: string; provider: SpeechProvider; key: string }
+/** 网页搜索与抓取的服务 Key；DeepSeek 不在这里，用模型 API 里的那把。 */
+export const searchProviders = ['tavily', 'exa'] as const;
+export interface SearchKey { id: string; name: string; provider: (typeof searchProviders)[number]; key: string }
+/** 带一把 Key 的几类凭据各自支持的供应商；供应商写在公开信息里，hint 是 Key 的末四位，由 kited 生成。 */
+const keyedProviders = { api: ['deepseek'], speech: ['dashscope'], search: searchProviders } as const;
+type KeyedType = keyof typeof keyedProviders;
+const keyedType = (type: string): type is KeyedType => type in keyedProviders;
+const keyedField = (providers: readonly [string, ...string[]]) => ({
+  name: z.string().trim().min(1).max(64),
+  meta: z.object({ provider: z.enum(providers) }).strict(),
+  secret: z.object({ key: z.string().trim().min(1).max(4096) }).strict(),
+});
 
-export const credentialType = z.enum(['secret', 'git', 'api', 'speech']);
+export const credentialType = z.enum(['secret', 'git', 'api', 'speech', 'search']);
 export type CredentialType = z.infer<typeof credentialType>;
-/** 各类凭据的名称、公开信息与保密内容；API 与语音识别凭据的 hint、admin 由这里生成。 */
+/** 各类凭据的名称、公开信息与保密内容；API、语音识别与搜索服务凭据的 hint 由这里生成。 */
 const fields: Record<CredentialType, { name: z.ZodType<string>; meta: z.ZodType<Record<string, unknown>>; secret: z.ZodType<Record<string, string | undefined>> }> = {
   secret: {
     name: secretName,
@@ -39,16 +51,9 @@ const fields: Record<CredentialType, { name: z.ZodType<string>; meta: z.ZodType<
     meta: z.object({ username: z.string().trim().min(1).max(200).default('oauth2') }).strict(),
     secret: z.object({ token: z.string().min(1).max(4096) }).strict(),
   },
-  api: {
-    name: z.string().trim().min(1).max(64),
-    meta: z.object({ provider: z.enum(['openai', 'anthropic', 'deepseek']) }).strict(),
-    secret: z.object({ key: z.string().trim().min(1).max(4096).optional(), adminKey: z.string().trim().min(1).max(4096).optional() }).strict(),
-  },
-  speech: {
-    name: z.string().trim().min(1).max(64),
-    meta: z.object({ provider: z.enum(['dashscope']) }).strict(),
-    secret: z.object({ key: z.string().trim().min(1).max(4096) }).strict(),
-  },
+  api: keyedField(keyedProviders.api),
+  speech: keyedField(keyedProviders.speech),
+  search: keyedField(keyedProviders.search),
 };
 export const credentialCreation = z.object({ type: credentialType, name: z.unknown(), projectId: z.uuid().optional(),
   meta: z.unknown().optional(), secret: z.unknown() }).strict();
@@ -92,12 +97,12 @@ export class Credentials {
       createdAt: now, updatedAt: now, secret: input.secret });
   }
 
-  /** 改名或替换内容，类型与范围不变；API 与语音识别凭据不换密钥时沿用原来的 hint、admin，换供应商必须换密钥。 */
+  /** 改名或替换内容，类型与范围不变；API、语音识别与搜索服务凭据不换密钥时沿用原来的 hint，换供应商必须换密钥。 */
   async update(id: string, raw: unknown): Promise<Credential> {
     const existing = this.entries().find((entry) => entry.id === id);
     if (!existing) throw new KiteError('找不到凭据', 404);
     const change = valid(credentialChange, raw);
-    const keyed = existing.type === 'api' || existing.type === 'speech';
+    const keyed = keyedType(existing.type);
     const meta = change.meta ?? (keyed ? { provider: existing.meta.provider } : existing.meta);
     const input = this.input(existing.type, { name: change.name ?? existing.name, meta, secret: change.secret });
     if (keyed && !input.secret) {
@@ -204,14 +209,15 @@ export class Credentials {
     else await this.create({ type: 'git', name: host, meta: { username }, secret: { token } });
   }
 
-  async apiKeys(): Promise<ApiKey[]> {
-    return Promise.all(this.list('api').map(async ({ id, name, meta }) => ({ id, name, provider: meta.provider as ApiKey['provider'],
-      ...(await this.secret(id)) })));
-  }
+  apiKeys(): Promise<ApiKey[]> { return this.keys('api'); }
+  speechKeys(): Promise<SpeechKey[]> { return this.keys('speech'); }
+  searchKeys(): Promise<SearchKey[]> { return this.keys('search'); }
 
-  async speechKeys(): Promise<SpeechKey[]> {
-    return Promise.all(this.list('speech').map(async ({ id, name, meta }) => ({ id, name, provider: meta.provider as SpeechProvider,
-      key: (await this.secret(id))!.key! })));
+  /** 一类带 Key 的凭据；供应商已不支持的（如旧版本存的 OpenAI、Anthropic Key，还会从别的工作机同步过来）不再使用。 */
+  private async keys<T extends KeyedType>(type: T): Promise<Array<{ id: string; name: string; provider: (typeof keyedProviders)[T][number]; key: string }>> {
+    const providers: readonly string[] = keyedProviders[type];
+    return Promise.all(this.list(type).filter(({ meta }) => providers.includes(String(meta.provider)))
+      .map(async ({ id, name, meta }) => ({ id, name, provider: meta.provider as (typeof keyedProviders)[T][number], key: (await this.secret(id))!.key! })));
   }
 
   private async save(id: string, stored: Stored): Promise<Credential> {
@@ -261,13 +267,7 @@ export class Credentials {
     const name = valid(field.name, input.name);
     const meta = valid(field.meta, input.meta ?? {});
     const secret = input.secret === undefined ? undefined : valid(field.secret, input.secret);
-    if (type === 'api' && secret) {
-      const { key, adminKey } = secret;
-      if (meta.provider === 'deepseek' && (!key || adminKey)) throw new KiteError('DeepSeek 只需要 API Key', 400);
-      if (!key && !adminKey) throw new KiteError('至少填写调用 Key 或管理 Key', 400);
-      Object.assign(meta, { hint: (key ?? adminKey)!.slice(-4), admin: !!adminKey });
-    }
-    if (type === 'speech' && secret) Object.assign(meta, { hint: secret.key!.slice(-4) });
+    if (keyedType(type) && secret) Object.assign(meta, { hint: secret.key!.slice(-4) });
     return { name, meta, secret };
   }
 }

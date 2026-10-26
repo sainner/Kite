@@ -50,6 +50,7 @@ bun run harness --resume <会话id>
 | `src/harness/runner.ts`、`history.ts` | 异步执行控制与可重放的历史投影 |
 | `src/claude/` | Claude Code 会话宿主、进程控制、原生历史与工具适配 |
 | `src/execution/` | 共用沙箱、执行授权、文件工具、命令与进程组 |
+| `src/web/` | 网页搜索与读网页的工具，以及接的几家外部服务 |
 | `src/workspace/` | 项目登记、工作树、Git、快照、文件与历史差异 |
 | `src/workspace/checkout-management.ts` | 添加项目（检查、导入文件夹、环境变量文件）、检出的建立与远程同步 |
 | `src/workspace/peer-git.ts` | 没有远程的项目：本机检出的只读 Git 服务、从其他工作机 clone 与快进主线 |

@@ -68,8 +68,7 @@ enum PaneGroup: Identifiable {
         case .credentials:
             switch pane.id {
             case "git": return .init(name: "Git 账号", icon: "arrow.triangle.branch")
-            case "api": return .init(name: ApiProvider.category, icon: "key")
-            case "speech": return .init(name: SpeechProvider.category, icon: "waveform")
+            case "keys": return .init(name: "API Key", icon: "key")
             default: return .init(name: "密钥", icon: "key")
             }
         }

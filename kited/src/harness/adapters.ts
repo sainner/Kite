@@ -8,7 +8,7 @@ import type { Model } from './types.ts';
 
 /** 账号凭据里的第一把 DeepSeek Key（按凭据列表的顺序，同语音识别取 Key），没有时用 kited 环境里的 DEEPSEEK_API_KEY。 */
 export async function deepseekKey(apiKeys?: () => Promise<ApiKey[]>): Promise<string | undefined> {
-  const stored = apiKeys && (await apiKeys()).find((key) => key.provider === 'deepseek' && key.key)?.key;
+  const stored = apiKeys && (await apiKeys())[0]?.key;
   return stored || process.env.DEEPSEEK_API_KEY || undefined;
 }
 

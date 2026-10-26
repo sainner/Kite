@@ -11,8 +11,11 @@ import { prepareSandbox, secretEnvironment, workspacePolicy, type ExecutionPolic
 import type { ToolResult } from '../harness/types.ts';
 import type { SecretValue } from '../secrets.ts';
 
-/** 名单外主机的放行决定；port 缺省表示上游没给端口。 */
-export type NetworkAsk = (target: { host: string; port?: number }, signal: AbortSignal) => Promise<boolean>;
+/**
+ * 名单外主机的放行决定；port 缺省表示上游没给端口。命令连接时只有主机与端口；不经沙箱代理、由宿主代为联网的工具（web_fetch）
+ * 另报自己的工具名和问人时写的理由。
+ */
+export type NetworkAsk = (target: { host: string; port?: number; tool?: string; reason?: string }, signal: AbortSignal) => Promise<boolean>;
 
 export interface CommandOptions {
   cwd: string;

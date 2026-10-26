@@ -1,5 +1,6 @@
 /** Agent 的初始执行授权；宿主内部数据始终排除在模型文件和命令工具之外。 */
 import { join } from 'node:path';
+import { matchesDomainPatternWithPort } from '@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js';
 import { gitTry } from '../workspace/git.ts';
 import { applyExecutionGrants, effectiveExecution, type ExecutionChanges, type ProjectExecution } from './grants.ts';
 import { exactPath, hostPrivatePaths, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
@@ -40,4 +41,14 @@ export function agentPolicy(base: ExecutionPolicy, cwd: string, changes: Executi
   if (!secretFiles.length) return policy;
   const files = secretFiles.map((path) => join(cwd, path));
   return { ...policy, denyWrite: [...policy.denyWrite ?? [], ...files], secretFiles: files };
+}
+
+/**
+ * 不经沙箱代理、由宿主代为联网的工具（web_fetch）对照网络许可，口径与沙箱代理相同：项目禁止的拒绝，许可里的放行，其余按审批模式问。
+ * 上游的判断（filterNetworkRequest）没有导出，匹配规则用它的。
+ */
+export function networkVerdict(policy: ExecutionPolicy, host: string, port: number): 'denied' | 'allowed' | 'ask' {
+  const matches = (patterns: readonly string[]) => patterns.some((pattern) => matchesDomainPatternWithPort(host, port, pattern));
+  if (matches(policy.deniedNetwork ?? [])) return 'denied';
+  return matches(policy.network) ? 'allowed' : 'ask';
 }

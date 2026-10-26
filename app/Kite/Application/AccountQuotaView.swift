@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 账号身份、订阅周期与 API 费用各自保留原有单位；不从用量推算余额。
+/// 账号身份、订阅周期与 API 余额各自保留原有单位；不从用量推算余额。
 struct ModelAccountPane: View {
     let pane: Pane
     @Environment(AppModel.self) private var model
@@ -14,7 +14,7 @@ struct ModelAccountPane: View {
                 SubscriptionLoginSheet(request: request).environment(model).appAppearance()
             }
             .sheet(isPresented: $addingApiKey) {
-                KeySheet<ApiProvider>().environment(model).appAppearance()
+                KeySheet().environment(model).appAppearance()
             }
     }
 
@@ -271,7 +271,7 @@ private struct ModelAccountRow: View {
     }
 }
 
-/// API 账号：供应商与 Key 名称、状态，主数字是余额或本月组织费用，下面是明细和提示。
+/// API 账号：供应商与 Key 名称、状态，主数字是余额，下面是明细和提示。
 private struct ApiAccountRow: View {
     let account: ModelAccount
     let stale: Bool
@@ -292,10 +292,6 @@ private struct ApiAccountRow: View {
             ForEach(account.balances ?? []) { balance in
                 figure(balance.total.formatted(.currency(code: balance.currency)), title: "可用余额",
                        detail: "充值 \(balance.toppedUp.formatted(.currency(code: balance.currency))) · 赠金 \(balance.granted.formatted(.currency(code: balance.currency)))")
-            }
-            if let cost = account.cost {
-                figure(cost.value.formatted(.currency(code: cost.currency)), title: "本月组织费用",
-                       detail: "\(Date(timeIntervalSince1970: cost.from).formatted(.dateTime.month().day())) 起，按 UTC 计 · 组织合计，不是余额")
             }
             if let message = account.message {
                 Label(message, systemImage: warns ? "exclamationmark.triangle.fill" : "info.circle")
@@ -322,10 +318,9 @@ private struct ApiAccountRow: View {
         }
     }
 
-    /// 状态用一个小圆点加文字：可用为主题色，需要处理为警示色，只确认了配置为灰色。
+    /// 状态用一个小圆点加文字：可用为主题色，需要处理为警示色，其余为灰色。
     private var status: some View {
-        let hasData = account.cost != nil || account.balances != nil
-        let color: Color = warns ? Theme.warning : !stale && account.status == "ready" && hasData ? .accentColor : .secondary
+        let color: Color = warns ? Theme.warning : !stale && account.status == "ready" ? .accentColor : .secondary
         return StatusDotLabel(title: account.statusTitle, color: color, warns: warns).fixedSize()
     }
 }

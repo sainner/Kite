@@ -20,7 +20,6 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
     struct Credits: Decodable { let value: Double?; let unlimited: Bool }
     /// Claude 的额外用量，超出套餐额度后按金额计费。
     struct ExtraUsage: Decodable { let enabled: Bool; let currency: String?; let used: Double?; let limit: Double?; let balance: Double? }
-    struct Cost: Decodable { let value: Double; let currency: String; let from: Double; let to: Double }
     /// 该账号在这台工作机上按天的 token 用量。
     struct Usage: Decodable {
         struct Day: Decodable {
@@ -55,7 +54,6 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
     let quotas: [Quota]
     let credits: Credits?
     let extraUsage: ExtraUsage?
-    let cost: Cost?
     let balances: [Balance]?
     let usage: Usage?
 
@@ -66,7 +64,7 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
 
     var statusTitle: String {
         switch status {
-        case "ready": kind == "api" && cost == nil && balances == nil ? "已配置" : "已读取"
+        case "ready": "已读取"
         case "unconfigured": kind == "api" ? "未配置" : "未登录"
         case "reauthentication": "需重新授权"
         default: "暂不可查询"
@@ -78,7 +76,7 @@ nonisolated struct ModelAccount: Decodable, Identifiable {
 
     /// 暂时查询失败时工作机沿用上次的数据，界面按旧数据显示。
     var showsPreviousData: Bool {
-        status == "unavailable" && (!quotas.isEmpty || credits != nil || cost != nil || balances != nil)
+        status == "unavailable" && (!quotas.isEmpty || credits != nil || balances != nil)
     }
 }
 

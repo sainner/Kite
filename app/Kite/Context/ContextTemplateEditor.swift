@@ -515,9 +515,8 @@ private struct ContextCountLabel: View {
         if let method = total.method, let id = total.model {
             let name = model.modelTitle(id)
             switch method {
-            case "api": lines.append("\(name)：官方计数接口")
             case "o200k": lines.append(total.exact ? "\(name)：o200k 分词" : "\(name)：没有公开分词表，按 o200k 分词估算")
-            default: lines.append("\(name)：没有公开分词器，资源库里有这家的 API Key 时才能计数")
+            default: lines.append("\(name)：没有公开分词器，不能计数")
             }
         }
         if variables { lines.append("变量的值运行时才有，不算在内") }

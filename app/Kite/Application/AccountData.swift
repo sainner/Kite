@@ -123,8 +123,10 @@ extension AppModel {
     }
 
     /// 凭据接口默认找任一台工作机，client 指定时用它（马上要用这份凭据的那台，不等同步）。
-    func credentials(type: String, projectID: String = "", via client: KitedClient? = nil) async throws -> [AccountCredential] {
-        try await (client ?? dataWorker()).request("/credentials?type=\(type)" + (projectID.isEmpty ? "" : "&projectId=\(projectID)"), as: [AccountCredential].self)
+    /// type 为 nil 时取各类。
+    func credentials(type: String?, projectID: String = "", via client: KitedClient? = nil) async throws -> [AccountCredential] {
+        let query = [type.map { "type=\($0)" }, projectID.isEmpty ? nil : "projectId=\(projectID)"].compactMap { $0 }.joined(separator: "&")
+        return try await (client ?? dataWorker()).request("/credentials" + (query.isEmpty ? "" : "?\(query)"), as: [AccountCredential].self)
     }
 
     func createCredential(type: String, name: String, projectID: String = "", meta: [String: String] = [:], secret: [String: String],

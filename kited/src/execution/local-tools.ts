@@ -14,7 +14,8 @@ import { runCommand, type BackgroundCommand, type CommandOptions } from './comma
 import { withReads } from './policy.ts';
 import { runCheck, type CheckHost } from '../check.ts';
 import { assertFileAccess, canonicalPath, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
-import type { Json, JsonObject, Tool, ToolResult } from '../harness/types.ts';
+import { zodTool } from '../harness/tools.ts';
+import type { Tool } from '../harness/types.ts';
 import { secretBindings, secretRequest, secretValue, type SecretProvider, type SecretValue } from '../secrets.ts';
 
 export const patchArgs = z.object({ operations: z.array(z.discriminatedUnion('type', [
@@ -109,12 +110,6 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
   // 只记录本次运行中读取或修改后已知的版本；不代表整文件仍在模型上下文里。
   const versions = new Map<string, string>();
   const pdfs = new PdfReader(commandEnvironment(options.env));
-  const make = <T extends z.ZodType>(name: string, description: string, schema: T,
-    execute: (args: z.output<T>, context: Parameters<Tool['execute']>[1]) => Promise<ToolResult>, parallel = false): Tool => ({
-    name, description, parameters: z.toJSONSchema(schema) as JsonObject, parallel,
-    validate: (args: Json) => { schema.parse(args); },
-    execute: async (args, context) => { context.signal.throwIfAborted(); return execute(schema.parse(args), context); },
-  });
   const background = options.background;
   const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建与测试。网络和工作区外的资源按宿主授权访问；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
     + '临时文件写 $TMPDIR，每条命令一个、命令结束就删；/tmp 等工作区外的位置写不了，要留给下一条命令的放进工作区。'
@@ -126,7 +121,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       : '')
     + 'Git 元数据只读。使用 secrets 绑定密钥时只返回执行状态，隐藏全部标准输出和错误输出；不要把密钥写入工作区文件、命令参数或日志。';
   return [
-    make('read', readDescription, readArgs, async ({ pages, ...args }, { signal }) => {
+    zodTool('read', readDescription, readArgs, async ({ pages, ...args }, { signal }) => {
       const scope = readScope(args.path);
       const target = scope.files.resolve(scope.path);
       assertFileAccess(target, 'read', policy());
@@ -151,7 +146,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       versions.set(realpathSync(target), result.version);
       return { status: 'success', output: `共 ${result.totalLines} 行\n${output}` };
     }, true),
-    make('skill', skillDescription, skillArgs, async ({ name }) => {
+    zodTool('skill', skillDescription, skillArgs, async ({ name }) => {
       const available = skills.skills;
       const skill = available.find((entry) => entry.name === name);
       if (!skill) {
@@ -160,7 +155,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       // 每次都给全文、不按「加载过」去重：上下文压缩可能截掉或丢下了先前的正文，是否还在上下文里只有上下文本身说得准。
       return { status: 'success', output: loadSkill(skill), skill: { name } };
     }, true),
-    make('patch', patchDescription, patchArgs, async ({ operations }) => {
+    zodTool('patch', patchDescription, patchArgs, async ({ operations }) => {
       // 同一工作区的线程并行时，整批的读、算、写在一个同步段里完成：同一进程里别的线程的 patch 插不进来，
       // 后到的按新内容匹配，改到同一处就明确失败。这里不能在读到写之间 await。
       const granted = policy();
@@ -228,7 +223,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       return { status: 'success', output: output.join('\n'), diff: reference() };
     }),
     // 宿主给了哪项能力，shell 才收对应的参数；执行时按全部参数读，没收的自然为空。
-    make('shell', shellDescription, shellArgs.extend({ ...(background ? { background: backgroundArg } : {}),
+    zodTool('shell', shellDescription, shellArgs.extend({ ...(background ? { background: backgroundArg } : {}),
       ...(options.outside ? { outside_sandbox: outsideArg } : {}) }).strict() as z.ZodType<z.output<typeof shellArgs> & { background?: boolean; outside_sandbox?: boolean }>,
       async (args, { signal, output, ...context }) => {
         const { command, description, secrets, timeout_ms = SHELL_TIMEOUT_MS } = args;
@@ -266,12 +261,12 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
               adopt: (adopted) => background.adopt(adopted, { command, turnId: context.turnId, callId: context.callId }) } });
         } finally { unsubscribe?.(); }
       }),
-    ...(check ? [make('check', checkDescription, checkArgs, ({ all = false }, { signal, output }) => runCheck(all, signal, {
+    ...(check ? [zodTool('check', checkDescription, checkArgs, ({ all = false }, { signal, output }) => runCheck(all, signal, {
       ...check, command: { cwd: root, env: options.env, policy: policy(), onOutput: output ?? options.onOutput,
         ...(options.outputLimit ? { outputLimit: options.outputLimit } : {}), ...(options.onProcess ? { onProcess: options.onProcess } : {}),
         ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}) },
     }))] : []),
-    make('credentials', [
+    zodTool('credentials', [
       '不带参数时列出本账号共享和当前项目的可用密钥：引用、类型，以及宿主写进工作区的文件路径，不返回密钥内容。引用只在 shell 的 secrets 参数里使用。',
       '缺密钥时用 request 向用户要，同时缺几个就一起要：',
       '一条独立的密钥写 {name, reason, kind?}，存好后按引用使用；环境变量文件（如 .env）里的一项写 {file, key, reason}，存好后宿主把文件写进工作区。',

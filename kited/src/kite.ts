@@ -449,7 +449,7 @@ export class Kite {
       run: (workspaceId, action) => this.control(workspaceId, action),
       changed: (workspaceId) => this.changed(workspaceId),
       ...(options.previewSettle ? { settle: options.previewSettle } : {}) });
-    this.tokenCounts = new TokenCounter({ apiKeys: () => this.credentials.apiKeys() });
+    this.tokenCounts = new TokenCounter();
     this.voice = new VoiceSessions({
       keys: () => this.credentials.speechKeys(),
       template: () => this.contextTemplates.get(voiceTemplate.id, voiceTemplate.scene),
@@ -1701,10 +1701,11 @@ export class Kite {
       approveCheck: (script, reason, signal) => this.approveScript(id, { tool: 'check', name: '.kite/check', content: script, reason }, signal),
       constraints: () => this.store.projectConstraints(t.project.id),
       mcp: this.mcp,
-      askNetwork: ({ host, port }, signal) => {
+      // web_fetch 读网页也经这里，按同一份网络许可问；记住的许可两边通用。
+      askNetwork: ({ host, port, tool = 'shell', reason = '命令要连接网络许可之外的主机' }, signal) => {
         const bracketed = host.includes(':') ? `[${host}]` : host;
         const target = port === undefined ? bracketed : `${bracketed}:${port}`;
-        return this.askApproval(id, { tool: 'shell', target, reason: '命令要连接网络许可之外的主机', mustAsk: false },
+        return this.askApproval(id, { tool, target, reason, mustAsk: false },
           { what: '网络许可', save: () => this.configuration.remember(id, 'network', target) }, signal);
       },
       background: {

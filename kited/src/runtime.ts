@@ -12,7 +12,7 @@ import { assembleContext, restoreContext } from './harness/context/assembler.ts'
 import { contextUpdateContext } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
 import type { ShellBackground, ShellOutside } from './execution/local-tools.ts';
-import { harnessModel } from './harness/adapters.ts';
+import { deepseekKey, harnessModel } from './harness/adapters.ts';
 import { openThreadHost } from './harness/thread-host.ts';
 import { agentPolicy, harnessPolicy } from './execution/policy.ts';
 import { effectiveExecution, executionRevision, instanceExecutionChanges } from './execution/grants.ts';
@@ -36,6 +36,7 @@ import { searchTool } from './harness/tool-search.ts';
 import { Attachments } from './workspace/attachments.ts';
 import { checkLogs, type CheckHost } from './check.ts';
 import type { NetworkAsk } from './execution/command.ts';
+import { webTools } from './web/tools.ts';
 
 export interface Runtime {
   readonly state: RunnerState | Phase;
@@ -159,6 +160,11 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     request: (request: SecretRequest, signal: AbortSignal) => host.requestSecret(request, signal),
     withdraw: (id: string) => host.withdrawSecret(id),
   } : undefined;
+  // 两个后端共用；Key 每次调用时从账号凭据取，DeepSeek 用模型 API 里的那把。
+  const web = webTools({ policy, askNetwork: host.askNetwork, keys: async () => {
+    const deepseek = await deepseekKey(credentials && (() => credentials.apiKeys()));
+    return [...(deepseek ? [{ provider: 'deepseek' as const, key: deepseek }] : []), ...credentials ? await credentials.searchKeys() : []];
+  } });
   const diffDir = join(home, 'diffs', workspaceId);
   const check: CheckHost = { main: host.repository, logs: checkLogs(home, workspaceId), outside: {
     readOnly: () => effectiveExecution(instanceExecutionChanges(host.current()), host.constraints()?.execution).grants.workspace === 'read',
@@ -179,7 +185,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
         const values = variables(current);
         const instructions = assembleContext(projectContext(agent.context, values)).instructions;
         return { agent, instructions, contextUpdate: assembleContext(contextUpdateContext(instructions, values, host.contextUpdateTemplate())).instructions,
-          tools: [...operations.tools, ...plugins, ...external], allowed,
+          tools: [...web, ...operations.tools, ...plugins, ...external], allowed,
           notificationText: updates.map((notification) => restoreContext(notification.context).instructions).join('\n\n'),
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
@@ -202,7 +208,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
       const { agent, selection, permitted, plugins } = selectTools(current, operations, constraints?.tools);
       const values = variables(current);
       // 声明顺序取代理插件的工具目录，与实例配置一致。
-      const available = [...tools, ...operations.tools];
+      const available = [...tools, ...web, ...operations.tools];
       const declared = agentTools.flatMap((name) => available.find((tool) => tool.name === name) ?? []);
       const { model, contextWindow } = harnessModel(agent.model, { threadId: current.nativeId, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'),
         ...(credentials ? { apiKeys: () => credentials.apiKeys() } : {}), ...(host.chatgptLimits ? { observeLimits: host.chatgptLimits } : {}) });

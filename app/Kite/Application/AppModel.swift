@@ -100,11 +100,10 @@ final class AppModel {
     let skillWindows = WindowLayout(fixed: .pane(Pane("skill")))
     /// 资源库插件页的固定窗口：一个插件一个窗口。
     let pluginWindows = WindowLayout(fixed: .pane(Pane("plugin")))
-    /// 资源库凭据的固定窗口：密钥占左边整列，右边从上到下是 Git 账号、模型 API、语音识别。
+    /// 资源库凭据的固定窗口：密钥占左边整列，右边上面是 Git 账号，下面是第三方 API Key。
     let credentialWindows = WindowLayout(fixed: .split(Split(.horizontal, 0.5,
         .pane(Pane("secrets")),
-        .split(Split(.vertical, 1.0 / 3, .pane(Pane("git")),
-            .split(Split(.vertical, 0.5, .pane(Pane("api")), .pane(Pane("speech")))))))))
+        .split(Split(.vertical, 1.0 / 3, .pane(Pane("git")), .pane(Pane("keys")))))))
     /// 正在保存提示词、恢复默认或新建的资源库角色：这期间提示词不能改，新角色的名称、签名与初始配置也不能改。
     var savingRoles: Set<String> = []
 
