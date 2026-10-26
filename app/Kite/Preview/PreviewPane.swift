@@ -123,8 +123,8 @@ private struct DeviceWebPreview: View {
         return .info("localhost:\(selected) 现在没有在监听，服务起来后接着显示", symbol: "pause.circle")
     }
     private var headerActions: PaneHeaderActions {
-        let pointing = port == nil ? [] : [pointer.headerAction(area: area, client: client, preview: instance.title)]
-        return PaneHeaderActions(groups: [pointing, area.previewActions(instance, model: model) { selectError = $0 }].filter { !$0.isEmpty })
+        let actions = area.previewActions(instance, model: model) { selectError = $0 }
+        return actions.isEmpty ? PaneHeaderActions() : PaneHeaderActions(groups: [actions])
     }
 
     var body: some View {
@@ -141,9 +141,10 @@ private struct DeviceWebPreview: View {
         } controls: { typing in
             WebControls(typing: typing.wrappedValue) {
                 if let port {
-                    WebPageControls(browser: browser, typing: typing.wrappedValue, home: { open("/", on: port) },
-                                    reload: reloadPage, clear: { pathReset += 1 }) {
+                    WebPageControls(browser: browser) {
                         address(port: port, typing: typing)
+                    } trailing: {
+                        pointer.button(area: area, client: client, preview: instance.title)
                     }
                 } else {
                     HStack(spacing: Metrics.paneButtonGap) {
@@ -160,8 +161,8 @@ private struct DeviceWebPreview: View {
         }
     }
 
-    /// 地址栏：站点图标、localhost:、菜单、路径，端口和路径之间不留空。还没打开端口时只有菜单。
-    /// 窄排时宽度不够，省掉 localhost:，最右边是网页操作的菜单（WebPageMenu）。
+    /// 地址栏：站点图标、localhost:、菜单、路径，端口和路径之间不留空，最右边是网页操作的菜单（WebPageMenu）。还没打开端口时只有端口菜单。
+    /// 窄排时宽度不够，省掉 localhost:。
     private func address(port: Int?, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: port != nil) {
             HStack(spacing: Metrics.paneHeaderLogoGap) {
@@ -178,10 +179,8 @@ private struct DeviceWebPreview: View {
                 WebPathField(path: LocalPort.displayPath(of: browser.url), typing: typing, reset: pathReset) { open($0, on: port) }
                     // 路径框压住端口按钮右边那半个按钮间距，端口的悬停高亮仍按整个按钮画
                     .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
-                if narrow {
-                    WebPageMenu(browser: browser, typing: typing.wrappedValue, home: { open("/", on: port) },
-                                reload: reloadPage, clear: { pathReset += 1 })
-                }
+                WebPageMenu(browser: browser, typing: typing.wrappedValue, home: { open("/", on: port) },
+                            reload: reloadPage, clear: { pathReset += 1 })
             }
         }
     }
@@ -223,6 +222,8 @@ private struct ScreenPreview: View {
     @State private var composing = false
     @State private var text = ""
     @State private var openingHere = false
+    /// 清除输入：每点一次，地址栏的路径回到打字前的样子。
+    @State private var pathReset = 0
     @FocusState private var textFocused: Bool
 
     init(instance: RemotePluginInstance, client: KitedClient, connection: UUID, status: PreviewStatus) {
@@ -265,8 +266,7 @@ private struct ScreenPreview: View {
 
     /// 实时画面开关与进程的停止、重新运行放在标题栏右边。
     private var headerActions: PaneHeaderActions {
-        let pointing = status.screen == .web ? [pointer.headerAction(area: area, client: client, preview: instance.title)] : []
-        return PaneHeaderActions(groups: [pointing, [
+        PaneHeaderActions(groups: [[
             PaneHeaderAction(title: "刷新画面", systemImage: "camera.viewfinder", disabled: session.live) { session.refresh() },
             PaneHeaderAction(title: "实时画面", systemImage: "play.rectangle", help: session.live ? "切回逐帧：做完一个动作等画面稳定再来一帧" : "画面变了就传过来，链路慢时会卡",
                              on: session.live) { session.setLive(!session.live) },
@@ -303,7 +303,6 @@ private struct ScreenPreview: View {
             PaneHeaderButtonGroup {
                 ActionButton("后退", icon: "chevron.left") { act(["type": "back"]) }
                 ActionButton("前进", icon: "chevron.right") { act(["type": "forward"]) }
-                ActionButton("首页", icon: "house") { act(["type": "navigate", "path": "/"]) }
             }
             PaneHeaderButtonGroup(expands: true) {
                 Image(systemName: "globe").resizable().scaledToFit().foregroundStyle(.secondary)
@@ -311,13 +310,15 @@ private struct ScreenPreview: View {
                     .padding(.leading, Metrics.paneHeaderButtonGap / 2)
                     .accessibilityHidden(true)
                 PreviewBrowserMenu(instance: instance, status: status) { actionError = $0 }
-                WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing) { act(["type": "navigate", "path": $0]) }
+                WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing, reset: pathReset) { act(["type": "navigate", "path": $0]) }
                     .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
+                WebPageMenu(browser: nil, typing: typing.wrappedValue, home: { act(["type": "navigate", "path": "/"]) },
+                            reload: { act(["type": "reload"]) }, clear: { pathReset += 1 })
             }
             PaneHeaderButtonGroup {
-                ActionButton("重新加载", icon: "arrow.clockwise") { act(["type": "reload"]) }
                 ActionButton("输入文字", icon: "keyboard") { startComposing() }
             }
+            pointer.button(area: area, client: client, preview: instance.title)
         }
     }
 

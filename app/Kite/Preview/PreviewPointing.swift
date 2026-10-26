@@ -112,10 +112,15 @@ struct PointedElement: Decodable, Equatable, Sendable {
         return picks.filter { numbers.contains($0.number) }
     }
 
-    /// 标题栏上的开关，先只有网页画面有。
-    func headerAction(area: WorkArea, client: KitedClient, preview: String) -> PaneHeaderAction {
-        PaneHeaderAction(title: "指认", systemImage: "scope", help: active ? "关掉指认" : "指出页面上的元素，截图和说明放进最近用过的对话", on: active) { [self] in
-            toggle(area: area, client: client, preview: preview)
+    /// 控制区最右边的开关，单独一块玻璃，开着时整块用选中样式；先只有网页画面有。
+    func button(area: WorkArea, client: KitedClient, preview: String) -> some View {
+        PaneHeaderButtonGroup(selected: active) {
+            Button { [self] in toggle(area: area, client: client, preview: preview) } label: {
+                PaneHeaderButtonLabel("指认", systemImage: "scope")
+            }
+            .foregroundStyle(active ? Color.white : Color.primary)
+            .help(active ? "关掉指认" : "指出页面上的元素，截图和说明放进最近用过的对话")
+            .accessibilityAddTraits(active ? .isSelected : [])
         }
     }
 

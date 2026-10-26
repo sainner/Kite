@@ -573,16 +573,12 @@ struct WebPathField: View {
     }
 }
 
-/// 预览的网页画面的控制区（设备自己的网页视图）：左边后退、前进、首页，中间地址栏（由窗口给），右边重新加载，Mac 上还有开发者工具、在浏览器中打开。
-/// 窄排（narrowPane）时左边只有后退，有下一页时才出现前进；首页和右边这组合成地址栏最右边的菜单（WebPageMenu，由地址栏放），和最前面的站点图标对称。
-/// 键盘升起时收起键盘顶替左边这组，在地址栏里打字时清除输入顶替右边这组（窄排时顶替菜单），点了地址回到打字前的样子、接着打字。
-struct WebPageControls<Address: View>: View {
+/// 预览的网页画面的控制区（设备自己的网页视图）：左边后退、前进，中间地址栏（由窗口给，首页、重新加载这些在它最右边的菜单里，见 WebPageMenu），右边是窗口给的开关（指认）。
+/// 窄排（narrowPane）时左边只有后退，有下一页时才出现前进。键盘升起时收起键盘顶替左边这组。
+struct WebPageControls<Address: View, Trailing: View>: View {
     let browser: WebBrowser
-    let typing: Bool
-    let home: () -> Void
-    let reload: () -> Void
-    let clear: () -> Void
     @ViewBuilder let address: Address
+    @ViewBuilder let trailing: Trailing
     @Environment(\.narrowPane) private var narrow
 
     var body: some View {
@@ -595,40 +591,21 @@ struct WebPageControls<Address: View>: View {
                         ActionButton("前进", icon: "chevron.right", action: browser.forward)
                             .disabled(!browser.canGoForward)
                     }
-                    if !narrow {
-                        ActionButton("首页", icon: "house", action: home)
-                    }
                 }
             } shown: {
                 KeyboardDismissButton()
             }
             address
-            if !narrow {
-                KeyboardSwap(active: typing) {
-                    PaneHeaderButtonGroup {
-                        ActionButton("重新加载", icon: "arrow.clockwise", action: reload)
-                        #if os(macOS)
-                        // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
-                        ActionButton("开发者工具", icon: "wrench.and.screwdriver", action: browser.inspect)
-                        ActionButton("在浏览器中打开", icon: "arrow.up.right.square") { browser.openExternally() }
-                            .disabled(browser.url == nil)
-                        #endif
-                    }
-                } shown: {
-                    PaneHeaderButtonGroup {
-                        ActionButton("清除输入", icon: "xmark", action: clear)
-                    }
-                }
-            }
+            trailing
         }
         .containerValue(\.placesKeyboardButton, true)
     }
 }
 
-/// 地址栏最右边的菜单：首页、重新加载，Mac 上还有开发者工具、在浏览器中打开。浏览一直用它；预览的网页画面窄排时用，宽排时这些是控制区里的按钮，见 WebPageControls。
-/// 在地址栏里打字、键盘升起时换成清除输入。
+/// 地址栏最右边的菜单：首页、重新加载；页面在设备自己的网页视图里（给了 browser）时，Mac 上还有开发者工具、在浏览器中打开。浏览和预览的网页画面都用它，和最前面的站点图标对称。
+/// 在地址栏里打字、键盘升起时换成清除输入，点了地址回到打字前的样子、接着打字。
 struct WebPageMenu: View {
-    let browser: WebBrowser
+    let browser: WebBrowser?
     let typing: Bool
     let home: () -> Void
     let reload: () -> Void
@@ -640,9 +617,12 @@ struct WebPageMenu: View {
                 MenuButton("首页", systemImage: "house", action: home)
                 MenuButton("重新加载", systemImage: "arrow.clockwise", action: reload)
                 #if os(macOS)
-                MenuButton("开发者工具", systemImage: "wrench.and.screwdriver", action: browser.inspect)
-                MenuButton("在浏览器中打开", systemImage: "arrow.up.right.square") { browser.openExternally() }
-                    .disabled(browser.url == nil)
+                // iPhone、iPad 没有自带的检查器，只能接上 Mac 从 Safari 打开（见 WebPreview）。
+                if let browser {
+                    MenuButton("开发者工具", systemImage: "wrench.and.screwdriver", action: browser.inspect)
+                    MenuButton("在浏览器中打开", systemImage: "arrow.up.right.square") { browser.openExternally() }
+                        .disabled(browser.url == nil)
+                }
                 #endif
             } label: {
                 PaneHeaderButtonLabel("网页操作", systemImage: "ellipsis")
