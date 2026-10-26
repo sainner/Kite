@@ -48,14 +48,15 @@ struct WebPreview: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
+        // 网页只占窗口的标题栏和控制区之间那块，不铺到它们后面，也不把安全区交给页面：页面不知道上面盖着东西，
+        // 顶部固定的导航栏、铺满一屏的页面会一直被挡住一截。这样页面的视口就是看得见的那块，指认时视图里的点也就是页面坐标。
         Group {
             if let page {
                 #if os(macOS)
-                // Mac 窗口底部没有系统安全区，页面直接铺到控制区后面，控制区浮在页面上，不为它让边。
-                WebView(page).ignoresSafeArea(.container, edges: .bottom)
-                #else
-                // WebView 自己把安全区（Home 条、控制区）交给页面：铺到控制区后面，被挡住的那一截让出来，同 Safari。
+                // Mac 上的 WebView 不往安全区里铺，按普通视图排
                 WebView(page)
+                #else
+                PlacedWebView(page: page)
                 #endif
             } else { Color.clear }
         }
@@ -108,6 +109,51 @@ struct WebPreview: View {
         return "网页打不开：\(error.localizedDescription)"
     }
 }
+
+#if os(iOS)
+/// iOS 上的网页视图摆在标题栏和控制区之间。iOS 的 WebView 同 ScrollView，边贴着安全区的边界就自己铺进安全区，
+/// 在外面让出边也拦不住（2026-10-26 iPhone 实测：SwiftUI 里的框在两栏之间，底下的原生网页视图仍铺满整屏），所以放进不算安全区的托管控制器里。
+/// 紧凑布局里键盘算在窗口的安全区里：键盘升着时高度留在升起前的样子，往下伸到键盘后面，页面不跟着变矮、不重新排版，被键盘挡住的由 WebKit 自己让，同 Safari。
+/// 只量两栏之间那块，不量网页视图自己：量的东西跟着网页视图的摆法变，键盘升起时会来回改、卡死主线程（2026-10-26 iPhone 实测）。
+private struct PlacedWebView: View {
+    let page: WebPage
+    @Environment(\.windowGeometry) private var geometry
+    /// 两栏之间那块的高。
+    @State private var height: CGFloat = 0
+    /// 键盘收着时的高。
+    @State private var resting: CGFloat = 0
+
+    var body: some View {
+        // 键盘升没升按外壳的几何读：它和安全区在同一次排版里变；键盘通知到得晚，外壳在键盘通知里就已经排完了
+        let keyboard = geometry?.keyboardShown == true
+        Color.clear
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+            .overlay(alignment: .top) {
+                SafeAreaFreeWebView(page: page)
+                    .frame(height: keyboard ? max(resting, height) : nil)
+            }
+            .onChange(of: keyboard ? nil : height, initial: true) { _, height in
+                if let height { resting = height }
+            }
+    }
+}
+
+/// 不算安全区的托管控制器里的 WebView：里面没有安全区可铺，也不把安全区交给页面。
+private struct SafeAreaFreeWebView: UIViewControllerRepresentable {
+    let page: WebPage
+
+    func makeUIViewController(context: Context) -> UIHostingController<WebView> {
+        let host = UIHostingController(rootView: WebView(page))
+        host.safeAreaRegions = []
+        host.view.backgroundColor = .clear
+        return host
+    }
+
+    func updateUIViewController(_ host: UIHostingController<WebView>, context: Context) {
+        host.rootView = WebView(page)
+    }
+}
+#endif
 
 /// 一个网页视图的浏览操作：窗口控制区的地址栏、前进后退、首页和重新加载经它在同一个页面里跳转，也从它读当前地址和站点图标。
 /// 页面由 WebPreview 建好交给它；换了来源（换端口）是新的页面，历史从头开始。跳转失败照样报给窗口的信息区。
@@ -485,21 +531,6 @@ extension KitedClient {
         return WebRoaming(service: Set(hosts.flatMap { host in servicePorts.map { "\(host):\($0)" } }))
     }
     private var servicePorts: [Int] { [address, KitedClient.local].compactMap { URL(string: $0)?.port } }
-}
-
-/// 宽屏卡片里的网页控制区：指针在卡片上、或正在地址栏里打字时才有，同窗口按钮（见 PaneHeaderControls）；触屏一直有。
-/// 藏起来时控制区是空的，不接点击，后面的页面照常可点（见 PaneControlsBar）。不在卡片里（紧凑布局）时一直有。
-/// 悬停只在这一层读，窗口不跟着重算。
-struct WebControls<Content: View>: View {
-    let typing: Bool
-    @ViewBuilder let content: Content
-    @Environment(\.paneHeaderControlsSpace) private var card
-
-    var body: some View {
-        if typing || card.map({ InputMode.current.revealsControls(hovered: $0.hovered) }) ?? true {
-            content
-        }
-    }
 }
 
 /// 地址栏里的路径（浏览里是整个地址）：平时跟着页面显示当前路径，打字时不被页面的跳转改掉；回车打开，没打开就离开（Mac 上按 Esc 也是）回到当前路径。

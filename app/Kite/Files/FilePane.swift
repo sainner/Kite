@@ -171,8 +171,7 @@ struct FilePane: View {
                     if addressing && !webVisible {
                         addressBar(typing: typing)
                     } else {
-                        // 文件的控制区一直有
-                        WebControls(typing: typing.wrappedValue || !webVisible) { contentBar(typing: typing) }
+                        contentBar(typing: typing)
                     }
                 }
                 // 目录盖住或露出文件时，按钮组跟着换，玻璃按系统的过渡变形

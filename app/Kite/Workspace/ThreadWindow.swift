@@ -160,6 +160,8 @@ final class ThreadWindowView: NSView {
         place(controls, CGRect(x: 0, y: height - barHeight, width: width, height: barHeight))
         glass = CGRect(x: (width - glassWidth) / 2, y: height - barHeight, width: glassWidth, height: glassHeight)
         if metrics.controlsHeight != barHeight { metrics.controlsHeight = barHeight }
+        // 对话和原始记录同 PaneControlsBar 在输入区顶上再空一段边距（iPhone、iPad 见 PhoneThreadWindowView.placeTranscript）
+        let contentBottom = barHeight + margin
 
         // 从窗口原点铺到标题栏的右下角，标题栏摆在正文的位置上
         let origin = windowOrigin
@@ -176,14 +178,14 @@ final class ThreadWindowView: NSView {
 
         // 原始记录不从标题栏、输入区后面滚过：它在另一个托管视图里，标题栏的滚动软边管不到它
         raw.isHidden = !state.raw
-        if state.raw { place(raw, CGRect(x: 0, y: state.headerHeight, width: width, height: max(height - state.headerHeight - barHeight, 0))) }
+        if state.raw { place(raw, CGRect(x: 0, y: state.headerHeight, width: width, height: max(height - state.headerHeight - contentBottom, 0))) }
 
         list.isHidden = state.empty || state.raw
         place(list, bounds)
         // 标题栏的托管视图排在列表后面，列表头几次排版时它还没建好软边的那一条；标题栏报上高以后这里再排，让列表接着登记
         if !list.pocketsRegistered { list.needsLayout = true }
         // 空会话也交：列表藏着时照样排版，见 TranscriptListView.setInsets
-        list.setInsets(NSEdgeInsets(top: state.headerHeight, left: 0, bottom: barHeight, right: 0))
+        list.setInsets(NSEdgeInsets(top: state.headerHeight, left: 0, bottom: contentBottom, right: 0))
         if rowsDirty, !state.empty {
             rowsDirty = false
             list.update(readRows(), context: rowContext)

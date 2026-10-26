@@ -322,6 +322,9 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty || state.raw
+        // 对话同 PaneControlsBar 在输入区顶上再空一段边距
+        var insets = insets
+        insets.bottom += Metrics.paneMargin
         if insets != self.insets {
             self.insets = insets
             list.setInsets(insets)

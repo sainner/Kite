@@ -139,19 +139,17 @@ private struct DeviceWebPreview: View {
                 Color.clear
             }
         } controls: { typing in
-            WebControls(typing: typing.wrappedValue) {
-                if let port {
-                    WebPageControls(browser: browser) {
-                        address(port: port, typing: typing)
-                    } trailing: {
-                        pointer.button(area: area, client: client, preview: instance.title)
-                    }
-                } else {
-                    HStack(spacing: Metrics.paneButtonGap) {
-                        Spacer(minLength: 0)
-                        address(port: nil, typing: typing)
-                        Spacer(minLength: 0)
-                    }
+            if let port {
+                WebPageControls(browser: browser) {
+                    address(port: port, typing: typing)
+                } trailing: {
+                    pointer.button(area: area, client: client, preview: instance.title)
+                }
+            } else {
+                HStack(spacing: Metrics.paneButtonGap) {
+                    Spacer(minLength: 0)
+                    address(port: nil, typing: typing)
+                    Spacer(minLength: 0)
                 }
             }
         }
@@ -280,13 +278,11 @@ private struct ScreenPreview: View {
                 .padding(.horizontal, Metrics.padding)
                 .padding(.bottom, Metrics.padding)
         } controls: { typing in
-            WebControls(typing: typing.wrappedValue || composing) {
-                if composing { compose } else {
-                    switch status.screen {
-                    case .web: webControls(typing: typing)
-                    case .simulator: simulatorControls
-                    case .app, .none: appControls
-                    }
+            if composing { compose } else {
+                switch status.screen {
+                case .web: webControls(typing: typing)
+                case .simulator: simulatorControls
+                case .app, .none: appControls
                 }
             }
         }

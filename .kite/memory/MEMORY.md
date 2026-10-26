@@ -9,7 +9,7 @@
 - [尺寸突变与裁剪怎么查](ui-layout-jump-diagnosis.md) — 预览自己打开、日志打高度或片段坐标、沿视图链打裁剪；log 写全路径；外层蒙版会裁；逐帧错位在提交后核对；iPhone 动画真机逐帧截图；探针按块删
 - [卡顿怎么量](performance-diagnosis.md) — 测量入口与交替对照、帧间隔、真机 Time Profiler、合成滚动、软边诊断、UIKit 透明度坑，Mac 结论不外推到 iPhone
 - [性能测量用的会话数据](perf-fixture-main-agents.md) — 两个主代理的完整历史存在 fixtures、不进 Git，各压缩两次；工作机清数据后回放用
-- [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回；不用模拟器
+- [真机量 iPhone、iPad 排版](ios-layout-probe.md) — 不登录：kited 取数据、参数开的探针渲染生产视图、App 里截图、devicectl 取回、程序弹键盘；不用模拟器
 - [对话正文的文本容器](text-container-direction.md) — 每条回复一个 TextKit 2 文本视图、附件嵌代码块、复制给原文、外观不改，第三步 iPhone 待验收
 - [Line 与工作区流转](line-direction.md) — 已合回 main、界面待验收；收件箱是 Line 的 monitor；待改进与部署注意
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
@@ -49,7 +49,7 @@
 - [网页搜索与读网页收尾](todo-web-tools.md) — 三家接口待真 Key 验、合并的 API Key 窗口待验收；换家顺序固定等取舍待确认
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；预置脚本已移到预览的目标；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
-- [预览的指认](todo-preview-pointing.md) — 网页、模拟器、App 窗口已实现待手测；iOS 坐标、模拟器界面结构格式待核对；React 19 行号待做
+- [预览的指认](todo-preview-pointing.md) — 网页、模拟器、App 窗口已实现待手测；模拟器界面结构格式待核对；React 19 行号待做
 - [预览插件收尾](todo-preview-plugin.md) — 目标模型与浏览并进文件、能开外网待手测；旧工具名要清；Xcode 批准待跑；DeviceHub 裁不出；插件授预览待定
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧；10-25 新停靠栏下的一轮与看不见的头像停住
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理

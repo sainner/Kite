@@ -1,6 +1,6 @@
 ---
 name: todo-preview-pointing
-description: 预览的指认：网页、模拟器与 App 窗口已实现待手测，开关在控制区最右边；iOS 坐标与模拟器界面结构的真实格式待核对；React 19 行号、onboard 推荐打包插件待做
+description: 预览的指认：网页、模拟器与 App 窗口已实现待手测，开关在控制区最右边；模拟器界面结构的真实格式待核对；React 19 行号、onboard 推荐打包插件待做
 metadata:
   node_type: memory
   type: todo
@@ -13,7 +13,7 @@ metadata:
 **状态：** 网页画面（设备网页视图与工作机上的浏览器）已实现，画面接入加了 point 消息，协议 24 → 25。模拟器与 Mac App 窗口同日实现，走同一条 point，协议号不变。
 
 **未决：**
-- 用户手测 Mac、iPhone、iPad。iOS 上设备网页视图铺到安全区后面，PointingLayer 挂在 PortPreview 上，视图里的点与页面视口坐标是否对得上没在真机核对。
+- 用户手测 Mac、iPhone、iPad。10-26 网页视图改为只占标题栏与控制区之间（WebPreview），PointingLayer 与网页视图是同一块，原先 iOS 上铺到安全区后面、坐标可能错位的顾虑随之没了；iPhone 上键盘升着时网页底边不动，那时指认的框会落在键盘后面。
 - 指认开着时盖住页面的一层收走了滚轮和拖动，页面不能滚；要不要放行滚动等用户反馈。
 - 模拟器的界面结构是按 Xcode 的 IDEDeviceInteraction 组件里自带给模型的说明（`strings` 读出来的样例）写的解析，没拿真实输出核对过；手测时指不准、框错位，先对一份真实的 hierarchy 文件。App 窗口用系统的按点取无障碍元素，也没实测过。
 - 第三步：React 19 用开发服务器的 source map 换算行号；kite-onboard 要不要给网页项目推荐 code-inspector-plugin 这类打包插件，待定。

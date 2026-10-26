@@ -1,6 +1,6 @@
 ---
 name: ios-layout-probe
-description: 不登录，在真机上量 iPhone、iPad 排版、和旧版截图对照的做法（模拟器不再用）
+description: 不登录，在真机上量 iPhone、iPad 排版、和旧版截图对照、不用人点就弹键盘的做法（模拟器不再用）
 metadata:
   node_type: memory
   type: reference
@@ -17,6 +17,7 @@ iOS App 要登录 Kite 账号和组网才进得去，量排版不必走完整流
 - 整屏某个状态的样子（抽屉拉开、拉到一半、横滑途中、键盘升起）不必在 App 里画：测量版里临时加一个按启动参数摆状态的探针（经 `PerfProbe.drawer`、`PerfProbe.row` 拿抽屉和一行窗口），停住后本机 `xcrun devicectl device capture screenshot --device <ID> --destination x.png` 截真机屏，玻璃、滚动软边、键盘都在（2026-10-14 iPhone 紧凑布局改原生时这样对过）。当时新旧两版用 Debug 开关在同一次装机里切，这些开关已随旧版删掉；要和旧实现比，在旧提交的 worktree 上编，同上一条。
 - 拖缝途中的样子也这样截：探针用 `WindowLayout.resize` 把缝分 20 步挪出去、不松手，停住后截屏，再摆一次松手的对照；探针同时把各个正文文本视图的容器宽、TextKit 视口和排好的段落位置写进缓存目录，空白、错段一看就知道是哪一层（2026-10-14 查出拖缝中贴底长回复底下空一截，是 TextKit 视口把上次顶上那段摆回原处）。
 - 为性能改了排版机制（视口、容器、按需排）以后要重跑截屏对照：拖缝测量看不出漏画，2026-10-13 一处正文只排第一段就是截屏才发现的。
+- 要键盘升起的场景不用人点（2026-10-26 查预览网页点输入框卡死）：网页里用 `callJavaScript` 让元素 focus 后，再让 `WKWebView` `becomeFirstResponder()`，WebKit 就弹键盘（光 focus、或用私有的输入代理都不弹）；Kite 自己的输入框在视图树里找 `UITextField` 调 `becomeFirstResponder()`（在窗口里改 `FocusState` 动不了外壳上的控制区）。打印用 `devicectl device process launch --console` 收；它会把收到的信号转给 App，别用 alarm 这类定时信号停它，停时 `kill -9` 它自己。卡死时日志里看 body 有没有成千上万地重复，比猜快。
 - 量出的是布局数值和像素；手感和最终效果仍由用户在真机验收。
 
 **Why:** 2026-10-12 查资源库窗口边距时这样量出条件块最小宽度比正文列宽 18.8pt，一轮就定位；2026-10-13 iOS 原生对话靠它把行高取整、Label 布局、中文断行、附件显隐逐项对齐到和旧版一样。
