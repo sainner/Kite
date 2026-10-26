@@ -55,7 +55,8 @@ struct ThreadHeaderActions: View {
                 DraftAgentSettings().environment(model).environment(area).environment(thread)
             }
             // 草稿的选项已含全部角色，换角色不重新读取；角色目录晚到时再按默认角色取一次能力。
-            .task(id: "\(model.revision(for: area))-\(model.isConnected(area))-\(instance?.config?.agent?.runtime ?? "draft:\(role != nil)")") {
+            // 紧凑布局各窗口共用一个标题栏，右组原地换成当前窗口的（见 CompactPaneHeaderBar），换窗口时按会话重新读取。
+            .task(id: "\(thread.id)-\(model.revision(for: area))-\(model.isConnected(area))-\(instance?.config?.agent?.runtime ?? "draft:\(role != nil)")") {
                 if choice != nil { await loadDraftOptions(); return }
                 guard model.isConnected(area), let instance else { return }
                 loadingModels = true
