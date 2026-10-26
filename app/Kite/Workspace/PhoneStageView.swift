@@ -12,6 +12,7 @@ struct PhoneStageHost: View {
     // 显式读出来交给原生层：只读 context.environment 时这几项变了不一定调 updateUIView，见 StageAppearance
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.appearsActive) private var appearsActive
     @Environment(\.displayScale) private var displayScale
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.dotStage) private var dotStage
@@ -20,8 +21,8 @@ struct PhoneStageHost: View {
 
     var body: some View {
         PhoneStageRepresentable(group: group, model: model, reports: reports, openSidebar: openSidebar,
-                                appearance: StageAppearance(colorScheme: colorScheme, typeSize: typeSize, reduceMotion: reduceMotion,
-                                                            displayScale: displayScale, isEnabled: isEnabled,
+                                appearance: StageAppearance(colorScheme: colorScheme, typeSize: typeSize, appearsActive: appearsActive,
+                                                            reduceMotion: reduceMotion, displayScale: displayScale, isEnabled: isEnabled,
                                                             dotStage: dotStage.map(ObjectIdentifier.init)))
             .preference(key: WindowDotsActive.self, value: reports.usesDots)
             .preference(key: DotSlots.self, value: reports.dotSlots)

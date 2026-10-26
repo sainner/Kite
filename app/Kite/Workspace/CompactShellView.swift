@@ -30,14 +30,15 @@ private struct CompactShellHost: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.appearsActive) private var appearsActive
     @Environment(\.displayScale) private var displayScale
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.dotStage) private var dotStage
 
     var body: some View {
         CompactShellRepresentable(model: model, appearance: StageAppearance(
-            colorScheme: colorScheme, typeSize: typeSize, reduceMotion: reduceMotion, displayScale: displayScale, isEnabled: isEnabled,
-            dotStage: dotStage.map(ObjectIdentifier.init)))
+            colorScheme: colorScheme, typeSize: typeSize, appearsActive: appearsActive, reduceMotion: reduceMotion, displayScale: displayScale,
+            isEnabled: isEnabled, dotStage: dotStage.map(ObjectIdentifier.init)))
             // 安全区、键盘都由外壳自己读（UIKit 的安全区和键盘通知），SwiftUI 不为它们重排这一层
             .ignoresSafeArea()
     }

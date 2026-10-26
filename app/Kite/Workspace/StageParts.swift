@@ -18,6 +18,9 @@ struct StageAppearance: Equatable {
     var activeState: ControlActiveState
     #else
     var typeSize: DynamicTypeSize
+    /// 岛里抄的是整份环境，场景活跃与否也在里面：回主屏幕时抄进去的是不活跃的那份，回来时这一项不在这里就不重交，
+    /// 岛里的玻璃一直是多任务界面里那种灰（2026-10-26 iPhone 回主屏幕再进）。
+    var appearsActive: Bool
     #endif
     var reduceMotion: Bool
     var displayScale: CGFloat
