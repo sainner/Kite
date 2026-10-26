@@ -315,15 +315,17 @@ struct WindowRegions {
     }
 }
 
-/// 松手后放在整个内容区的一侧、另一张卡片旁、空内容区，或者停靠栏中（就是缩小：每个实例在停靠栏里都有自己的一格）。
+/// 松手后放在整个内容区的一侧、另一张卡片旁、顶替另一张卡片（被顶替的回停靠栏）、空内容区，
+/// 或者停靠栏中（就是缩小：每个实例在停靠栏里都有自己的一格）。
 enum DropSpot: Equatable {
     case edge(Edge)
     case beside(Pane, Edge)
+    case replace(Pane)
     case canvas
     case dock
 }
 
-/// 拖动卡片：标题栏拖够一段距离后，卡片脱离布局并缩成圆跟着指针；指针落在卡片上时，
+/// 拖动卡片：标题栏拖够一段距离后，卡片脱离布局并缩成圆跟着指针；指针落在卡片中间时顶替它，落在卡片靠边处时
 /// 在离指针最近的那条边插进占位；靠近内容区外缘时占满整条边，也可放进右侧停靠栏；没有落点就回原位。
 struct CardDrag {
     let pane: Pane
@@ -350,6 +352,7 @@ struct CardDrag {
             let ratio = min(max(0.5, first / available), 1 - second / available)
             return rest.inserting(tile, on: edge, ratio: ratio)
         case .beside(let target, let edge): return rest?.inserting(tile, beside: target, on: edge)
+        case .replace(let target): return rest?.replacing(target, with: tile)
         case .canvas: return tile
         default: return nil
         }

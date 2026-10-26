@@ -149,20 +149,25 @@ extension WorkArea {
 
     /// 把本机台面上现有的卡片翻成配方保存：代理记角色，浏览记当前网页（看文件的不记），预览记目标与设备，其余记类型；
     /// 草稿按选的角色记，新建页不记。保存成一个新布局；给了 replacing 就用当前台面覆盖它（带着它的版本，别处刚改过时工作机拒绝）。
+    /// 这些卡片本身记成本机这个布局各格上一次的实例，它成了正在用的布局，见 layoutPicks。
     func saveLayout(name: String, replacing: ProjectLayout? = nil, model: AppModel) async throws {
         var members: [LayoutMember] = []
+        var picks: [Pane] = []
         var indices: [Pane: Int] = [:]
         for pane in layout.shown?.panes ?? [] {
             guard members.count < Self.layoutMemberLimit, let member = layoutMember(of: pane, model: model) else { continue }
             indices[pane] = members.count
             members.append(member)
+            picks.append(pane)
         }
         guard let shown = layout.shown, let arrangement = LayoutArrangement(tile: shown, index: { indices[$0] }) else {
             throw KitedError(message: "台面上没有能记进布局的实例")
         }
         let client = try model.activeClient(in: self)
-        _ = try await client.putLayout(project: remote.project.id, id: replacing?.id ?? Self.newPaneID(), expectedRevision: replacing?.revision,
+        let id = replacing?.id ?? Self.newPaneID()
+        _ = try await client.putLayout(project: remote.project.id, id: id, expectedRevision: replacing?.revision,
                                        layout: ProjectLayout.Recipe(name: name, members: members, arrangement: arrangement))
+        recordLayoutPicks(id, Dictionary(uniqueKeysWithValues: picks.enumerated().map { ($0.offset, $0.element) }))
         await model.refreshLayouts(project: remote.project.id, client: client)
     }
 
@@ -186,59 +191,112 @@ extension WorkArea {
         }
     }
 
-    /// 整个台面换成这组：每个成员在当前工作区找现成的（代理按角色，先取已在台面上的，再取最近活动过的；浏览、终端、插件按类型，
-    /// 预览还按目标与设备），找不到的新建（代理新建为这个角色的草稿；草稿只有一份，第二个找不到的代理不建），再按配方摆。
+    /// 整个台面换成这组。先把本机各格上一次的实例放回原格（还开着、种类也对得上的，见 layoutPicks）；
+    /// 其余成员在当前工作区找现成的（代理按角色，先取已在台面上的，再取最近活动过的；浏览、终端、插件按类型，预览还按目标与设备），
+    /// 找不到的新建（代理新建为这个角色的草稿；草稿只有一份，第二个找不到的代理不建），再按配方摆。这次各格用的记成下一次的。
     func openLayout(_ layout: ProjectLayout, model: AppModel) {
+        let available = instances.filter { $0.status == .open && !isOpening(instance: $0.id) }
+        let previous = layoutPicks(layout.id)
         var used: Set<String> = []
         var panes: [Int: Pane] = [:]
-        var draftRole: AgentRole?
-        let onStage = Set((self.layout.shown?.panes ?? []).map(\.id))
-        func pick(_ matches: (RemotePluginInstance) -> Bool) -> RemotePluginInstance? {
-            let candidates = instances.filter { $0.status == .open && !used.contains($0.id) && !isOpening(instance: $0.id) && matches($0) }
-            return candidates.first { onStage.contains($0.id) }
-                ?? candidates.max { recentActivity($0) < recentActivity($1) }
+        // 草稿只有一份，被一格用了，后面找不到的代理不再建
+        var draftTaken = false
+        /// 第 index 个成员用现成的 instance；浏览带回配方里的网页。
+        func take(_ index: Int, _ instance: RemotePluginInstance) {
+            used.insert(instance.id)
+            panes[index] = Pane(instance.id)
+            if case .files(let page?) = layout.members[index], let browser = files[instance.id] { Task { try? await browser.openPage(page) } }
         }
-        /// 第 index 个成员：有现成的就用它，没有就交给 create 新建（建不了为 nil，这一格空着）。
-        @discardableResult
-        func take(_ index: Int, _ matches: (RemotePluginInstance) -> Bool, otherwise create: () -> Pane?) -> RemotePluginInstance? {
-            guard let found = pick(matches) else { panes[index] = create(); return nil }
-            used.insert(found.id)
-            panes[index] = Pane(found.id)
-            return found
-        }
+        // 上一次的先认完，免得前面的成员按种类找时把后面成员上一次的实例拿走
         for (index, member) in layout.members.enumerated() {
-            switch member {
-            case .agent(let role):
-                take(index, { isAgent($0) && !isSubagent($0.id) && $0.config?.role?.id == role }) {
-                    guard draftRole == nil, let role = model.roles(in: self)?.roles.first(where: { $0.id == role }) else { return nil }
-                    draftRole = role
-                    return Pane(prepareDraft(role: role))
-                }
-            case .files(let page):
-                let found = take(index, { $0.definitionId == AppModel.filesDefinition }) {
-                    created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.filesDefinition, page: page), model: model)
-                }
-                if let found, let page, let browser = files[found.id] { Task { try? await browser.openPage(page) } }
-            case .terminal:
-                take(index, { $0.definitionId == "kite.terminal" }) {
-                    created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: "kite.terminal"), model: model)
-                }
-            case .preview(let target, let device):
-                let spec = PreviewSpec(target: target, device: device)
-                take(index, { $0.definitionId == AppModel.previewDefinition && $0.config?.preview == spec }) {
-                    created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.previewDefinition, title: target, preview: spec), model: model)
-                }
-            case .plugin(let definition):
-                take(index, { $0.definitionId == definition }) {
-                    definitions.contains { $0.id == definition && !$0.views.isEmpty }
-                        ? created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: definition), model: model) : nil
-                }
+            guard let id = previous[index]?.id, !used.contains(id) else { continue }
+            if let instance = available.first(where: { $0.id == id }), matches(member, instance) {
+                take(index, instance)
+            } else if id == draftPane, !draftTaken, case .agent(let role) = member, model.newThreadRole(for: draftThread, in: self)?.id == role {
+                draftTaken = true
+                panes[index] = Pane(id)
             }
         }
+        let onStage = Set((self.layout.shown?.panes ?? []).map(\.id))
+        for (index, member) in layout.members.enumerated() where panes[index] == nil {
+            let candidates = available.filter { !used.contains($0.id) && matches(member, $0) }
+            if let found = candidates.first(where: { onStage.contains($0.id) }) ?? candidates.max(by: { recentActivity($0) < recentActivity($1) }) {
+                take(index, found)
+                continue
+            }
+            // 没有现成的就新建，建不了这一格空着
+            switch member {
+            case .agent(let role):
+                guard !draftTaken, let role = model.roles(in: self)?.roles.first(where: { $0.id == role }) else { continue }
+                draftTaken = true
+                panes[index] = Pane(prepareDraft(role: role))
+            case .files(let page):
+                panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.filesDefinition, page: page), model: model)
+            case .terminal:
+                panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: "kite.terminal"), model: model)
+            case .preview(let target, let device):
+                let spec = PreviewSpec(target: target, device: device)
+                panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.previewDefinition, title: target, preview: spec), model: model)
+            case .plugin(let definition):
+                guard definitions.contains(where: { $0.id == definition && !$0.views.isEmpty }) else { continue }
+                panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: definition), model: model)
+            }
+        }
+        recordLayoutPicks(layout.id, panes)
         rebuildForLayout()
         guard let tile = layout.arrangement.tile(panes: panes) else { return }
         self.layout.present(tile)
     }
+
+    /// 实例对得上这个成员：代理按角色（子代理不算），预览按目标与设备，其余按类型。
+    private func matches(_ member: LayoutMember, _ instance: RemotePluginInstance) -> Bool {
+        switch member {
+        case .agent(let role): isAgent(instance) && !isSubagent(instance.id) && instance.config?.role?.id == role
+        case .files: instance.definitionId == AppModel.filesDefinition
+        case .terminal: instance.definitionId == "kite.terminal"
+        case .preview(let target, let device):
+            instance.definitionId == AppModel.previewDefinition && instance.config?.preview == PreviewSpec(target: target, device: device)
+        case .plugin(let definition): instance.definitionId == definition
+        }
+    }
+
+    /// 本机这个工作区里，各布局每一格上一次的实例，按成员序号：保存、打开时记下，正在用时这一格原地换成同一种的另一个也跟着记
+    /// （见 followReplacement）。草稿记草稿的 ID，发出第一条消息后就是实例的 ID。
+    /// 只在本机：台面是设备自己的事，别的设备、同项目的别的工作区没有这份记录，照配方找。
+    private func layoutPicks(_ layout: String) -> [Int: Pane] {
+        let stored = UserDefaults.standard.dictionary(forKey: layoutPicksKey)?[layout] as? [String] ?? []
+        return Dictionary(uniqueKeysWithValues: stored.enumerated().compactMap { $0.element.isEmpty ? nil : ($0.offset, Pane($0.element)) })
+    }
+
+    /// 记下这个布局各格的实例，它成了正在用的布局；顺手去掉已经删了的布局的记录。
+    private func recordLayoutPicks(_ layout: String, _ panes: [Int: Pane]) {
+        let count = (panes.keys.max() ?? -1) + 1
+        var stored = (UserDefaults.standard.dictionary(forKey: layoutPicksKey) as? [String: [String]] ?? [:])
+            .filter { id, _ in layouts.contains { $0.id == id } }
+        stored[layout] = (0..<count).map { panes[$0]?.id ?? "" }
+        UserDefaults.standard.set(stored, forKey: layoutPicksKey)
+        UserDefaults.standard.set(layout, forKey: currentLayoutKey)
+    }
+
+    /// 台面上 old 原地换成了 new（见 WindowLayout.replaced）：old 是正在用的布局里某一格上一次的实例、new 又是同一种的，这一格记成 new。
+    /// 正在用的布局是本机最后打开或保存的那个，到打开另一个为止；展开、换位、改尺寸都不改变它。
+    /// 换成别种的不记：那是改了布局里装什么，要重新保存覆盖。清空上下文换上的草稿这时还没定角色，按代理记，打开时再核对角色。
+    func followReplacement(_ old: Pane, _ new: Pane) {
+        guard let id = UserDefaults.standard.string(forKey: currentLayoutKey), let layout = layouts.first(where: { $0.id == id }) else { return }
+        var picks = layoutPicks(id)
+        guard let index = picks.first(where: { $0.value == old })?.key, layout.members.indices.contains(index) else { return }
+        let member = layout.members[index]
+        if new.id == draftPane {
+            guard case .agent = member else { return }
+        } else {
+            guard let instance = instance(of: new), matches(member, instance) else { return }
+        }
+        picks[index] = new
+        recordLayoutPicks(id, picks)
+    }
+
+    private var layoutPicksKey: String { "KiteLayoutPicks.\(remote.machine.id).\(remote.id)" }
+    private var currentLayoutKey: String { "KiteCurrentLayout.\(remote.machine.id).\(remote.id)" }
 
     /// 新建一个成员的实例：本机先建、不放上台面（整组最后一起摆），工作机建好接上。
     private func created(_ request: CreateInstanceRequest, model: AppModel) -> Pane? {

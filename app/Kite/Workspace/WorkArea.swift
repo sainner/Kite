@@ -110,6 +110,7 @@ final class WorkArea: Identifiable {
                               storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)")
         layout.floor = Pane(chooserPane)
         seenTurns = UserDefaults.standard.dictionary(forKey: seenKey) as? [String: Double] ?? [:]
+        layout.replaced = { [weak self] old, new in self?.followReplacement(old, new) }
         if let client { update(remote, client: client, connection: connection, cursor: cursor) }
     }
 

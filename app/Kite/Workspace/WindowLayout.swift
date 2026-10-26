@@ -18,6 +18,9 @@ final class WindowLayout {
     var floor: Pane?
     /// 台面唯一记住的上一步：展开前的排布，见 expand、collapse；展开的那张还独占着台面才算数（见 holdsExpansion）。
     private var expansion: ExpansionMemory?
+    /// 台面上一张卡片原地换成了另一张（拖到卡片中间顶替、清空上下文换成新代理的草稿），由 WorkArea 给：
+    /// 正在用的布局那一格跟着换，见 WorkArea.followReplacement。
+    @ObservationIgnored var replaced: ((_ old: Pane, _ new: Pane) -> Void)?
     private(set) var drag: CardDrag?
     /// 指针所在、还没换上预览的落点，见 previewDwell。
     @ObservationIgnored private var pendingDrag: CardDrag?
@@ -358,6 +361,7 @@ final class WindowLayout {
             }
             focused = new
         }
+        replaced?(old, new)
         saveSoon()
     }
 
@@ -505,18 +509,21 @@ final class WindowLayout {
                     next.displaced = displaced ?? []
                 }
             } else if let (target, frame) = rest.layout(in: regions.canvas).panes.first(where: { $0.value.contains(location) }) {
-                // 离哪条边近放哪边；这张卡片在那个方向上不够切成两张的，那条边不算
+                // 中间那一块顶替它；靠边处离哪条边近放哪边，这张卡片在那个方向上不够切成两张的，那条边不算，四条边都不算时整张都是顶替
                 let x = (location.x - frame.minX) / frame.width
                 let y = (location.y - frame.minY) / frame.height
                 let wide = frame.width >= 2 * Metrics.minPane + Metrics.gap
                 let tall = frame.height >= 2 * Metrics.minPane + Metrics.gap
                 let edges: [(Edge, CGFloat)] = [(.leading, x), (.trailing, 1 - x), (.top, y), (.bottom, 1 - y)]
                     .filter { $0.0 == .leading || $0.0 == .trailing ? wide : tall }
-                next.spot = edges.min { $0.1 < $1.1 }.map { .beside(target, $0.0) }
-            } else if case .beside = next.spot {
-                // 卡片之间的缝里保留上一个分割落点。
+                let middle = Self.replaceZone.contains(x) && Self.replaceZone.contains(y)
+                next.spot = middle ? .replace(target) : edges.min { $0.1 < $1.1 }.map { .beside(target, $0.0) } ?? .replace(target)
             } else {
-                next.spot = nil
+                // 卡片之间的缝里保留上一个落在卡片上的落点。
+                switch next.spot {
+                case .beside, .replace: break
+                default: next.spot = nil
+                }
             }
         } else if regions.canvas.contains(location), next.rest == nil {
             next.spot = .canvas
@@ -588,6 +595,8 @@ final class WindowLayout {
     private static let previewDwell = Duration.milliseconds(120)
     /// 指针动了不到这么多（点）算停着，触控板上手指停住也会有细小的移动。
     private static let previewSlop: CGFloat = 3
+    /// 指针在卡片宽、高的这一段里（中间三分之一见方）是顶替这张卡片，外面一圈是切开放在旁边。
+    private static let replaceZone: ClosedRange<CGFloat> = 1.0 / 3...2.0 / 3
 
     private func schedulePreview(at location: CGPoint) {
         dwellAnchor = location
@@ -634,7 +643,7 @@ final class WindowLayout {
             case .dock:
                 carriedFocus = nil
                 root = next.rest
-            case .edge, .beside, .canvas:
+            case .edge, .beside, .replace, .canvas:
                 carriedFocus = nil
                 root = next.placing(.pane(next.pane), in: regions(in: bounds).canvas)
                 focused = next.pane
@@ -644,6 +653,7 @@ final class WindowLayout {
             drag = nil
             focusVisiblePane()
         }
+        if case .replace(let target) = next.spot { replaced?(target, next.pane) }
         saveSoon()
     }
 }
