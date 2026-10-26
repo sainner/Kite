@@ -46,6 +46,7 @@
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；两台 Mac 间时快时慢（10-22 实测，待测中继与局域网）；托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
+- [网页搜索与读网页收尾](todo-web-tools.md) — 三家接口待真 Key 验、合并的 API Key 窗口待验收；换家顺序固定等取舍待确认
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；预置脚本已移到预览的目标；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
 - [预览插件收尾](todo-preview-plugin.md) — 目标模型与浏览并进文件、能开外网待手测；旧工具名要清；Xcode 批准待跑；DeviceHub 裁不出；插件授预览待定
