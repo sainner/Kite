@@ -1,6 +1,6 @@
 ---
 name: todo-preview-pointing
-description: 预览的指认：网页画面已实现待手测（iOS 上设备网页视图的坐标待真机核对），协议 25；模拟器与 App 窗口、React 19 行号、onboard 推荐打包插件待做
+description: 预览的指认：网页画面已实现待手测，开关在控制区最右边（iOS 上设备网页视图的坐标待真机核对），协议 25；模拟器与 App 窗口、React 19 行号、onboard 推荐打包插件待做
 metadata:
   node_type: memory
   type: todo
@@ -15,7 +15,7 @@ metadata:
 **未决：**
 - 用户手测 Mac、iPhone、iPad。iOS 上设备网页视图铺到安全区后面，PointingLayer 挂在 PortPreview 上，视图里的点与页面视口坐标是否对得上没在真机核对。
 - 指认开着时盖住页面的一层收走了滚轮和拖动，页面不能滚；要不要放行滚动等用户反馈。
-- 第二步：模拟器（Xcode 的界面结构带每个控件的位置）与 Mac App 窗口（kite-window 读的无障碍树已带位置），只给文字与无障碍标识。
+- 第二步：模拟器（Xcode 的界面结构带每个控件的位置）与 Mac App 窗口（kite-window 读的无障碍树已带位置），只给文字与无障碍标识。开关的位置已定（2026-10-26 用户）：同网页，单独一块玻璃放在控制区最右边，排在「输入文字」后面，不放标题栏。
 - 第三步：React 19 用开发服务器的 source map 换算行号；kite-onboard 要不要给网页项目推荐 code-inspector-plugin 这类打包插件，待定。
 
 **完成条件：** 三端手测通过、模拟器与 App 窗口做完后删掉本条；React 19 行号与 onboard 推荐届时另立或并入。
