@@ -5,7 +5,7 @@
 import { fileURLToPath } from 'node:url';
 import { KiteError } from '../errors.ts';
 import { compiledHelper } from '../system-command.ts';
-import type { Frame, PreviewAction, Screen } from './screen.ts';
+import type { Frame, PointedElement, PreviewAction, Screen } from './screen.ts';
 
 const WINDOW_SOURCE = fileURLToPath(new URL('./kite-window.m', import.meta.url));
 
@@ -145,6 +145,10 @@ class HelperProcess implements Screen {
 
   async inspect(): Promise<string> {
     return String((await this.request({ cmd: 'ax' })).text ?? '');
+  }
+
+  async point(x: number, y: number): Promise<PointedElement | null> {
+    return ((await this.request({ cmd: 'point', x, y })).element as PointedElement | undefined) ?? null;
   }
 
   async info() { return {}; }

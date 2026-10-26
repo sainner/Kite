@@ -1,6 +1,6 @@
 /**
  * 模拟器的画面与操作用 Xcode 自带的（docs/实例操作.md「模拟器」，实测见 spikes/xcode-device-interaction）：
- * agent 的动作、给模型的截图与界面结构经 Xcode 的设备操作工具（xcrun mcpbridge，MCP 工具 DeviceInteraction*），按模拟器编号开会话；
+ * agent 的动作、给模型的截图与界面结构经 Xcode 的设备操作工具（xcrun mcpbridge，MCP 工具 DeviceInteraction*），按模拟器编号开会话；指认按界面结构找控件；
  * 给设备看的帧用 simctl 截全分辨率的屏幕。每个动作 Xcode 做完就截一帧，不另外等画面稳定。
  * Xcode 只认批准过的程序：没批准时建一个占位项目发起批准请求（调用挂着等批准），错误里给出用户要在工作机终端里跑的命令。
  * 会话闲置几分钟会被 Xcode 关掉，用过的会话名短时间内不能再用：每次开会话换一个名字，会话没了就重开。
@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import { systemCommand } from '../system-command.ts';
-import type { Frame, PreviewAction, Screen } from './screen.ts';
+import type { Frame, PointedElement, PreviewAction, Screen } from './screen.ts';
 
 /** 一条工具调用最多等这么久；开会话后第一次截图要等模拟器开机，实测约一分钟。 */
 const CALL_TIMEOUT_MS = 3 * 60_000;
@@ -212,6 +212,42 @@ function command(action: PreviewAction, size: { width: number; height: number })
   }
 }
 
+/** 界面结构里的一个控件：种类、文字、无障碍标识与位置（屏幕上的点）；depth 是缩进的层数。 */
+type Control = { depth: number; tag: string; text?: string; identifier?: string; x: number; y: number; width: number; height: number };
+
+/**
+ * 读 Xcode 给的界面结构：一行一个控件，缩进是层级，格式见 IDEDeviceInteraction 自带给模型的说明，如
+ * `Button, {{110.0, 205.0}, {30.0, 20.0}}, identifier: 'login', label: 'Login', hitPoint: {125.0, 215.0}`；
+ * 没有位置的行（App 的包名、Application 那一行）跳过。文字取 label，没有时依次取 title、value、placeholderValue。
+ */
+export function parseHierarchy(text: string): Control[] {
+  return text.split('\n').flatMap((line) => {
+    const frame = /\{\{(-?[\d.]+), (-?[\d.]+)\}, \{([\d.]+), ([\d.]+)\}\}/.exec(line);
+    const tag = /^\s*(\w+)/.exec(line)?.[1];
+    if (!frame || !tag) return [];
+    // 带引号的取到后面紧跟逗号或行尾的那个引号，文字里的逗号不算；不带引号的取到逗号
+    const field = (key: string) => {
+      const match = new RegExp(`\\b${key}: (?:'(.*?)'(?=,|$)|([^,]*))`).exec(line);
+      return (match?.[1] ?? match?.[2])?.trim() || undefined;
+    };
+    const [x, y, width, height] = frame.slice(1).map(Number) as [number, number, number, number];
+    const label = field('label') ?? /^\s*\w+ "(.*?)"/.exec(line)?.[1]?.trim();
+    return [{ depth: /^\s*/.exec(line)![0].length, tag, x, y, width, height, identifier: field('identifier'),
+      text: (label || field('title') || field('value') || field('placeholderValue'))?.slice(0, 200) }];
+  });
+}
+
+/**
+ * 画面上这一点最上层的控件：盖住这一点的控件里层级最深的，同层的取靠后的（后面的画在上面）。
+ * 最深的只是没有文字、没有标识的容器时往外找有内容的，都没有就还是最深的。
+ */
+export function controlAt(controls: Control[], x: number, y: number): Control | undefined {
+  const covering = controls.map((control, index) => ({ control, index }))
+    .filter(({ control: c }) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
+    .sort((a, b) => b.control.depth - a.control.depth || b.index - a.index).map(({ control }) => control);
+  return covering.find((c) => c.text || c.identifier || !['Other', 'Window', 'Application'].includes(c.tag)) ?? covering[0];
+}
+
 /**
  * 一台模拟器的画面：Xcode 的一个设备操作会话。给模型的帧按点，是 Xcode 截的；给设备的帧是 simctl 截的全分辨率屏幕，逻辑尺寸同样按点。
  * 动作做完 Xcode 已经截好一帧，画面算稳定了（settle），紧接着要给模型的那一帧就用它。
@@ -223,6 +259,8 @@ export class SimulatorScreen implements Screen {
   private size?: { width: number; height: number };
   /** 刚做完的动作 Xcode 截的那一帧，紧接着给模型的那次截图用一次；隔久了不用，画面可能已经变了。 */
   private fresh?: { frame: Frame; at: number };
+  /** 指认用的界面结构：指认期间画面停着，悬停时不必每次请 Xcode；做了动作、截了新的一帧就作废。 */
+  private controls?: Promise<Control[]>;
 
   constructor(private udid: string, private tools: XcodeTools, private env: Record<string, string>) {}
 
@@ -264,6 +302,7 @@ export class SimulatorScreen implements Screen {
   }
 
   async capture(forModel = false): Promise<Frame> {
+    this.controls = undefined;
     if (forModel) {
       const fresh = this.fresh;
       this.fresh = undefined;
@@ -280,6 +319,7 @@ export class SimulatorScreen implements Screen {
 
   async act(action: PreviewAction): Promise<void> {
     if (!this.size) await this.run('');
+    this.controls = undefined;
     const { frame } = await this.run(command(action, this.size!));
     this.fresh = { frame, at: Date.now() };
   }
@@ -291,6 +331,17 @@ export class SimulatorScreen implements Screen {
   async inspect(): Promise<string> {
     const { hierarchy } = await this.run('', true);
     return hierarchy.length > HIERARCHY_CHARS ? `${hierarchy.slice(0, HIERARCHY_CHARS)}\n…（界面结构太长，后面截掉了）` : hierarchy;
+  }
+
+  async point(x: number, y: number): Promise<PointedElement | null> {
+    const controls = this.controls ??= this.run('', true).then(({ hierarchy }) => parseHierarchy(hierarchy));
+    // Xcode 偶尔不给界面结构（说明里说是无障碍的临时问题），出错、为空的不留，下次再要
+    const list = await controls.catch(() => []);
+    if (!list.length && this.controls === controls) this.controls = undefined;
+    const found = controlAt(list, x, y);
+    if (!found) return null;
+    const { depth: _, ...element } = found;
+    return element;
   }
 
   async info() { return {}; }

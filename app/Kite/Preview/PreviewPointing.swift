@@ -2,7 +2,8 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 指认脚本（shared/preview-point.js）的结果：元素在画面坐标里的位置、种类、文字、标识与源码位置。
+/// 指认的结果：元素在画面坐标里的位置、种类、文字、标识与源码位置。网页是指认脚本（shared/preview-point.js）给的；
+/// 模拟器与 App 窗口是工作机从界面结构里找的控件，只有种类、文字与无障碍标识（identifier）。
 /// file 是开发构建给的原样，可能是工作机上的绝对路径，见 source(root:)。
 struct PointedElement: Decodable, Equatable, Sendable {
     let x: Double
@@ -13,6 +14,8 @@ struct PointedElement: Decodable, Equatable, Sendable {
     var text: String?
     var id: String?
     var testId: String?
+    /// 无障碍标识（accessibilityIdentifier），模拟器与 App 窗口的控件才有。
+    var identifier: String?
     var component: String?
     var file: String?
     var line: Int?
@@ -52,9 +55,10 @@ struct PointedElement: Decodable, Equatable, Sendable {
     }
 
     /// 发送时接在正文后面的一行（docs/实例操作.md「指认」）：编号、预览与网页路径、种类与文字，再是源码位置，
-    /// 没有时依次换成组件名、#id、data-testid。
+    /// 没有时依次换成组件名、#id、data-testid、无障碍标识。
     func note(number: Int, preview: String, root: String) -> String {
         let handle = source(root: root) ?? component.map { "<\($0)>" } ?? id.map { "#\($0)" } ?? testId.map { "[data-testid=\"\($0)\"]" }
+            ?? identifier.map { "[accessibilityIdentifier=\"\($0)\"]" }
         return "\(PreviewPointer.symbol(number)) 预览「\(preview)」\(page ?? "")：" + [summary, handle].compactMap(\.self).joined(separator: " ")
     }
 }
@@ -112,7 +116,7 @@ struct PointedElement: Decodable, Equatable, Sendable {
         return picks.filter { numbers.contains($0.number) }
     }
 
-    /// 控制区最右边的开关，单独一块玻璃，开着时整块用选中样式；先只有网页画面有。
+    /// 控制区最右边的开关，单独一块玻璃，开着时整块用选中样式。
     func button(area: WorkArea, client: KitedClient, preview: String) -> some View {
         PaneHeaderButtonGroup(selected: active) {
             Button { [self] in toggle(area: area, client: client, preview: preview) } label: {

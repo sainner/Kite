@@ -3,7 +3,7 @@ import SwiftUI
 /// 预览窗口（docs/成果查看与位置.md「预览」）：一个实例是一种目标跑起来的全部进程加画面。视图三个：画面、并排（只有网页画面有）与输出（进程的终端画面）。
 /// 画面的种类由进程产生什么决定（PreviewStatus.screen）：网页默认在设备自己的网页视图里看（DeviceWebPreview），也可以换到工作机上的浏览器；
 /// 工作机上的浏览器、模拟器和 App 窗口都是传过来的画面（ScreenPreview），人和 agent 操作同一个页面、同一块屏幕；还没有画面时画面视图就是输出。
-/// 在哪看各设备共用，改的是实例状态（AppModel.selectPreview）。网页画面的画面视图可以打开指认（PreviewPointing.swift）。
+/// 在哪看各设备共用，改的是实例状态（AppModel.selectPreview）。画面视图可以打开指认（PreviewPointing.swift）。
 struct PreviewPane: View {
     let instance: RemotePluginInstance
     let client: KitedClient
@@ -338,6 +338,7 @@ private struct ScreenPreview: View {
             PaneHeaderButtonGroup {
                 ActionButton("输入文字", icon: "keyboard") { startComposing() }
             }
+            pointer.button(area: area, client: client, preview: instance.title)
         }
     }
 
@@ -357,6 +358,7 @@ private struct ScreenPreview: View {
                 #endif
                 ActionButton("输入文字", icon: "keyboard") { startComposing() }
             }
+            pointer.button(area: area, client: client, preview: instance.title)
         }
     }
 

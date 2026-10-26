@@ -12,7 +12,7 @@
  * 之后紧跟一条二进制消息是这一帧的 JPEG；{type:'waiting'} 是开始等画面稳定，{type:'dropped'} 是等的期间收到的输入丢弃了。
  * 客户端发 {type:'resize', width, height}、{type:'mode', mode}、{type:'frame'}（要一帧当前画面）、{type:'action', action, wait}：
  * wait 为真（逐帧）时做完等画面稳定再给一帧，等的期间别人的逐帧输入丢弃、不排队；实时模式下画面变了就发，不等。
- * 指认时客户端发 {type:'point', x, y}，只回它 {type:'element', x, y, element}，element 是指认脚本的结果（见 screen.ts 的 pointScript），没有时为 null。
+ * 指认时客户端发 {type:'point', x, y}，只回它 {type:'element', x, y, element}，element 是指认的结果（见 screen.ts 的 PointedElement），没有时为 null。
  */
 import { randomUUID } from 'node:crypto';
 import type { ServerWebSocket } from 'bun';

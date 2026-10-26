@@ -45,7 +45,10 @@ export interface Frame {
 /** 网页的地址与标题；模拟器没有。 */
 export interface ScreenInfo { url?: string; pageTitle?: string }
 
-/** 指认脚本（shared/preview-point.js）的结果，原样转给设备，字段见脚本开头。 */
+/**
+ * 指认的结果，原样转给设备：网页是指认脚本（shared/preview-point.js）的结果，字段见脚本开头；
+ * 模拟器与 App 窗口是界面结构里的控件 {x, y, width, height, tag, text?, identifier?}，identifier 是无障碍标识。
+ */
 export type PointedElement = Record<string, unknown>;
 
 let pointSource: string | undefined;
@@ -60,7 +63,7 @@ export interface Screen {
   settle?(options: { forModel?: boolean }): Promise<{ frame: Frame; settled: boolean }>;
   /** 界面结构的文字：网页是无障碍树，模拟器是控件、文字与位置。 */
   inspect(): Promise<string>;
-  /** 指认：画面上这一点是哪个元素，坐标同动作；没有元素时为 null。只有网页有。 */
+  /** 指认：画面上这一点是哪个元素，坐标同动作；没有元素时为 null。 */
   point?(x: number, y: number): Promise<PointedElement | null>;
   info(): Promise<ScreenInfo>;
   /** 网页的视口跟着最近操作的那台设备的窗口；模拟器屏幕尺寸固定，没有。 */

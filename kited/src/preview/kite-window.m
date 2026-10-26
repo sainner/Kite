@@ -361,6 +361,30 @@ static NSString *axTree(void) {
   return out;
 }
 
+/** 指认：画面上这一点（窗口里的点）最上层的元素，种类、文字、无障碍标识与位置（画面上的点）；没有时为 nil。 */
+static NSDictionary *elementAt(CGPoint point) {
+  AXUIElementRef app = AXUIElementCreateApplication(target);
+  AXUIElementRef element = NULL;
+  AXError error = AXUIElementCopyElementAtPosition(app, windowFrame.origin.x + point.x, windowFrame.origin.y + point.y, &element);
+  CFRelease(app);
+  if (error != kAXErrorSuccess || !element) return nil;
+  NSString *role = [stringAttribute(element, kAXRoleAttribute) ?: @"?" stringByReplacingOccurrencesOfString:@"AX" withString:@""];
+  NSString *text = stringAttribute(element, kAXTitleAttribute) ?: stringAttribute(element, kAXDescriptionAttribute)
+    ?: stringAttribute(element, kAXValueAttribute) ?: stringAttribute(element, kAXPlaceholderValueAttribute);
+  NSString *identifier = stringAttribute(element, kAXIdentifierAttribute);
+  CFTypeRef position = NULL, size = NULL;
+  CGPoint p = CGPointZero;
+  CGSize s = CGSizeZero;
+  if (AXUIElementCopyAttributeValue(element, kAXPositionAttribute, &position) == kAXErrorSuccess && position) { AXValueGetValue(position, kAXValueTypeCGPoint, &p); CFRelease(position); }
+  if (AXUIElementCopyAttributeValue(element, kAXSizeAttribute, &size) == kAXErrorSuccess && size) { AXValueGetValue(size, kAXValueTypeCGSize, &s); CFRelease(size); }
+  CFRelease(element);
+  NSMutableDictionary *found = [@{@"tag" : role, @"x" : @(p.x - windowFrame.origin.x - visibleOffset.x), @"y" : @(p.y - windowFrame.origin.y - visibleOffset.y),
+                                  @"width" : @(s.width), @"height" : @(s.height)} mutableCopy];
+  if (text) found[@"text"] = text.length > 200 ? [text substringToIndex:200] : text;
+  if (identifier) found[@"identifier"] = identifier;
+  return found;
+}
+
 // MARK: - 命令
 
 /** 画面上的点换成窗口里的点（见 visibleOffset）。 */
@@ -395,6 +419,9 @@ static void run(NSDictionary *command) {
   } else if ([cmd isEqualToString:@"ax"]) {
     NSString *tree = axTree();
     if (tree) result[@"text"] = tree; else result[@"error"] = @"读不到界面结构";
+  } else if ([cmd isEqualToString:@"point"]) {
+    if (locateWindow()) result[@"element"] = elementAt(pointOf(command)) ?: NSNull.null;
+    else result[@"error"] = @"App 没有打开的窗口";
   } else if ([@[ @"tap", @"drag", @"scroll", @"longpress", @"key", @"type" ] containsObject:cmd]) {
     // 每次都重新找窗口：窗口可能挪了、换了
     if (!locateWindow()) { result[@"error"] = @"App 没有打开的窗口"; reply(result); return; }

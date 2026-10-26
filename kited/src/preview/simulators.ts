@@ -197,6 +197,6 @@ export class Simulators {
 
 /** 把共享画面的方法绑到它自己身上，外壳替换 close。 */
 const bind = (screen: SimulatorScreen): Screen => ({
-  capture: (forModel) => screen.capture(forModel), act: (action) => screen.act(action), inspect: () => screen.inspect(),
+  capture: (forModel) => screen.capture(forModel), act: (action) => screen.act(action), inspect: () => screen.inspect(), point: (x, y) => screen.point(x, y),
   info: () => screen.info(), alive: () => screen.alive(), close: () => screen.close(), settle: (options) => screen.settle(options),
 });
