@@ -292,7 +292,7 @@ private struct SkillFileTabs: View {
     let importFiles: () -> Void
 
     var body: some View {
-        AttachmentFlow(spacing: 6, trailing: false) {
+        FlowLayout(spacing: 6, alignment: .leading) {
             ForEach(files) { file in
                 Button { selected = file.path } label: {
                     Text(file.path)

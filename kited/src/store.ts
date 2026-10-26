@@ -552,9 +552,6 @@ export class Store implements UsageStore {
   setThreadRuntime(id: string, runtime: Thread['runtime']): void {
     this.db.query('update threads set runtime = ? where instance_id = ?').run(runtime, id);
   }
-  addPluginInstance(instance: PluginInstance): void {
-    this.addInstance(instance);
-  }
   /** 实例身份与会话专有记录原子创建。 */
   addAgent(agent: AgentInstance): void {
     this.db.transaction(() => {

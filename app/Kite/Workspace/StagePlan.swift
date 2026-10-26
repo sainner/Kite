@@ -15,20 +15,20 @@ struct StagePlan {
         regions = layout.regions(in: bounds)
         tiles = layout.shown?.layout(in: regions.canvas) ?? TileLayout()
         onStage = Set(tiles.panes.keys)
-        let regions = regions, onStage = onStage
-        dock = area.map { Self.geometry(area: $0, onStage: onStage, regions: regions) }
+        let regions = regions
+        dock = area.map { Self.geometry(area: $0, regions: regions) }
         expanded = !(area?.dockExpansion.isEmpty ?? true)
     }
 
     /// 只算停靠栏，不排台面：不读拖缝改的比例，拖缝时读它的停靠栏不跟着每步重算。
     static func dock(layout: WindowLayout, area: WorkArea, bounds: CGRect) -> (regions: WindowRegions, dock: DockGeometry) {
         let regions = layout.regions(in: bounds)
-        return (regions, geometry(area: area, onStage: Set(layout.shown?.panes ?? []), regions: regions))
+        return (regions, geometry(area: area, regions: regions))
     }
 
     /// 停靠栏这一刻的样子：滚到哪、展开的家族格里滚到哪不观察（见 WorkArea.dockScrollDistance）。
-    private static func geometry(area: WorkArea, onStage: Set<Pane>, regions: WindowRegions) -> DockGeometry {
-        DockGeometry(model: area.dockModel(onStage: Set(onStage.map(\.id))), region: regions.dock, expansion: area.dockExpansion,
+    fileprivate static func geometry(area: WorkArea, regions: WindowRegions) -> DockGeometry {
+        DockGeometry(model: area.dockModel(), region: regions.dock, expansion: area.dockExpansion,
                      distance: area.dockScrollDistance, familyOffset: area.dockFamilyOffset, familyLimit: area.dockFamilyLimit)
     }
 
@@ -196,11 +196,8 @@ final class CardPresentation {
 
     /// 关闭时飞进停靠栏的那一格：只有交给了后台实例的新建页有（实例本身关闭、归档后格子一起没了，卡片原地淡出）。
     private func returnFrame(group: PaneGroup, pane: Pane, regions: WindowRegions) -> CGRect? {
-        let layout = group.layout
         guard let area = group.workspace, let instance = area.handedOff[pane.id] else { return nil }
-        let model = area.dockModel(onStage: Set((layout.shown?.panes ?? []).map(\.id)))
-        return DockGeometry(model: model, region: regions.dock, expansion: area.dockExpansion, distance: area.dockScrollDistance,
-                            familyOffset: area.dockFamilyOffset, familyLimit: area.dockFamilyLimit).face(of: instance)?.frame
+        return StagePlan.geometry(area: area, regions: regions).face(of: instance)?.frame
     }
 
     private func destination(layout: WindowLayout, pane: Pane, rect: CGRect?, dockFrame: CGRect?) -> CGRect? {

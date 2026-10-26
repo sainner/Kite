@@ -63,12 +63,11 @@ indirect enum DockEntry: Identifiable {
 /// 子代理挂在父代理下面显示，随父代理归档：在不在台面上都在父代理这一格里，不另占一格。
 struct DockFamily {
     let parent: RemotePluginInstance
-    /// 父代理的 pane（就是它的实例 ID）；代理都有对话视图，所以总有。
-    let pane: Pane?
-    /// 父代理在本机台面上，格子里以箭头代替头像。
-    let onStage: Bool
     /// 子代理：.instance，或自己也带着子代理的 .family。在台面上的画箭头；收着时只露前三个，其余的藏在后面（见 DockGeometry.tucked）。
     let children: [DockEntry]
+
+    /// 父代理的 pane（就是它的实例 ID）；代理都有对话视图。
+    var pane: Pane { Pane(parent.id) }
 }
 
 /// 停靠栏的两组：布局组（本项目的布局文件夹）与实例组（代理在前、工具在后，各按创建先后，状态变化不挪位置），各项的排法见 DockBandItem。
@@ -77,10 +76,6 @@ struct DockModel {
     var layouts: [ProjectLayout] = []
     var agents: [DockEntry] = []
     var tools: [DockEntry] = []
-    /// 本机台面上的实例：家族格里的父代理、子代理画向左的箭头。
-    var onStage: Set<String> = []
-    /// 挂在父代理下面的子代理（各层都算）。
-    var grouped: Set<String> = []
     var all: [DockEntry] { agents + tools }
     /// ⌘数字按它数：实例组从上到下的各格（代理、工具），布局文件夹和两个添加入口不占编号。
     var topToBottom: [DockEntry] { agents + tools }
@@ -104,7 +99,7 @@ enum DockAttention: Int, Comparable {
 extension WorkArea {
     /// pane 对应的实例（ID 相同）。新建页关掉、交给了后台实例的，按那个实例算（关闭的卡片飞进它那一格，见 handedOff）。
     func instance(of pane: Pane) -> RemotePluginInstance? {
-        let id = handedOff[pane.id] ?? pane.id
+        let id = dockInstanceID(pane)
         return instances.first { $0.id == id }
     }
 
@@ -115,8 +110,8 @@ extension WorkArea {
     }
 
     /// 停靠栏的数据：所有未归档的实例各一格（代理在前、工具在后，各按创建先后），子代理收在父代理的家族格里；
-    /// 草稿排在代理末尾、打开着的新建页排在最后，同排布里的顺序（见 WorkArea.panes）。onStage 是本机台面上的实例。
-    func dockModel(onStage: Set<String>) -> DockModel {
+    /// 草稿排在代理末尾、打开着的新建页排在最后，同排布里的顺序（见 WorkArea.panes）。
+    func dockModel() -> DockModel {
         let open = instances.filter { $0.status == .open }
         let byID = Dictionary(open.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         // 子代理挂在开着的父代理下面，在不在台面上都一样。
@@ -143,12 +138,12 @@ extension WorkArea {
         func member(_ instance: RemotePluginInstance) -> DockEntry {
             let kids = children(of: instance.id)
             guard !kids.isEmpty else { return .instance(instance) }
-            return .family(.init(parent: instance, pane: Pane(instance.id), onStage: onStage.contains(instance.id), children: kids))
+            return .family(.init(parent: instance, children: kids))
         }
         /// 顶层的一格：带着子代理的代理是家族格，有视图的实例是它自己的 pane，没有视图的只占格。
         func entry(_ instance: RemotePluginInstance) -> DockEntry {
             let kids = children(of: instance.id)
-            if !kids.isEmpty { return .family(.init(parent: instance, pane: Pane(instance.id), onStage: onStage.contains(instance.id), children: kids)) }
+            if !kids.isEmpty { return .family(.init(parent: instance, children: kids)) }
             return definition(of: instance)?.views.isEmpty == false ? .pane(Pane(instance.id)) : .instance(instance)
         }
 
@@ -157,8 +152,6 @@ extension WorkArea {
         model.layouts = layouts
         model.agents = ordered.filter(isAgent).map(entry) + (draftPane.map { [.pane(Pane($0))] } ?? [])
         model.tools = ordered.filter { !isAgent($0) }.map(entry) + (chooserOpen ? [.pane(Pane(chooserPane))] : [])
-        model.onStage = onStage
-        model.grouped = Set(childAgents.map(\.id))
         return model
     }
 
@@ -300,13 +293,13 @@ extension AppModel {
     func openDockEntry(at index: Int, in area: WorkArea) {
         let layout = area.layout
         guard area.pluginClient != nil, layout.presentation == .tiled, layout.drag == nil, layout.resizing == nil else { return }
-        let entries = area.dockModel(onStage: Set((layout.shown?.panes ?? []).map(\.id))).topToBottom
+        let entries = area.dockModel().topToBottom
         guard entries.indices.contains(index) else { return }
         switch entries[index] {
         case .pane(let pane):
             layout.activate(pane)
         case .family(let family):
-            if let pane = family.pane { layout.activate(pane) } else { openDockInstance(family.parent, in: area) }
+            layout.activate(family.pane)
         case .instance(let instance):
             openDockInstance(instance, in: area)
         }
@@ -338,16 +331,12 @@ struct DockGeometry {
     private(set) var faces: [String: Slot] = [:]
     /// 收在家族胶囊里、只露一截的子代理（各层都算）：卡片落进来时外框缩到它的头像上淡没，不压在父代理的头像上面停一下。
     private(set) var tucked: Set<String> = []
-    let onStage: Set<String>
-    let grouped: Set<String>
     /// ⌘1～9 打开的各格，按编号排，见 DockModel.topToBottom。
     let numbered: [String]
 
     /// region 是停靠栏那一列（WindowRegions.dock），distance 是离前端滚了多远，familyOffset 是展开的家族格里面滚了多远。
     /// familyLimit 是展开的家族格最长多长（见 WorkArea.dockFamilyLimit），没给时按停靠栏的长。
     init(model: DockModel, region: CGRect, expansion: [String] = [], distance: CGFloat = 0, familyOffset: CGFloat = 0, familyLimit: CGFloat? = nil) {
-        onStage = model.onStage
-        grouped = model.grouped
         numbered = model.topToBottom.prefix(9).map(\.id)
         let bandItems = model.bandItems, visible = region.height
         let limit = familyLimit ?? DockBandMetrics.familyLimit(visible: visible)

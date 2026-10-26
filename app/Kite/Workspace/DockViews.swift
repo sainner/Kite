@@ -41,7 +41,7 @@ extension WorkArea {
     /// 展开 id 那个家族格时它最长多长：按它收着时照原来的间距排开离前端多远、停靠栏这一刻滚到哪。
     private func familyLimit(for id: String) -> CGFloat? {
         guard dockVisibleLength > 0 else { return nil }
-        let items = dockModel(onStage: []).bandItems
+        let items = dockModel().bandItems
         guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
         let run = DockBandRun(extents: items.map { DockBandMetrics.extent($0, expansion: [], limit: 0) }, gap: Metrics.gap)
         return DockBandMetrics.familyLimit(visible: dockVisibleLength, front: run.starts[index], distance: dockScrollDistance)
@@ -117,7 +117,7 @@ struct DockEntryFace: View {
         switch subject {
         case .pane(let pane): pane == current ? "arrow.up" : onStage.contains(area.dockInstanceID(pane)) ? "arrow.left" : nil
         case .instance(let instance): onStage.contains(instance.id) ? "arrow.left" : current.map(area.dockInstanceID) == instance.id ? "arrow.up" : nil
-        case .parent(let family): family.onStage ? "arrow.left" : family.pane.map { $0 == current } == true ? "arrow.up" : nil
+        case .parent(let family): onStage.contains(family.parent.id) ? "arrow.left" : family.pane == current ? "arrow.up" : nil
         }
     }
 
@@ -204,8 +204,7 @@ struct DockPaneButton: View {
 
 /// 收着的一格：没有视图的实例（盖一层半透明的底色，点开实例设置），或家族格展开后里面的一项（有视图的放上台面）。家族见 DockGroup。
 struct DockCellButton: View {
-    let entry: DockEntry
-    let depth: Int
+    let instance: RemotePluginInstance
     /// 没有视图的实例盖一层半透明的底色。
     var veiled = false
     /// 带子上的一格自己报悬停（位置按停靠栏的几何找）；家族里的一项由 DockItemHover 报。
@@ -218,7 +217,7 @@ struct DockCellButton: View {
     var body: some View {
         let size = Metrics.dragBubble
         Button(action: activate) {
-            face
+            DockEntryFace(subject: .instance(instance))
                 .frame(width: size, height: size)
                 .overlay { if veiled { Circle().fill(Theme.background.opacity(0.5)) } }
                 .contentShape(Circle())
@@ -233,31 +232,16 @@ struct DockCellButton: View {
         .contextMenu { DockEntryMenu(entry: entry) }
     }
 
-    @ViewBuilder
-    private var face: some View {
-        switch entry {
-        case .instance(let instance): DockEntryFace(subject: .instance(instance))
-        case .pane(let pane): DockEntryFace(subject: .pane(pane))
-        case .family: EmptyView()
-        }
-    }
+    private var entry: DockEntry { .instance(instance) }
 
     /// 有视图的实例能拖出去放上台面。
     private var draggable: Pane? {
-        guard case .instance(let instance) = entry, area.currentView(of: instance) != nil else { return nil }
-        return Pane(instance.id)
+        area.currentView(of: instance) != nil ? Pane(instance.id) : nil
     }
 
     private func activate() {
-        switch entry {
-        case .instance(let instance):
-            if let showPane, area.currentView(of: instance) != nil { showPane(Pane(instance.id)) }
-            else { model.openDockInstance(instance, in: area) }
-        case .pane(let pane):
-            showPane?(pane)
-        case .family:
-            return
-        }
+        if let showPane, area.currentView(of: instance) != nil { showPane(Pane(instance.id)) }
+        else { model.openDockInstance(instance, in: area) }
         area.collapseDockAfterShowing()
     }
 }
@@ -347,7 +331,6 @@ struct DockGroup: View, Animatable {
     /// 点了家族里的代理：宽屏放上台面，紧凑布局切过去。
     var showPane: (Pane) -> Void = { _ in }
 
-    @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.dockAxis) private var axis
     /// 外层收着时，自己只露最前面的头像。
@@ -498,8 +481,7 @@ struct DockGroup: View, Animatable {
 
     /// 打开父代理：放上台面（在台面上就聚焦）。
     private func openParent(_ family: DockFamily) {
-        if let pane = family.pane { showPane(pane) }
-        else { model.openDockInstance(family.parent, in: area) }
+        showPane(family.pane)
         area.collapseDockAfterShowing()
     }
 
@@ -511,8 +493,8 @@ struct DockGroup: View, Animatable {
         } else if member.expands {
             DockGroup(entry: member, depth: depth + 1, expanded: unfolded, openness: unfolded ? 1 : 0, showPane: showPane)
                 .modifier(DockItemHover(id: member.id, enabled: !unfolded))
-        } else {
-            DockCellButton(entry: member, depth: depth + 1, showPane: showPane)
+        } else if case .instance(let instance) = member {
+            DockCellButton(instance: instance, showPane: showPane)
                 .modifier(DockItemHover(id: member.id))
         }
     }

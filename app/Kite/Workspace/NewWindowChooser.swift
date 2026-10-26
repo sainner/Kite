@@ -65,7 +65,7 @@ struct NewWindowChooser: View {
                 if narrow { Spacer(minLength: 0) }
                 accessory()
             }
-            TileFlow(spacing: 8, rowSpacing: 4, centered: !narrow) { tiles() }
+            FlowLayout(spacing: 8, rowSpacing: 4, alignment: narrow ? .topLeading : .top) { tiles() }
         }
     }
 

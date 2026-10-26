@@ -41,8 +41,7 @@ struct TerminalPane: View {
         if let webPort {
             actions.append(PaneHeaderAction(title: "打开网页", systemImage: "globe", help: "在浏览窗口里打开 localhost:\(webPort)") { open(webPort) })
         }
-        let stopping = area.stoppingProcesses.contains(instance.id)
-        actions.append(PaneHeaderAction(title: "停止终端", systemImage: "stop.fill", busy: stopping, disabled: stopping, tint: Theme.danger) {
+        actions.append(PaneHeaderAction(title: "停止终端", systemImage: "stop.fill", tint: Theme.danger) {
             area.stop(instance, model: model) { actionError = $0 }
         })
         return PaneHeaderActions(groups: [actions])

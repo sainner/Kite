@@ -129,7 +129,7 @@ final class WindowLayout {
     }
 
     init(panes: [Pane] = [], arrangement: Arrangement = .oneAndTwo,
-         storageKey: String? = nil, defaults: UserDefaults = .standard, reconcileOnLoad: Bool = true) {
+         storageKey: String? = nil, defaults: UserDefaults = .standard) {
         self.isFixed = false
         self.storageKey = storageKey
         self.defaults = defaults
@@ -139,8 +139,6 @@ final class WindowLayout {
             root = saved.root?.tile
             focused = saved.focused
             expansion = saved.expansion
-            // 托管目录尚未加载实例；此时不能把未知窗口当成已删除。
-            if reconcileOnLoad { reconcile(panes) }
         } else {
             root = arrangement.tile(for: panes)
             focused = panes.first
@@ -166,19 +164,16 @@ final class WindowLayout {
     /// 工作机决定实例是否存在（工作区在 WorkArea 里按停靠栏的顺序给出全部窗口）。本机只保留这些 ID 的台面集合与排布，新窗口只收进停靠栏，
     /// 由本机的动作放上台面。展开的那张没了先按还原处理。
     /// complete 是工作机给的完整清单：这时存档里排着、却不在清单里的窗口（上次退出时的草稿和新建页、已经没了的实例）也从台面拿掉，
-    /// 不然占着一块空白、没有卡片（2026-10-26 实测）。托管目录还没加载实例时不算完整，见 init。
+    /// 不然占着一块空白、没有卡片（2026-10-26 实测）。还没连上工作机时不算完整（见 WorkArea.rebuild），只拿掉上次知道、这次没了的。
     func reconcile(_ available: [Pane], complete: Bool = true) {
         guard !isFixed else { return }
         motionKind = .settle
-        let allowed = Set(available)
-        let stale = complete ? Set(root?.panes ?? []).subtracting(allowed).subtracting(stored) : []
-        guard stored != available || !stale.isEmpty else { return }
-        let removed = Set(stored).subtracting(allowed).union(stale)
+        let removed = Set(stored).union(complete ? root?.panes ?? [] : []).subtracting(available)
+        guard stored != available || !removed.isEmpty else { return }
         if !removed.isEmpty {
             drag = nil
             if let expansion, removed.contains(expansion.pane), holdsExpansion { goBack() }
             for pane in removed { root = root?.removing(pane) }
-            expansion = expansion?.removing(removed)
         }
         stored = available
         if focused.map({ !panes.contains($0) }) != false { focusVisiblePane() }
@@ -205,10 +200,13 @@ final class WindowLayout {
     /// 回到展开之前的排布：期间关掉的窗口不回来。
     private func goBack() {
         guard let expansion else { return }
-        var tile = expansion.before?.tile
-        for pane in tile?.panes ?? [] where !stored.contains(pane) { tile = tile?.removing(pane) }
-        root = tile
+        root = keepingStored(expansion.before?.tile)
         self.expansion = nil
+    }
+
+    /// tile 里只留本机知道的窗口，拿掉的那一张所在的一刀由另一半补上。
+    private func keepingStored(_ tile: Tile?) -> Tile? {
+        (tile?.panes ?? []).reduce(tile) { next, pane in stored.contains(pane) ? next : next?.removing(pane) }
     }
 
     /// 展开那一步还算数：展开的那张还独占着台面。拖进别的窗口、换排布都让它作废，「还原」随之变回「展开」。
@@ -332,9 +330,7 @@ final class WindowLayout {
     /// 整个台面换成这组排布（打开布局）：不在 panes 里的拿掉，焦点落在左上角那张；展开那一步作废。
     func present(_ tile: Tile) {
         guard !isFixed else { return }
-        var next: Tile? = tile
-        for pane in tile.panes where !stored.contains(pane) { next = next?.removing(pane) }
-        guard let next else { return }
+        guard let next = keepingStored(tile) else { return }
         withLayoutAnimation(.settle) {
             drag = nil
             carriedFocus = nil
@@ -646,13 +642,8 @@ private struct SavedLayout: Codable {
 /// 展开前的排布，还原时回去，见 WindowLayout.expand。
 private struct ExpansionMemory: Codable {
     let pane: Pane
+    /// 期间关掉的窗口还在里面，还原时才拿掉（见 goBack）。
     let before: SavedTile?
-
-    /// 窗口关掉了：排布里拿掉它，它所在的那一刀由另一半补上，同台面上一样。
-    func removing(_ panes: Set<Pane>) -> ExpansionMemory? {
-        guard !panes.contains(pane) else { return nil }
-        return ExpansionMemory(pane: pane, before: panes.reduce(before?.tile) { $0?.removing($1) }.map(SavedTile.init))
-    }
 }
 
 private indirect enum SavedTile: Codable {

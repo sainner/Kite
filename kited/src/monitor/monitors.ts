@@ -148,7 +148,7 @@ export class Monitors {
       const instance: PluginInstance = { id: randomUUID(), workspaceId, definitionId: monitorDefinitionId, title: input.title,
         config: { monitor: { target: target.id, sources: [source] } }, state: {}, view: 'timeline', status: 'open',
         createdAt: Date.now(), origin };
-      this.host.store.addPluginInstance(instance);
+      this.host.store.addInstance(instance);
       this.host.changed(workspaceId);
       this.reconcile();
       return { instanceId: instance.id };

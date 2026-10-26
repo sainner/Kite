@@ -7,7 +7,7 @@ struct DraftAttachmentStrip: View {
     let thread: WorkThread
 
     var body: some View {
-        AttachmentFlow(spacing: 6, trailing: false) {
+        FlowLayout(spacing: 6, alignment: .leading) {
             ForEach(thread.draftAttachments) { item in
                 DraftAttachmentItem(item: item) { thread.removeAttachment(item) }
             }
@@ -158,46 +158,5 @@ struct AttachmentFace: View {
                 Image(systemName: "photo").foregroundStyle(.secondary)
             }
         }
-    }
-}
-
-/// 附件一个挨一个排，放不下就换行；trailing 时每行靠右（气泡上面），否则靠左（输入框上面）。同一行里竖着居中。
-struct AttachmentFlow: Layout {
-    var spacing: CGFloat
-    var trailing: Bool
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let rows = rows(width: proposal.width ?? .infinity, subviews)
-        let width = rows.map(\.width).max() ?? 0
-        let height = rows.map(\.height).reduce(0, +) + spacing * CGFloat(max(rows.count - 1, 0))
-        return CGSize(width: width, height: height)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var y = bounds.minY
-        for row in rows(width: bounds.width, subviews) {
-            var x = trailing ? bounds.maxX - row.width : bounds.minX
-            for index in row.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(at: CGPoint(x: x, y: y + (row.height - size.height) / 2), proposal: ProposedViewSize(size))
-                x += size.width + spacing
-            }
-            y += row.height + spacing
-        }
-    }
-
-    private func rows(width: CGFloat, _ subviews: Subviews) -> [(indices: [Int], width: CGFloat, height: CGFloat)] {
-        var rows: [(indices: [Int], width: CGFloat, height: CGFloat)] = []
-        for (index, subview) in subviews.enumerated() {
-            let size = subview.sizeThatFits(.unspecified)
-            if let last = rows.indices.last, rows[last].width + spacing + size.width <= width {
-                rows[last].indices.append(index)
-                rows[last].width += spacing + size.width
-                rows[last].height = max(rows[last].height, size.height)
-            } else {
-                rows.append(([index], size.width, size.height))
-            }
-        }
-        return rows
     }
 }

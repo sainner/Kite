@@ -39,8 +39,6 @@ final class WorkArea: Identifiable {
     private(set) var openingInstances: [RemotePluginInstance] = []
     /// 本机关掉、工作机还没回收的实例：点下去就从台面和停靠栏去掉，关不掉再放回来（见 AppModel.closeInstance）。
     private(set) var closingInstances: Set<String> = []
-    /// 正在停的终端、预览进程：各窗口标题栏的停止按钮转圈（见 WorkArea.stop）。
-    var stoppingProcesses: Set<String> = []
     /// 本机换了视图、工作机还没确认的实例：实例 ID 到视图和那次请求，当场按它显示；请求有了结果就去掉，以工作机的实例为准（见 AppModel.showInstance）。
     @ObservationIgnored private var switchingViews: [String: (view: String, request: String)] = [:]
     /// 本机归档、工作机还没归档的实例：当场按已归档排，它的卡片一起收掉；归档不成再放回来（见 AppModel.archiveInstances）。
@@ -101,8 +99,7 @@ final class WorkArea: Identifiable {
         draftThread = WorkThread(workspace: remote.workspace.cwd, workspaceID: remote.id, project: remote.project.name, id: Self.newPaneID())
         instances = remote.instances
         layout = WindowLayout(panes: Self.panes(of: remote.instances, definitions: definitions, draft: nil, chooser: nil),
-                              storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)",
-                              reconcileOnLoad: client != nil)
+                              storageKey: "KiteWindowLayout.\(remote.machine.id).\(remote.id)")
         layout.floor = Pane(chooserPane)
         seenTurns = UserDefaults.standard.dictionary(forKey: seenKey) as? [String: Double] ?? [:]
         if let client { update(remote, client: client, connection: connection, cursor: cursor) }
@@ -469,10 +466,9 @@ final class WorkArea: Identifiable {
         if pendingName?.request == request { pendingName = nil }
     }
 
-    /// 本机新建实例时用的标题，和工作机起的一样：代理叫「新代理」，带视图的按同一插件已有的标题往后编号，后台实例用插件名。
+    /// 本机新建实例时用的标题，和工作机起的一样：代理叫「新代理」，别的按同一插件已有的标题往后编号。
     func newInstanceTitle(_ definition: RemotePluginDefinition) -> String {
         if definition.agent != nil { return "新代理" }
-        guard !definition.views.isEmpty else { return definition.title }
         return Self.numbered(definition.title, among: Set(instances.filter { $0.definitionId == definition.id }.map(\.title)))
     }
 

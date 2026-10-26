@@ -49,6 +49,13 @@ const str = (v: unknown, name: string): string => {
   return v;
 };
 
+/** 改协作授权（插件定义级、实例级）的请求体；授权本身由各自的接口核对。 */
+const grantsUpdate = (value: unknown) => {
+  const parsed = z.object({ expectedRevision: z.string().min(1), grants: z.unknown() }).strict().safeParse(value);
+  if (!parsed.success) throw new KiteError('授权修改请求无效');
+  return parsed.data;
+};
+
 /** 添加项目的来源：远程地址，或这台工作机上的文件夹，二选一；addition 是添加时另带的集成方式与环境变量文件。 */
 const projectSource = <T extends z.ZodRawShape>(addition: T) => z.union([
   z.object({ remote: z.string().trim().min(1).max(2048), ...addition }).strict(),
@@ -309,9 +316,7 @@ export function serve(kite: Kite, listen: Listen) {
       '/project-registry/:id/layouts/:layout': {
         PUT: bound(async (req) => kite.registry.saveLayout(req.params.id, req.params.layout, await body(req))),
         DELETE: bound((req) => {
-          const expectedRevision = new URL(req.url).searchParams.get('expectedRevision');
-          if (!expectedRevision) throw new KiteError('删除布局要带 expectedRevision');
-          kite.registry.removeLayout(req.params.id, req.params.layout, expectedRevision);
+          kite.registry.removeLayout(req.params.id, req.params.layout, str(new URL(req.url).searchParams.get('expectedRevision'), 'expectedRevision'));
           return { ok: true };
         }),
       },
@@ -512,9 +517,8 @@ export function serve(kite: Kite, listen: Listen) {
       '/plugins/:id/grants': {
         GET: bound((req) => kite.pluginGrants(req.params.id)),
         PUT: bound(async (req) => {
-          const parsed = z.object({ expectedRevision: z.string().min(1), grants: z.unknown() }).strict().safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('授权修改请求无效');
-          return kite.configurePluginGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
+          const { expectedRevision, grants } = grantsUpdate(await body(req));
+          return kite.configurePluginGrants(req.params.id, expectedRevision, grants);
         }),
       },
       // 新建预览时列出的预览目标与设备候选，每次打开都来取，工作区里新加的目标、刚配对的设备马上看得到。
@@ -605,9 +609,8 @@ export function serve(kite: Kite, listen: Listen) {
       '/instances/:id/operation-grants': {
         GET: bound((req) => kite.operations.grants(req.params.id)),
         PUT: bound(async (req) => {
-          const parsed = z.object({ expectedRevision: z.string().min(1), grants: z.unknown() }).strict().safeParse(await body(req));
-          if (!parsed.success) throw new KiteError('授权修改请求无效');
-          return kite.configureOperationGrants(req.params.id, parsed.data.expectedRevision, parsed.data.grants);
+          const { expectedRevision, grants } = grantsUpdate(await body(req));
+          return kite.configureOperationGrants(req.params.id, expectedRevision, grants);
         }),
       },
       '/instances/:id/execution-grants': {

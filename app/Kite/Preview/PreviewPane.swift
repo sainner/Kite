@@ -34,8 +34,7 @@ extension WorkArea {
     @MainActor func previewActions(_ instance: RemotePluginInstance, model: AppModel, report: @escaping (String?) -> Void) -> [PaneHeaderAction] {
         guard previewStatus(of: instance) != nil else { return [] }
         if instance.state?.terminal?.running == true {
-            let busy = stoppingProcesses.contains(instance.id)
-            return [PaneHeaderAction(title: "停止预览", systemImage: "stop.fill", busy: busy, disabled: busy, tint: Theme.danger) {
+            return [PaneHeaderAction(title: "停止预览", systemImage: "stop.fill", tint: Theme.danger) {
                 self.stop(instance, model: model, report: report)
             }]
         }

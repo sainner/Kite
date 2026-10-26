@@ -483,7 +483,7 @@ export class Previews {
       }
       const instance: PluginInstance = existing ?? { id: randomUUID(), workspaceId, definitionId: previewDefinitionId, title: launch.title,
         config: { preview: launch.spec }, state: {}, view: 'screen', status: 'open', createdAt: Date.now(), origin };
-      if (!existing) this.host.store.addPluginInstance(instance);
+      if (!existing) this.host.store.addInstance(instance);
       launched = launch.env.KITE_SIMULATOR;
       if (launched) this.launchedBefore.set(instance.id, new Set(await this.host.simulators.launchedApps(launched)));
       this.start(instance, launch, origin.instanceId);

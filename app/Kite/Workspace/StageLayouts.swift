@@ -15,8 +15,6 @@ struct ProjectLayout: Decodable, Identifiable, Equatable {
         let members: [LayoutMember]
         let arrangement: LayoutArrangement
     }
-
-    var recipe: Recipe { Recipe(name: name, members: members, arrangement: arrangement) }
 }
 
 /// 布局的一个成员：代理记角色，浏览记当前网页（看文件的不记），预览记目标与设备，其余记类型或定义。
@@ -200,45 +198,40 @@ extension WorkArea {
             return candidates.first { onStage.contains($0.id) }
                 ?? candidates.max { recentActivity($0) < recentActivity($1) }
         }
+        /// 第 index 个成员：有现成的就用它，没有就交给 create 新建（建不了为 nil，这一格空着）。
+        @discardableResult
+        func take(_ index: Int, _ matches: (RemotePluginInstance) -> Bool, otherwise create: () -> Pane?) -> RemotePluginInstance? {
+            guard let found = pick(matches) else { panes[index] = create(); return nil }
+            used.insert(found.id)
+            panes[index] = Pane(found.id)
+            return found
+        }
         for (index, member) in layout.members.enumerated() {
             switch member {
             case .agent(let role):
-                if let found = pick({ isAgent($0) && !isSubagent($0.id) && $0.config?.role?.id == role }) {
-                    used.insert(found.id)
-                    panes[index] = Pane(found.id)
-                } else if draftRole == nil, let role = model.roles(in: self)?.roles.first(where: { $0.id == role }) {
+                take(index, { isAgent($0) && !isSubagent($0.id) && $0.config?.role?.id == role }) {
+                    guard draftRole == nil, let role = model.roles(in: self)?.roles.first(where: { $0.id == role }) else { return nil }
                     draftRole = role
-                    panes[index] = Pane(prepareDraft(role: role))
+                    return Pane(prepareDraft(role: role))
                 }
             case .files(let page):
-                if let found = pick({ $0.definitionId == AppModel.filesDefinition }) {
-                    used.insert(found.id)
-                    panes[index] = Pane(found.id)
-                    if let page, let browser = files[found.id] { Task { try? await browser.openPage(page) } }
-                } else {
-                    panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.filesDefinition, page: page), model: model)
+                let found = take(index, { $0.definitionId == AppModel.filesDefinition }) {
+                    created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.filesDefinition, page: page), model: model)
                 }
+                if let found, let page, let browser = files[found.id] { Task { try? await browser.openPage(page) } }
             case .terminal:
-                if let found = pick({ $0.definitionId == "kite.terminal" }) {
-                    used.insert(found.id)
-                    panes[index] = Pane(found.id)
-                } else {
-                    panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: "kite.terminal"), model: model)
+                take(index, { $0.definitionId == "kite.terminal" }) {
+                    created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: "kite.terminal"), model: model)
                 }
             case .preview(let target, let device):
                 let spec = PreviewSpec(target: target, device: device)
-                if let found = pick({ $0.definitionId == AppModel.previewDefinition && $0.config?.preview == spec }) {
-                    used.insert(found.id)
-                    panes[index] = Pane(found.id)
-                } else {
-                    panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.previewDefinition, title: target, preview: spec), model: model)
+                take(index, { $0.definitionId == AppModel.previewDefinition && $0.config?.preview == spec }) {
+                    created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: AppModel.previewDefinition, title: target, preview: spec), model: model)
                 }
             case .plugin(let definition):
-                if let found = pick({ $0.definitionId == definition }) {
-                    used.insert(found.id)
-                    panes[index] = Pane(found.id)
-                } else if definitions.contains(where: { $0.id == definition && !$0.views.isEmpty }) {
-                    panes[index] = created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: definition), model: model)
+                take(index, { $0.definitionId == definition }) {
+                    definitions.contains { $0.id == definition && !$0.views.isEmpty }
+                        ? created(CreateInstanceRequest(id: Self.newPaneID(), definitionId: definition), model: model) : nil
                 }
             }
         }

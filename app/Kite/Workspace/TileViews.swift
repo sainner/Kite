@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 宽屏的台面：各张卡片、空画板、卡片之间的缝和停靠栏按排布算好的位置摆在同一层。卡片始终是同一个视图，
+/// 宽屏的台面：各张卡片、卡片之间的缝和停靠栏按排布算好的位置摆在同一层。卡片始终是同一个视图，
 /// 排布变了、拖出去缩成停靠形状、松手展开，都只是它的位置和大小在变，动画连贯，不会出现新旧两份交叠。
 /// Mac 是原生的 StageView，iPad 是原生的 PhoneStageView。
 /// 台面的大小、位置不跟 SwiftUI 的动画逐帧变：侧栏收起、展开时它一下子换到终点，窗口由台面按终点排一次、交给 Core Animation 飞过去
@@ -27,9 +27,12 @@ struct PausedInTransition: ViewModifier {
     let layout: WindowLayout
     /// 拖缝调整大小也算。正拖着的缝自己不算，照常接。
     var whileResizing = true
+    /// 拖动也算。停靠栏不算：从它拖出一格时拖动本身也是过渡，那一格的手势照常走完。
+    var whileDragging = true
 
     func body(content: Content) -> some View {
-        content.allowsHitTesting(!(whileResizing ? layout.transitioning : layout.blocksInput))
+        let paused = whileResizing ? layout.transitioning : layout.blocksInput
+        content.allowsHitTesting(!paused || (!whileDragging && layout.drag != nil))
     }
 }
 
@@ -37,26 +40,6 @@ extension View {
     /// 按 rect 定大小和位置，坐标是所在容器的。
     func placed(_ rect: CGRect) -> some View {
         frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
-    }
-}
-
-extension AnyTransition {
-    /// placed(rect) 摆的视图进出时以 rect 的中心缩放。placed 的视图铺满整个容器，.scale 的 anchor 按容器算，
-    /// 不是按 rect：锚在中心就成了容器中心，格子会从台面中间斜着飞过来。所以以容器原点为锚缩放，再挪回 rect 的中心。
-    static func scale(_ scale: CGFloat, placedIn rect: CGRect) -> AnyTransition {
-        let point = CGPoint(x: rect.midX, y: rect.midY)
-        return .modifier(active: PlacedScale(scale: scale, point: point), identity: PlacedScale(scale: 1, point: point))
-    }
-}
-
-private struct PlacedScale: ViewModifier {
-    let scale: CGFloat
-    let point: CGPoint
-
-    func body(content: Content) -> some View {
-        content
-            .scaleEffect(scale, anchor: .topLeading)
-            .offset(x: (1 - scale) * point.x, y: (1 - scale) * point.y)
     }
 }
 

@@ -760,11 +760,8 @@ struct KitedClient: Equatable {
 /// 实例与布局的几个请求，接口见 docs/kited.md。
 extension KitedClient {
     /// 新建实例，响应是实例（带当前视图）。同一 id 同内容重试返回同一个实例；预览的同一目标与设备已经在跑时返回那个实例。
-    func createInstance(workspace: String, id: String, definitionId: String, title: String? = nil, command: String? = nil,
-                        preview: PreviewSpec? = nil, page: BrowsePage? = nil) async throws -> RemotePluginInstance {
-        try await request("/workspaces/\(workspace.pathComponent)/instances", method: "POST",
-                          body: CreateInstanceRequest(id: id, definitionId: definitionId, title: title, command: command, preview: preview, page: page),
-                          as: RemotePluginInstance.self)
+    func createInstance(workspace: String, _ body: CreateInstanceRequest) async throws -> RemotePluginInstance {
+        try await request("/workspaces/\(workspace.pathComponent)/instances", method: "POST", body: body, as: RemotePluginInstance.self)
     }
 
     /// 换实例当前显示的视图，各端同步；返回实例。
@@ -793,8 +790,7 @@ extension KitedClient {
     }
 
     func deleteLayout(project: String, id: String, expectedRevision: String) async throws {
-        let query = expectedRevision.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? expectedRevision
-        let _: JSON = try await request("/project-registry/\(project.pathComponent)/layouts/\(id.pathComponent)?expectedRevision=\(query)",
+        let _: JSON = try await request("/project-registry/\(project.pathComponent)/layouts/\(id.pathComponent)?expectedRevision=\(expectedRevision.pathComponent)",
                                         method: "DELETE", as: JSON.self)
     }
 }

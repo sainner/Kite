@@ -229,8 +229,7 @@ final class AppModel {
                 for close in closing { await close.value }
                 client = try activeClient(in: area)
                 guard area.remote.machine.id == client.machineID else { throw KitedError(message: "工作机已切换") }
-                instance = try await client.createInstance(workspace: area.id, id: request.id, definitionId: request.definitionId, title: request.title,
-                                                           command: request.command, preview: request.preview, page: request.page)
+                instance = try await client.createInstance(workspace: area.id, request)
             } catch {
                 area.settleInstance(request.id, rejected: Self.rejected(error))
                 if !Self.rejected(error) { area.failedInstanceRequests.append(request) }
@@ -538,16 +537,15 @@ final class AppModel {
             guard let cursor = event.cursor.flatMap(EventCursor.init) else { throw KitedError(message: "工作区事件数据无效") }
             if event.type == "catalog.snapshot" {
                 guard event.version == 1, let remote = event.workspaces else { throw KitedError(message: "工作区快照无效") }
+                // 断线期间收不到布局的变化事件：这台工作机上各项目的布局丢掉缓存，apply 末尾重读（见 distributeLayouts）
+                for area in self.workspaces where area.remote.machine.id == connection.id { self.projectLayouts[area.remote.project.id] = nil }
                 try self.apply(remote, from: client, cursor: cursor, generation: generation)
                 // 目录流（重新）连上了：收件箱重读，关注状态再报一次（事件流断开时工作机已把这台设备移出）
                 Task { await self.refreshLineInbox() }
                 Task { await self.refreshUpdate(connection) }
                 LineAttention.shared.report()
-                // 断线期间收不到资源库的变化事件，重连后每一类都当变过；各项目的布局也重读
+                // 断线期间收不到资源库的变化事件，重连后每一类都当变过
                 for kind in LibraryList.allCases { self.libraryChanged(kind, on: connection) }
-                for project in Set(self.workspaces.filter { $0.remote.machine.id == connection.id }.map(\.remote.project.id)) {
-                    Task { await self.refreshLayouts(project: project, client: client) }
-                }
                 TimingTrace.mark("工作机 \(connection.machine.name) 目录快照已应用")
             } else if connection.catalog.needsRefresh(cursor) { try await self.refresh(client) }
         }

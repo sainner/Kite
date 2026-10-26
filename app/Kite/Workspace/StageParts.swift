@@ -88,22 +88,37 @@ struct StageDockRail: View {
                     .environment(\.dockHidden, geometry.airborne)
                     .environment(\.dockStage, geometry)
                     .placed(dock)
-                if let pane = layout.drag?.pane,
-                   let slot = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock.face(of: area.dockInstanceID(pane)) {
-                    Circle()
-                        .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
-                        .opacity(slot.opacity)
-                        .placed(slot.frame)
-                        .allowsHitTesting(false)
-                }
+                DockDragRing(layout: layout, area: area, bounds: bounds)
             }
             .environment(area)
-            // 过渡中不接点击、悬停；从停靠栏拖出一格时拖动本身也是过渡，那一格的手势照常走完
-            .allowsHitTesting(!layout.transitioning || layout.drag != nil)
+            .modifier(PausedInTransition(layout: layout, whileDragging: false))
             .frame(width: bounds.maxX, height: bounds.maxY, alignment: .topLeading)
             .coordinateSpace(.named(DockSpace.name))
             .modifier(StageIslandFill())
         }
+    }
+}
+
+/// 拖着的那张卡片在停靠栏那一格描的虚线圈，见 StageDockRail。拖动状态在这一层读：拖起、放下只更新这一层，停靠栏不跟着重算。
+private struct DockDragRing: View {
+    let layout: WindowLayout
+    let area: WorkArea
+    let bounds: CGRect
+
+    var body: some View {
+        if let pane = layout.drag?.pane, let slot = slot(of: pane) {
+            Circle()
+                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                .opacity(slot.opacity)
+                .placed(slot.frame)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// 同卡片缩回去的那一格，见 StagePlan.dockSlot。
+    private func slot(of pane: Pane) -> DockGeometry.Slot? {
+        let dock = StagePlan.dock(layout: layout, area: area, bounds: bounds).dock
+        return dock.face(of: area.dockInstanceID(pane)) ?? dock.slot(of: pane)
     }
 }
 

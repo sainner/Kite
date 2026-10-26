@@ -168,7 +168,6 @@ struct DockBand: View {
     var startDistance: CGFloat = 0
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
-    @Environment(\.dockOnStage) private var onStage
     @Environment(\.dockCurrentPane) private var current
     /// 滚动区沿排列方向的长，含两头让出的一圈。
     @State private var length: CGFloat = 0
@@ -185,7 +184,7 @@ struct DockBand: View {
     private static let currentID = "dock-current"
 
     var body: some View {
-        let dock = area.dockModel(onStage: onStage)
+        let dock = area.dockModel()
         let items = dock.bandItems
         let expansion = area.dockExpansion
         let dimmed = !expansion.isEmpty
@@ -255,8 +254,9 @@ struct DockBand: View {
             length = $0
             area.dockVisibleLength = max($0 - 2 * margin, 0)
         }
-        // 新窗口加进来和切过去可能不在同一次更新里，先记下，切过去时再滚
-        .onChange(of: area.layout.panes) { old, new in
+        // 新窗口加进来和切过去可能不在同一次更新里，先记下，切过去时再滚。只有紧凑布局的底栏（横排）有当前窗口，
+        // 竖排不读排布：不然每次缩小、恢复、放下整条停靠栏都跟着重算
+        .onChange(of: axis == .horizontal ? area.layout.panes : []) { old, new in
             guard current != nil else { return }
             // 累加：新窗口加进来、切过去之前别的窗口又有增减，也还记着它
             fresh = fresh.union(Set(new).subtracting(old)).intersection(new)
@@ -335,8 +335,8 @@ struct DockBand: View {
                 DockFamilyItem(entry: entry, axis: axis, expanded: expansion.first == entry.id, openness: expansion.first == entry.id ? 1 : 0,
                                limit: limit,
                                selected: current.map { holds(entry, $0) } ?? false, show: show)
-            case .instance:
-                DockCellButton(entry: entry, depth: 0, veiled: true, reportsHover: true, showPane: show)
+            case .instance(let instance):
+                DockCellButton(instance: instance, veiled: true, reportsHover: true, showPane: show)
             }
         }
     }

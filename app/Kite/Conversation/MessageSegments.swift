@@ -59,7 +59,7 @@ struct MessageAttachmentRow: View {
     @State private var failure: String?
 
     var body: some View {
-        AttachmentFlow(spacing: 6, trailing: true) {
+        FlowLayout(spacing: 6, alignment: .trailing) {
             ForEach(attachments) { attachment in
                 Button { open(attachment) } label: { item(attachment) }
                     .buttonStyle(.pointingPlain)

@@ -1,6 +1,6 @@
 /**
- * 终端插件 kite.terminal：一个实例一个进程，进程归工作机。实例的 lifetime 是 process：进程运行中独立存续，
- * 关掉窗口照跑，在停靠栏是没有窗口的小头像；进程结束后没有窗口就回收，有窗口的留到关掉窗口；随 kited 重启结束的连窗口一起回收。
+ * 终端插件 kite.terminal：一个实例一个进程，进程归工作机。实例的 lifetime 是 process：进程运行中独立存续，不在台面上也照跑；
+ * 代理转到后台的命令结束即回收，别的进程结束后留着给用户看结果，到关闭才回收（停下就是关闭）；随 kited 重启结束的一起回收。
  * 进程有三种：用户开的终端是用户的登录 shell，跑在 PTY 里，不加沙箱，相当于登录到这台工作机，起始目录是工作区目录，
  * 新建时可以带一条命令（对话里代码块的「在终端中执行」），shell 起好后像粘贴那样打进去执行；
  * 代理的 shell 命令超时、用户插话或模型要求时转到后台，由这里接管，仍在代理的沙箱里、只有输出没有输入，结束时通知那个代理；
@@ -46,7 +46,7 @@ export const terminalExitContextDefinition: ContextDefinition = {
       { type: 'variable', name: 'terminal.result' }, { type: 'text', text: '。输出的末尾：\n' }, { type: 'variable', name: 'terminal.output' },
     ] },
     { type: 'paragraph', id: 'guidance', title: '处理方式', parts: [{ type: 'text',
-      text: '终端没有窗口时随即回收，之后读不到它，以这里的输出为准。' }] },
+      text: '转到后台的命令结束后随即回收，之后读不到它，以这里的输出为准。' }] },
   ],
 };
 
@@ -81,7 +81,7 @@ export interface TerminalsHost {
   run<T>(workspaceId: string, action: () => Promise<T>): Promise<T>;
   /** 实例增删或状态变了：工作区聚合变了。 */
   changed(workspaceId: string): void;
-  /** 回收实例：撤回指向它的授权、删掉实例和会话目录。调用时已在控制队列里，且确认没有窗口。 */
+  /** 回收实例：撤回指向它的授权、删掉实例和会话目录。调用时已在控制队列里，且进程已经结束。 */
   collect(instance: PluginInstance): void;
   /** 投给代理的 Kite 来源输入；同一 ID 重复送达只去重。 */
   deliver(threadId: string, text: string, inputId: string, notice: InputNotice): Promise<unknown>;
@@ -325,7 +325,7 @@ export class Terminals {
 
   constructor(private host: TerminalsHost) {}
 
-  /** 进程是否还在跑；process 实例据此决定关掉窗口时回不回收。 */
+  /** 进程是否还在跑；还在跑的不能回收，预览据此决定重新起还是交回在跑的那个。 */
   running(id: string): boolean {
     const session = this.sessions.get(id);
     return !!session && !session.ended;
@@ -346,7 +346,7 @@ export class Terminals {
   }
 
   /**
-   * 新实例刚入库就起 shell；起不来记为结束，窗口里看得到原因。带命令的等 shell 起好再打进去。
+   * 新实例刚入库就起 shell；起不来记为结束，卡片里看得到原因。带命令的等 shell 起好再打进去。
    * 预览实例给 target：经登录 shell 直接运行目标脚本，env 是预览给的环境变量（PORT、KITE_SIMULATOR、KITE_DEVICE），脚本退出进程就结束。
    * 预览重新起时用同一个实例，之前的会话换成新的。
    */
@@ -397,7 +397,7 @@ export class Terminals {
   /**
    * 限时等进程产生画面：ready 为真、进程结束、到时或调用取消时返回进程此刻的状态与输出末尾。端口或 App 变化时立即再看，
    * pollMs 是另外定时再看的间隔（模拟器里的 App 要去问）。等的期间结束的不再发结束通知，结果由调用方交给代理；
-   * 没有窗口的结束后随即回收、库里和会话表里都没了，状态与输出从这里拿着的会话取。
+   * 结束后随即回收的（转到后台的命令）库里和会话表里都没了，状态与输出从这里拿着的会话取。
    */
   async waitUntil(id: string, ready: () => boolean | Promise<boolean>, options: { ms: number; pollMs?: number; signal?: AbortSignal }): Promise<{ state: TerminalState; text: string }> {
     const session = this.sessions.get(id);
@@ -433,7 +433,7 @@ export class Terminals {
     return (await this.sessions.get(id)?.tail()) ?? '';
   }
 
-  /** 实例进程此刻的状态：会话里的优先（没有窗口的实例退出后随即回收，库里可能已经没有它了）。 */
+  /** 实例进程此刻的状态：会话里的优先（转到后台的命令退出后随即回收，库里可能已经没有它了）。 */
   processState(id: string): TerminalState {
     const instance = this.host.store.instance(id);
     return this.sessions.get(id)?.ended ?? (instance && terminalState(instance)) ?? { phase: 'exited' };
@@ -467,7 +467,7 @@ export class Terminals {
     session.child = { pid: command.pid,
       done: command.done.then(({ code, stopped, unknown }) => ({ exitCode: code,
         ...(unknown ? { reason: '命令结束后进程组没能停下，可能还在运行' } : stopped ? { reason: stopped } : {}) })) };
-    this.host.store.addPluginInstance(instance);
+    this.host.store.addInstance(instance);
     this.sessions.set(instance.id, session);
     this.track(instance.id, { pid: command.pid, started: command.started });
     this.host.changed(owner.workspaceId);
@@ -541,12 +541,8 @@ export class Terminals {
   }
 
   /**
-   * 停下终端：先挂断，等不到退出再停整个进程组；等到退出记进状态才返回。
-   * quiet 是启动它的代理自己停的，结束时不再通知它。
-   */
-  /**
-   * 停下进程，确认结束才返回。停下就是关闭：结束后回收实例；keep 是工作区交接、归档与预览重起时停下，实例留着。
-   * quiet 是代理自己停的，不再通知它。
+   * 停下进程：先挂断，等不到退出再停整个进程组；等到退出记进状态才返回。停下就是关闭：结束后回收实例；
+   * keep 是工作区交接、归档与预览重起时停下，实例留着。quiet 是启动它的代理自己停的，结束时不再通知它。
    */
   stop(id: string, reason: string, options: { quiet?: boolean; keep?: boolean } = {}): Promise<void> {
     const session = this.sessions.get(id);

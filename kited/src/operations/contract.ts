@@ -224,12 +224,12 @@ export const operationContracts = {
       text: z.string(), offset: z.number().int(), totalLines: z.number().int(), nextOffset: z.number().int().nullable() }).strict(),
   },
   'preview.list': {
-    title: '列出预览', description: '列出本工作区的预览：目标、设备、画面种类（web、simulator、app，没有画面是 none）与网页端口、在哪看（device 是用户设备上的网页视图），进程状态，谁起的（createdBy 为空是用户）、有没有窗口。',
+    title: '列出预览', description: '列出本工作区的预览：目标、设备、画面种类（web、simulator、app，没有画面是 none）与网页端口、在哪看（device 是用户设备上的网页视图），进程状态，谁起的（createdBy 为空是用户）。',
     tool: 'preview_list', effect: 'read', retry: 'read', input: z.object({}).strict(),
     output: z.object({ previews: z.array(z.object({ ...preview, createdBy: id.nullable() }).strict()) }).strict(),
   },
   'preview.stop': {
-    title: '停止预览', description: '停下预览的进程（整个进程树），等到结束才返回；没有窗口的预览随之回收。你自己停下的不再发结束通知。',
+    title: '停止预览', description: '停下预览的进程（整个进程树），等到结束才返回；停下就是关闭，预览随之回收。你自己停下的不再发结束通知。',
     tool: 'preview_stop', effect: 'write', retry: 'receipt', input: target, output: ok,
   },
   'preview.select': {
@@ -375,7 +375,7 @@ const grantShapes = new Map(operationGrantsSchema.element.options.map((option) =
 /** 界面调不了的操作与拒绝时的说明：起的 monitor 和预览归开启它的代理或插件。 */
 const uiDenied: Partial<Record<OperationName, string>> = {
   'monitor.start': 'monitor 由代理开启，唤醒的是开启它的代理',
-  'preview.open': '界面用新建窗口起预览',
+  'preview.open': '界面从新建页起预览',
 };
 
 /**

@@ -2334,7 +2334,7 @@ export class Kite {
   private addLineInbox(line: Pick<AgentInstance, 'id' | 'workspaceId'>): PluginInstance {
     const inbox: PluginInstance = { id: randomUUID(), workspaceId: line.workspaceId, definitionId: monitorDefinitionId, title: '收件箱',
       config: { monitor: { target: line.id, system: 'line' } }, state: {}, view: 'timeline', status: 'open', createdAt: Date.now() };
-    this.store.addPluginInstance(inbox);
+    this.store.addInstance(inbox);
     return inbox;
   }
   /** 工作区交接、冻结或归档前停下终端、插件进程与 monitor 的来源；monitor 的来源不算结束，工作区再开放时重新开始，终端不再拉起。 */

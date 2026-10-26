@@ -349,10 +349,14 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         arranged.expanded = plan.expanded
         arranged.drag = layout.drag?.pane
 
-        for pane in layout.panes where !retained.contains(pane) { retained.append(pane) }
+        let panes = layout.panes, present = Set(panes)
+        for pane in panes where !retained.contains(pane) { retained.append(pane) }
         if let area {
             // 新建页交给了后台实例：飞进那一格，飞到之前那一格先不显示
-            for pane in retained where paneInstances[pane] != area.dockInstanceID(pane) { paneInstances[pane] = area.dockInstanceID(pane) }
+            for pane in retained {
+                let instance = area.dockInstanceID(pane)
+                if paneInstances[pane] != instance { paneInstances[pane] = instance }
+            }
         }
 
         arrangeGaps(plan.tiles.gaps, blocked: layout.isFixed ? nil : layout.blocksInput)
@@ -373,7 +377,7 @@ final class StageView: RepresentedRoot, StageDotsReporting {
         for pane in retained {
             let fresh = cards[pane] == nil
             let card = cards[pane] ?? makeCard(pane)
-            let closing = !layout.panes.contains(pane)
+            let closing = !present.contains(pane)
             let rect = plan.tiles.panes[pane]
             let instance = paneInstances[pane], slot = plan.dockSlot(of: pane, instance: instance)
             let placed = card.presentation.place(group: group, pane: pane, rect: rect, dock: slot,
@@ -387,14 +391,14 @@ final class StageView: RepresentedRoot, StageDotsReporting {
             }
             // 停在停靠栏里的卡片整张透明，不压暗（压暗的模糊挂在铺满台面的图层上）
             let dimmed = plan.expanded && rect == nil && layout.drag?.pane != pane && !placed.hidden
+            let hasThread = area?.thread(in: pane) != nil
             // 缩成停靠形状的不接：停在格子里的整张透明，别的时候在飞、在拖，点、右键、读屏都归停靠栏里那一格
             let arrangement = CardView.Arrangement(
                 placed: placed, closing: closing,
                 openSidebar: pane == plan.first ? openSidebar : nil, dimmed: dimmed,
                 acceptsInput: !blocksInput && !resizing && !closing && !dimmed && !placed.minimized, dotsHidden: resizing,
-                dragged: layout.drag?.pane == pane, hasThread: area?.thread(in: pane) != nil, fixed: layout.isFixed,
-                header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width,
-                                         hasThread: area?.thread(in: pane) != nil),
+                dragged: layout.drag?.pane == pane, hasThread: hasThread, fixed: layout.isFixed,
+                header: card.headerState(layout: layout, minimized: placed.minimized, width: placed.target.frame.width, hasThread: hasThread),
                 expansion: (keepsExpansion ? card.arrangement?.expansion : nil) ?? layout.expansion(of: pane))
             arranged.cards.append((card, arrangement, CardPresentation.motionKind(layout: layout, pane: pane, reduceMotion: reduceMotion)))
         }
