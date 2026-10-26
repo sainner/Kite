@@ -212,8 +212,9 @@ final class AppModel {
     @discardableResult
     func createInstance(_ request: CreateInstanceRequest, in area: WorkArea, show: Bool = true) -> Task<RemotePluginInstance, Error> {
         area.windowError = nil
-        area.failedInstanceRequests.removeAll { $0.id == request.id }
-        if let definition = area.definitions.first(where: { $0.id == request.definitionId }) {
+        area.failedInstanceRequests.removeAll { $0.request.id == request.id }
+        let definition = area.definitions.first { $0.id == request.definitionId }
+        if let definition {
             let local = RemotePluginInstance(id: request.id, workspaceId: area.id, definitionId: definition.id,
                                              title: request.title ?? area.newInstanceTitle(definition), status: .open, createdAt: Self.now,
                                              view: definition.views.isEmpty ? nil : definition.defaultView,
@@ -232,22 +233,21 @@ final class AppModel {
                 instance = try await client.createInstance(workspace: area.id, request)
             } catch {
                 area.settleInstance(request.id, rejected: Self.rejected(error))
-                if !Self.rejected(error) { area.failedInstanceRequests.append(request) }
+                if !Self.rejected(error) { area.failedInstanceRequests.append((request, show)) }
                 area.windowError = error.localizedDescription
                 throw error
             }
             do { try await refresh(client) } catch { area.windowError = error.localizedDescription }
-            if instance.id != request.id {
-                area.settleInstance(request.id)
-                if show, accepts(client) { area.layout.activate(Pane(instance.id)) }
-            }
+            if instance.id != request.id { area.settleInstance(request.id) }
+            // 本机没先建出来（插件定义还没读到），或工作机交回的是别的实例：这时才放上台面
+            if show, accepts(client), definition == nil || instance.id != request.id { area.show(instance: instance.id) }
             return instance
         }
     }
 
     /// 重发网络中断时没得到确认的建实例请求，ID 不变。
     func retryRequests(in area: WorkArea) {
-        for request in area.failedInstanceRequests { createInstance(request, in: area, show: area.layout.panes.contains(Pane(request.id))) }
+        for failed in area.failedInstanceRequests { createInstance(failed.request, in: area, show: failed.show) }
     }
 
     /// 明确拒绝可以结束这次请求；网络中断保留同一 ID，供用户安全重试。
@@ -902,10 +902,10 @@ extension AppModel {
         showFollower = (area, client, task)
     }
 
-    /// 代理请用户看这个实例：App 在前台、正看着这个工作区才放上台面；实例还没随目录列出来的等它一到（见 WorkArea.pendingShow）。
+    /// 代理请用户看这个实例：App 在前台、正看着这个工作区才放上台面；实例还没随目录列出来的等它一到（见 WorkArea.show(instance:)）。
     func showRequested(_ id: String, in area: WorkArea) {
         guard Self.isForeground, current === area else { return }
-        if area.layout.panes.contains(Pane(id)) { area.layout.activate(Pane(id)) } else { area.pendingShow = id }
+        area.show(instance: id)
     }
 
     private static var isForeground: Bool {

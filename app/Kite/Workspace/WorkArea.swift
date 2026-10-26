@@ -49,7 +49,8 @@ final class WorkArea: Identifiable {
     /// 在路上的关闭请求，按实例。
     @ObservationIgnored var closeRequests: [String: Task<Void, Never>] = [:]
     /// 网络中断、没得到确认的建实例请求：保留同一个 ID 重试，工作机已经建好的不会再建一份（见 AppModel.retryRequests）。
-    var failedInstanceRequests: [CreateInstanceRequest] = []
+    /// show 是当初要不要放上台面：失败时本机先建的已经收回，重试时照当初的放。
+    var failedInstanceRequests: [(request: CreateInstanceRequest, show: Bool)] = []
     var windowError: String?
     var archiveError: String?
     var settingsInstance: RemotePluginInstance?
@@ -66,8 +67,8 @@ final class WorkArea: Identifiable {
     @ObservationIgnored var referencedFiles: Set<String> = []
     /// 消息里点的本机网页链接、网页地址栏里输入的路径，按预览实例 ID：网页预览打开到链接的路径。页面里的跳转按设备各自保存，这个也只在本机。
     var webLinks: [String: WebLink] = [:]
-    /// 代理请用户看、本机还没列出来的实例（instance.show 比目录快一步到）：实例一到就放上台面，见 AppModel.showRequested。
-    @ObservationIgnored var pendingShow: String?
+    /// 要放上台面、还没排进来的实例（instance.show 比目录快一步到，或插件定义还没读到）：一排进来就放上台面，见 show(instance:)。
+    @ObservationIgnored private var pendingShow: String?
     /// 停靠栏里展开的家族格，外层在前；只在本机，不保存。
     var dockExpansion: [String] = []
     /// 指针停在停靠栏哪一格上，Mac 据此在左侧浮出名字与状态。
@@ -384,6 +385,11 @@ final class WorkArea: Identifiable {
             self.pendingShow = nil
             layout.activate(Pane(pendingShow))
         }
+    }
+
+    /// 把实例放上台面；还没排进来的等它一到，见 pendingShow。
+    func show(instance id: String) {
+        if layout.panes.contains(Pane(id)) { layout.activate(Pane(id)) } else { pendingShow = id }
     }
 
     /// 打开布局时先建的实例、草稿都放进排布，再一起摆（见 openLayout）。
