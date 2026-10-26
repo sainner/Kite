@@ -16,7 +16,7 @@
 |---|---|---|
 | `app/` | Mac、iPhone、iPad 共用的 App | [编译、预览与代码地图](app/README.md) |
 | `kited/` | 工作机服务、命令行、自研 harness 与 Claude 适配 | [启动、终端试用、检查与代码地图](kited/README.md) |
-| `shared/` | 工作机与验证脚本共用的数据，目前是模型清单 | [agent-models.json](shared/agent-models.json) |
+| `shared/` | 工作机、App 与验证脚本共用的文件：模型清单，预览的指认脚本 | [agent-models.json](shared/agent-models.json)、[preview-point.js](shared/preview-point.js) |
 | `docs/` | 产品设计原则、对外契约与开发入口 | [文档索引](docs/README.md) |
 | `spikes/` | 验证实验，用来复现当时的结论 | 保持原样，不当产品代码维护 |
 

@@ -89,6 +89,10 @@ extension EnvironmentValues {
     let id: String
     let name: String
     let isImage: Bool
+    /// 发送时接在正文后面的一行说明，例如预览指认的元素（docs/实例操作.md「指认」）；拿掉附件，说明一起拿掉。
+    let note: String?
+    /// 缩略图上标的编号，正文里可以按它指这个附件。
+    let badge: Int?
     @ObservationIgnored let local: URL?
     /// 缩略图：本机选的从本机文件做，退回来的从工作机取。
     var preview: PlatformImage?
@@ -112,15 +116,17 @@ extension EnvironmentValues {
         try self.init(name: file.lastPathComponent) { try FileManager.default.copyItem(at: file, to: $0) }
     }
 
-    /// 粘贴、拍下的图片这类只有数据的。
-    convenience init(data: Data, name: String) throws {
-        try self.init(name: name) { try data.write(to: $0) }
+    /// 粘贴、拍下的图片这类只有数据的；预览指认的截图带着说明与编号。
+    convenience init(data: Data, name: String, note: String? = nil, badge: Int? = nil) throws {
+        try self.init(name: name, note: note, badge: badge) { try data.write(to: $0) }
     }
 
     /// 暂存在本机的：write 把内容写到暂存目录里给的位置。
-    private init(name: String, write: (URL) throws -> Void) throws {
+    private init(name: String, note: String? = nil, badge: Int? = nil, write: (URL) throws -> Void) throws {
         id = UUID().uuidString.lowercased()
         self.name = name
+        self.note = note
+        self.badge = badge
         let directory = Self.staging.appending(path: id)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let target = directory.appending(path: name)
@@ -136,6 +142,9 @@ extension EnvironmentValues {
         id = attachment.id
         name = attachment.name
         isImage = attachment.isImage
+        // 退回来的，说明已经在退回的正文里
+        note = nil
+        badge = nil
         local = nil
         uploaded = attachment
         progress = 1

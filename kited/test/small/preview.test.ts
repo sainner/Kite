@@ -10,6 +10,8 @@ import { expect, test } from 'bun:test';
 // kited 第一次开浏览器时才 import('playwright-core')，在 Bun 里要约 0.1 秒，转译缓存里没有时约 0.2 秒，
 // 原来全算在文件里第一个测试上，冷启动时超过小测试的 1 秒。文件加载时先载入，kited 里的 import() 拿到的是同一份模块。
 import 'playwright-core';
+// 指认脚本由 screen.ts 按路径读进来，不在 import 链上；按文本引入，脚本改动时 .kite/check 才会选中这里。
+import '../../../shared/preview-point.js' with { type: 'text' };
 import { chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PreviewAction } from '../../src/preview/screen.ts';
@@ -19,10 +21,13 @@ import { makeTemp, newDir } from '../util.ts';
 
 const WAIT_MS = 2_000;
 
-/** 预览进程里跑的网页服务。首页有一个固定在左上角 200×100 的计数按钮，点一下按钮文字和页面标题都变成「点了 N 次」。 */
+/**
+ * 预览进程里跑的网页服务。首页有一个固定在左上角 200×100 的计数按钮，点一下按钮文字和页面标题都变成「点了 N 次」。
+ * 按钮带着 code-inspector-plugin 写的位置属性，指认时取得到源码位置；按钮之外是空白。
+ */
 const SERVER_SCRIPT = String.raw`
 const page = ${'`'}<!doctype html><html><head><meta charset="utf-8"><title>点了 0 次</title></head><body style="margin:0">
-<button id="count" style="position:fixed;left:0;top:0;width:200px;height:100px">点了 0 次</button>
+<button id="count" data-insp-path="src/Counter.tsx:12:3:button" style="position:fixed;left:0;top:0;width:200px;height:100px">点了 0 次</button>
 <script>
 let clicks = 0;
 count.onclick = () => { clicks += 1; count.textContent = document.title = '点了 ' + clicks + ' 次'; };
@@ -107,6 +112,7 @@ class Device {
   }
 
   act(action: PreviewAction) { this.ws.send(JSON.stringify({ type: 'action', action, wait: true })); }
+  point(x: number, y: number) { this.ws.send(JSON.stringify({ type: 'point', x, y })); }
   close() { this.ws.close(); }
 }
 
@@ -155,6 +161,46 @@ test('工作机 Chromium 里的网页：逐帧点按等画面稳定后发带 set
     const clicked = (await operation(k, workspaceId, 'preview.inspect', { instanceId: previewId })).text as string;
     expect(clicked).toContain('点了 1 次');
     expect(clicked).not.toContain('点了 2 次');
+  } finally {
+    device?.close();
+    await k.stop();
+  }
+}, 5_000);
+
+/*
+ * 配合：kited 按 import.meta.url 的相对路径从 shared/ 读指认脚本，在工作机 Chromium 的页面里执行，
+ * 结果经预览的 socket 回给问的设备，x、y 原样带回；两次一起问，按 x、y 各认各的回答。
+ * 画面没接上指认、脚本读不到或执行出错时工作机都回 null，所以按钮那一点要取到完整的元素才算接上。
+ * 运行时：Chromium 的 elementFromPoint 在页面空白处给的是 html 元素（body 里只有 fixed 的按钮、高度为 0），脚本据此回 null。
+ */
+test('工作机 Chromium 里的网页：设备问一点，回这一点上元素的位置、种类、文字和位置属性里的源码位置，x、y 原样带回，空白处回 null', async () => {
+  const k = start();
+  let device: Device | undefined;
+  try {
+    const machineId = (await machine(k.url)).id;
+    const project = newDir(k.root, 'project', { 'README.md': '预览\n', '.kite/preview/web': '#!/bin/sh\n' });
+    chmodSync(join(project, '.kite/preview/web'), 0o755);
+    const workspaceId = (await folderWorkspace(k, project)).workspace.id;
+    const opened = await k.call('POST', `/workspaces/${workspaceId}/instances`, {
+      id: crypto.randomUUID(), definitionId: previewDefinitionId, preview: { target: 'web' },
+    });
+    expect(opened.status).toBe(200);
+    const previewId = opened.body.id as string;
+    await operation(k, workspaceId, 'preview.select', { operationId: 'chromium', instanceId: previewId, browser: 'chromium' });
+
+    device = new Device(k.url, machineId, previewId, 'width=400&height=300&mode=step');
+    const ready = await device.control((c) => c.type === 'state' && c.phase === 'ready', '页面打开');
+    device.point(100, 50);
+    device.point(300, 200);
+    const answer = (x: number, y: number) => device!.control((c) => c.type === 'element' && c.x === x && c.y === y, `(${x}, ${y}) 的指认结果`, ready);
+    const [button, blank] = await Promise.all([answer(100, 50), answer(300, 200)]);
+    expect(device.messages[button]).toEqual({
+      control: {
+        type: 'element', x: 100, y: 50,
+        element: { x: 0, y: 0, width: 200, height: 100, tag: 'button', text: '点了 0 次', id: 'count', file: 'src/Counter.tsx', line: 12, page: '/' },
+      },
+    });
+    expect(device.messages[blank]).toEqual({ control: { type: 'element', x: 300, y: 200, element: null } });
   } finally {
     device?.close();
     await k.stop();

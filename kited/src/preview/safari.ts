@@ -7,7 +7,7 @@
 import { createServer } from 'node:net';
 import { KiteError } from '../errors.ts';
 import { pathOn, type BrowserOptions } from './browsers.ts';
-import type { Frame, PreviewAction, Screen, ScreenInfo } from './screen.ts';
+import { pointScript, type Frame, type PointedElement, type PreviewAction, type Screen, type ScreenInfo } from './screen.ts';
 
 const SAFARIDRIVER = '/usr/bin/safaridriver';
 const START_TIMEOUT_MS = 10_000;
@@ -262,6 +262,10 @@ class SafariScreen implements Screen {
 
   inspect(): Promise<string> {
     return this.driver.in(this.handle, (send) => this.script<string>(send, OUTLINE_SCRIPT));
+  }
+
+  point(x: number, y: number): Promise<PointedElement | null> {
+    return this.driver.in(this.handle, (send) => this.script<PointedElement | null>(send, `return (${pointScript()})(arguments[0], arguments[1]);`, [x, y]));
   }
 
   alive(): boolean { return !this.closed && this.driver.alive(this.handle); }

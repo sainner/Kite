@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import type { Browser, BrowserContext, Page } from 'playwright-core';
 import { KiteError } from '../errors.ts';
 import { SafariDriver } from './safari.ts';
-import type { PreviewAction, Screen, ScreenInfo } from './screen.ts';
+import { pointScript, type PointedElement, type PreviewAction, type Screen, type ScreenInfo } from './screen.ts';
 import type { WorkstationBrowser } from './state.ts';
 
 /** 用 Playwright 跑的浏览器。 */
@@ -181,6 +181,10 @@ class BrowserScreen implements Screen {
   }
 
   inspect(): Promise<string> { return this.page.ariaSnapshot(); }
+
+  point(x: number, y: number): Promise<PointedElement | null> {
+    return this.page.evaluate(`(${pointScript()})(${x}, ${y})`) as Promise<PointedElement | null>;
+  }
 
   alive(): boolean { return !this.closed && !this.page.isClosed(); }
 

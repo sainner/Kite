@@ -428,8 +428,11 @@ struct ThreadControlsModel {
         // 波只画在窗口里，朝窗口顶边走，和对话往上滑同一次更新起步
         let stage = stage, scope = scope
         let reach = frame.minY - (scope?.frame.minY ?? frame.minY)
-        var message = Message(typed: sent.trimmingCharacters(in: .whitespacesAndNewlines))
-        message.attachments = thread.takeAttachments()
+        // 附件带的说明（预览的指认）接在正文后面，一条一行
+        let taken = thread.takeAttachments()
+        let text = [sent.trimmingCharacters(in: .whitespacesAndNewlines), taken.notes.joined(separator: "\n")].filter { !$0.isEmpty }
+        var message = Message(typed: text.joined(separator: "\n\n"))
+        message.attachments = taken.attachments
         if let waiting = skipping { thread.skip(waiting, sending: message) }
         send(message) {
             stage?.emitWave(from: frame, parameters: Self.sendWave(from: frame, reach: reach), in: scope)

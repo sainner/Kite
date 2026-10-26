@@ -25,6 +25,7 @@
 		4B1E00000000000000000126 /* TreeSitterYAML in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000125 /* TreeSitterYAML */; };
 		4B1E0000000000000000012A /* TreeSitterTOML in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E00000000000000000129 /* TreeSitterTOML */; };
 		4B1E0000000000000000012E /* TreeSitterMarkdown in Frameworks */ = {isa = PBXBuildFile; productRef = 4B1E0000000000000000012D /* TreeSitterMarkdown */; };
+		4B1E00000000000000000201 /* preview-point.js in Resources */ = {isa = PBXBuildFile; fileRef = 4B1E00000000000000000200 /* preview-point.js */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -44,6 +45,7 @@
 /* Begin PBXFileReference section */
 		4B1E00000000000000000001 /* Kite.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Kite.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4B1E00000000000000000015 /* Vendor/TailscaleKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/TailscaleKit.xcframework; sourceTree = "<group>"; };
+		4B1E00000000000000000200 /* preview-point.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; name = "preview-point.js"; path = "../shared/preview-point.js"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -87,6 +89,7 @@
 			children = (
 				4B1E00000000000000000002 /* Kite */,
 				4B1E00000000000000000015 /* Vendor/TailscaleKit.xcframework */,
+				4B1E00000000000000000200 /* preview-point.js */,
 				4B1E00000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -198,6 +201,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4B1E00000000000000000201 /* preview-point.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

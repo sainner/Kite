@@ -12,6 +12,7 @@
  * 之后紧跟一条二进制消息是这一帧的 JPEG；{type:'waiting'} 是开始等画面稳定，{type:'dropped'} 是等的期间收到的输入丢弃了。
  * 客户端发 {type:'resize', width, height}、{type:'mode', mode}、{type:'frame'}（要一帧当前画面）、{type:'action', action, wait}：
  * wait 为真（逐帧）时做完等画面稳定再给一帧，等的期间别人的逐帧输入丢弃、不排队；实时模式下画面变了就发，不等。
+ * 指认时客户端发 {type:'point', x, y}，只回它 {type:'element', x, y, element}，element 是指认脚本的结果（见 screen.ts 的 pointScript），没有时为 null。
  */
 import { randomUUID } from 'node:crypto';
 import type { ServerWebSocket } from 'bun';
@@ -63,6 +64,7 @@ const messageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('mode'), mode: z.enum(['live', 'step']) }).strict(),
   z.object({ type: z.literal('frame') }).strict(),
   z.object({ type: z.literal('action'), action: actionSchema, wait: z.boolean().optional() }).strict(),
+  z.object({ type: z.literal('point'), x: z.number().min(0), y: z.number().min(0) }).strict(),
 ]);
 /** 接入地址里的 width、height、mode 与并排的一格；尺寸缺一个或不合法就当没给，mode 默认逐帧，格子的浏览器或视口不合法就当画面视图。 */
 export function previewParams(params: URLSearchParams): Pick<PreviewSocket, 'size' | 'live' | 'cell'> {
@@ -668,6 +670,15 @@ export class Previews {
         this.perform(view, data.action, data.wait ?? false).catch(() => {});
         // 操作的设备成为视口尺寸的归属者：坐标是照它看到的画面给的，先做完这个动作，再换成它的窗口尺寸
         if (view.owner !== socket) void this.queued(view, () => this.own(view, socket)).catch(() => {});
+        return;
+      }
+      case 'point': {
+        // 只读页面，不进动作的队列；结果只回问的那台设备
+        const { x, y } = data;
+        void (async () => {
+          const element = await view.screen?.point?.(x, y).catch(() => null) ?? null;
+          if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'element', x, y, element }));
+        })();
         return;
       }
     }

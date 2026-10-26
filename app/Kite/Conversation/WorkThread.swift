@@ -14,7 +14,11 @@ final class WorkThread: Identifiable {
     /// 从 transcript 摘出的几项，只在变了时写：窗口、标题栏和控制区只读这些，不跟着收发消息和每一次流式刷新重算。
     private(set) var hasTranscript = false
     private(set) var transcriptRoot = ""
-    var draft = ""
+    var draft = "" {
+        didSet { if draft != oldValue { usedAt = .now } }
+    }
+    /// 本机上人最近一次在这个会话里打字或发消息的时候，指认放进哪个对话按它挑（WorkArea.pointingThread）。
+    @ObservationIgnored private(set) var usedAt: Date?
     /// 输入框里待发的附件，按选的先后；发送时连同草稿一起带走。
     private(set) var draftAttachments: [DraftAttachment] = []
     /// 所属工作区；附件按它上传、读取。
@@ -182,9 +186,9 @@ final class WorkThread: Identifiable {
     /// 都传好了、没超过上限：可以发了。退回输入框的几条加起来可能超过上限，拿掉几个才能发。
     var attachmentsReady: Bool { draftAttachments.count <= Self.maxAttachments && draftAttachments.allSatisfy { $0.uploaded != nil } }
 
-    /// 发送时带走输入框里的附件。
-    func takeAttachments() -> [Attachment] {
-        let taken = draftAttachments.compactMap(\.uploaded)
+    /// 发送时带走输入框里的附件，连同它们要接在正文后面的说明。
+    func takeAttachments() -> (attachments: [Attachment], notes: [String]) {
+        let taken = (draftAttachments.compactMap(\.uploaded), draftAttachments.compactMap(\.note))
         for item in draftAttachments { item.sent() }
         draftAttachments = []
         return taken

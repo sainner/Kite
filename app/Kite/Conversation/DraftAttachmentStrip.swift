@@ -26,6 +26,10 @@ private struct DraftAttachmentItem: View {
         let shape = RoundedRectangle(cornerRadius: ComposerLayout.fieldFillRadius, style: .continuous)
         content(shape)
             .overlay { status(shape) }
+            .overlay(alignment: .topLeading) {
+                // 正文里说①②指的就是它
+                if let badge = item.badge { NumberBadge(number: badge).padding(4) }
+            }
             .overlay(alignment: .topTrailing) {
                 Button(action: remove) {
                     Image(systemName: "xmark.circle.fill")
@@ -39,9 +43,9 @@ private struct DraftAttachmentItem: View {
             }
             .contentShape(shape)
             .onTapGesture { item.retry() }
-            .help(item.error.map { "上传失败，点一下重试：\($0)" } ?? item.name)
+            .help(item.error.map { "上传失败，点一下重试：\($0)" } ?? item.note ?? item.name)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(item.isImage ? TranscriptSpeech.imageAttachment(item.name) : TranscriptSpeech.fileAttachment(item.name))
+            .accessibilityLabel(item.note ?? (item.isImage ? TranscriptSpeech.imageAttachment(item.name) : TranscriptSpeech.fileAttachment(item.name)))
     }
 
     @ViewBuilder private func content(_ shape: RoundedRectangle) -> some View {

@@ -533,12 +533,33 @@ final class WorkArea: Identifiable {
     /// 添加代理时先打开本机草稿；已有草稿时沿用其中的选择。
     /// 每次新开一个草稿对象：关掉的草稿淡出时仍显示原来的模型与输入，不闪成「模型」和空输入框。
     func openDraft() {
+        layout.activate(Pane(ensureDraft().id))
+    }
+
+    /// 草稿 pane 还没开时开一个，不放上台面；返回草稿。
+    private func ensureDraft() -> WorkThread {
         if draftPane == nil {
             draftThread = makeDraftThread(id: Self.newPaneID())
             draftPane = draftThread.id
             rebuild()
         }
-        if let draftPane { layout.activate(Pane(draftPane)) }
+        return draftThread
+    }
+
+    /// 指认放进的对话（docs/实例操作.md「指认」）：本机上人最近打字或发消息的那个；还没有时取台面上的对话（焦点所在的优先），
+    /// 再取最近有动静的代理，都没有就开一个新代理的草稿（不放上台面，关掉指认时由 bringUp 放）。
+    func pointingThread() -> WorkThread {
+        let open = threads + (draftPane != nil ? [draftThread] : [])
+        if let used = open.filter({ $0.usedAt != nil }).max(by: { $0.usedAt! < $1.usedAt! }) { return used }
+        let staged = open.filter { isOnStage($0.id) }
+        if let shown = staged.first(where: { $0.id == layout.focused?.id }) ?? staged.first { return shown }
+        let recent = instances.filter { instance in threads.contains { $0.id == instance.id } }.max { recentActivity($0) < recentActivity($1) }
+        return recent.flatMap { instance in threads.first { $0.id == instance.id } } ?? ensureDraft()
+    }
+
+    /// 对话不在台面上就放上来；紧凑布局里就是切过去。
+    func bringUp(_ thread: WorkThread) {
+        if !isOnStage(thread.id) { layout.activate(Pane(thread.id)) }
     }
 
     /// 打开布局时要一个这个角色的草稿：没有草稿就新开一个，有就换上这个角色；不放上台面，整组一起摆。返回草稿 pane 的 ID。

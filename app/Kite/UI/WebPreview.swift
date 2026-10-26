@@ -181,6 +181,25 @@ struct WebPreview: View {
     }
     #endif
 
+    /// 指认：页面上这一点（视图里的点）是哪个元素，用和工作机共用的指认脚本（shared/preview-point.js，随 App 带着）。
+    /// 在页面自己的环境里跑：框架开发模式挂在元素上的信息只有页面的脚本看得见；只是 App 去问、页面回答，页面仍然碰不到 App。
+    func element(at point: CGPoint) async -> PointedElement? {
+        guard let page, let script = Self.pointScript else { return nil }
+        // 交回 JSON 字符串，直接解码，不经字典再转一遍
+        let json = try? await page.callJavaScript("return JSON.stringify((\(script))(x, y));", arguments: ["x": point.x, "y": point.y], contentWorld: .page)
+        return PointedElement.decode(json as? String)
+    }
+
+    /// 视图此刻的样子，size 是视图的大小（点）。
+    func snapshot(size: CGSize) async -> CGImage? {
+        guard let page, size.width > 0, size.height > 0,
+              let data = try? await page.exported(as: .image(region: .rect(CGRect(origin: .zero, size: size)))) else { return nil }
+        return await PreviewSession.decode(data)
+    }
+
+    private static let pointScript: String? = Bundle.main.url(forResource: "preview-point", withExtension: "js")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+
     private func follow(_ events: some AsyncSequence<WebPage.NavigationEvent, any Error>) {
         navigation?.cancel()
         let report = report

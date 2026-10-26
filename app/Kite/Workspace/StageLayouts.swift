@@ -306,7 +306,7 @@ extension WorkArea {
     }
 
     /// 代理最近活动的时间，没有摘要时按创建时间。
-    private func recentActivity(_ instance: RemotePluginInstance) -> Double {
+    func recentActivity(_ instance: RemotePluginInstance) -> Double {
         activities[instance.id]?.changedAt ?? Double(instance.createdAt)
     }
 }

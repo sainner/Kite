@@ -2,6 +2,7 @@
  * 预览的画面：工作机上的浏览器页面或模拟器屏幕。人和 agent 走同一个循环：截一帧、做一个动作、等画面稳定、再截一帧。
  * 坐标一律是画面的逻辑尺寸：网页是 CSS 像素，模拟器是点；给设备看的帧按设备像素截，给模型的按逻辑尺寸截，坐标都照逻辑尺寸。
  */
+import { readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 
@@ -44,6 +45,13 @@ export interface Frame {
 /** 网页的地址与标题；模拟器没有。 */
 export interface ScreenInfo { url?: string; pageTitle?: string }
 
+/** 指认脚本（shared/preview-point.js）的结果，原样转给设备，字段见脚本开头。 */
+export type PointedElement = Record<string, unknown>;
+
+let pointSource: string | undefined;
+/** 指认脚本：一个函数表达式，调用方传 x、y。kited 与 App 共用一份，随运行文件带着 shared/，第一次用时读。 */
+export const pointScript = () => pointSource ??= readFileSync(new URL('../../../shared/preview-point.js', import.meta.url), 'utf8');
+
 export interface Screen {
   /** forModel 时按逻辑尺寸截、质量高一点，给模型看；否则按设备像素截，给设备显示。 */
   capture(forModel?: boolean): Promise<Frame>;
@@ -52,6 +60,8 @@ export interface Screen {
   settle?(options: { forModel?: boolean }): Promise<{ frame: Frame; settled: boolean }>;
   /** 界面结构的文字：网页是无障碍树，模拟器是控件、文字与位置。 */
   inspect(): Promise<string>;
+  /** 指认：画面上这一点是哪个元素，坐标同动作；没有元素时为 null。只有网页有。 */
+  point?(x: number, y: number): Promise<PointedElement | null>;
   info(): Promise<ScreenInfo>;
   /** 网页的视口跟着最近操作的那台设备的窗口；模拟器屏幕尺寸固定，没有。 */
   resize?(width: number, height: number): Promise<void>;

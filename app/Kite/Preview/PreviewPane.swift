@@ -3,7 +3,7 @@ import SwiftUI
 /// 预览窗口（docs/成果查看与位置.md「预览」）：一个实例是一种目标跑起来的全部进程加画面。视图三个：画面、并排（只有网页画面有）与输出（进程的终端画面）。
 /// 画面的种类由进程产生什么决定（PreviewStatus.screen）：网页默认在设备自己的网页视图里看（DeviceWebPreview），也可以换到工作机上的浏览器；
 /// 工作机上的浏览器、模拟器和 App 窗口都是传过来的画面（ScreenPreview），人和 agent 操作同一个页面、同一块屏幕；还没有画面时画面视图就是输出。
-/// 在哪看各设备共用，改的是实例状态（AppModel.selectPreview）。
+/// 在哪看各设备共用，改的是实例状态（AppModel.selectPreview）。网页画面的画面视图可以打开指认（PreviewPointing.swift）。
 struct PreviewPane: View {
     let instance: RemotePluginInstance
     let client: KitedClient
@@ -97,22 +97,34 @@ private struct DeviceWebPreview: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @Environment(\.narrowPane) private var narrow
-    @State private var browser = WebBrowser()
+    @State private var browser: WebBrowser
+    /// 指认在设备上的页面里问元素、截当时的视图。
+    @State private var pointer: PreviewPointer
     @State private var webFailure: String?
     @State private var selectError: String?
     @State private var reload = UUID()
     /// 清除输入：每点一次，地址栏的路径回到打字前的样子。
     @State private var pathReset = 0
 
+    init(instance: RemotePluginInstance, client: KitedClient, status: PreviewStatus) {
+        self.instance = instance
+        self.client = client
+        self.status = status
+        let browser = WebBrowser()
+        _browser = State(initialValue: browser)
+        _pointer = State(initialValue: PreviewPointer(locate: { await browser.element(at: $0) }, snapshot: { await browser.snapshot(size: $0) }))
+    }
+
     private var port: Int? { area.livePort(status.port) }
     private var notice: PaneNotice? {
         if let error = selectError ?? (port == nil ? nil : webFailure) { return .failure(error) }
+        if let pointing = pointer.notice { return pointing }
         guard port == nil, let selected = status.port else { return nil }
         return .info("localhost:\(selected) 现在没有在监听，服务起来后接着显示", symbol: "pause.circle")
     }
     private var headerActions: PaneHeaderActions {
-        let actions = area.previewActions(instance, model: model) { selectError = $0 }
-        return actions.isEmpty ? PaneHeaderActions() : PaneHeaderActions(groups: [actions])
+        let pointing = port == nil ? [] : [pointer.headerAction(area: area, client: client, preview: instance.title)]
+        return PaneHeaderActions(groups: [pointing, area.previewActions(instance, model: model) { selectError = $0 }].filter { !$0.isEmpty })
     }
 
     var body: some View {
@@ -121,6 +133,7 @@ private struct DeviceWebPreview: View {
                 PortPreview(client: client, port: port, store: store, link: area.webLink(for: instance.id, port: port), browser: browser,
                             report: { webFailure = $0 })
                     .id("\(port) \(reload)")
+                    .overlay { if pointer.active { PointingLayer(pointer: pointer) } }
             } else {
                 // 正文不能是空的：PaneWindow 的标题栏和控制区挂在正文上，正文为空时一起不见（没选端口时整张卡片空白）
                 Color.clear
@@ -202,6 +215,8 @@ private struct ScreenPreview: View {
     @Environment(AppModel.self) private var model
     @Environment(WorkArea.self) private var area
     @State private var session: PreviewSession
+    /// 指认经画面接入问工作机元素在哪，截图用打开时停住的那一帧。
+    @State private var pointer: PreviewPointer
     @State private var actionError: String?
     /// 下一次点按发成长按（模拟器）或右键（App 窗口）。
     @State private var longPress = false
@@ -216,11 +231,14 @@ private struct ScreenPreview: View {
         self.connection = connection
         self.status = status
         // 看的设备就是工作机时链路不成问题，默认实时；其他设备默认逐帧，想看动画再切
-        _session = State(initialValue: PreviewSession(instanceID: instance.id, live: client.isLocal))
+        let session = PreviewSession(instanceID: instance.id, live: client.isLocal)
+        _session = State(initialValue: session)
+        _pointer = State(initialValue: PreviewPointer(locate: { await session.element(at: $0) }, snapshot: { _ in session.frame }, hold: { session.hold($0) }))
     }
 
     private var notice: PaneNotice? {
         if let actionError { return .failure(actionError) }
+        if let pointing = pointer.notice { return pointing }
         if case .failed(let message) = session.link { return .failure(message) }
         if let error = session.error { return .failure(error) }
         if session.dropped { return .info("画面还在变，刚才的操作没有发出", symbol: "hand.raised") }
@@ -247,7 +265,8 @@ private struct ScreenPreview: View {
 
     /// 实时画面开关与进程的停止、重新运行放在标题栏右边。
     private var headerActions: PaneHeaderActions {
-        PaneHeaderActions(groups: [[
+        let pointing = status.screen == .web ? [pointer.headerAction(area: area, client: client, preview: instance.title)] : []
+        return PaneHeaderActions(groups: [pointing, [
             PaneHeaderAction(title: "刷新画面", systemImage: "camera.viewfinder", disabled: session.live) { session.refresh() },
             PaneHeaderAction(title: "实时画面", systemImage: "play.rectangle", help: session.live ? "切回逐帧：做完一个动作等画面稳定再来一帧" : "画面变了就传过来，链路慢时会卡",
                              on: session.live) { session.setLive(!session.live) },
@@ -256,7 +275,8 @@ private struct ScreenPreview: View {
 
     var body: some View {
         PaneWindow(header: PaneHeader(title: instance.title, subtitle: area.previewSubtitle(instance, status: status)), notice: notice, actions: headerActions) {
-            ScreenView(session: session, screen: status.screen, longPress: $longPress)
+            ScreenView(session: session, screen: status.screen, longPress: $longPress, acceptsInput: !pointer.active)
+                .overlay { if pointer.active { PointingLayer(pointer: pointer, pictureSize: session.frameSize) } }
                 .padding(.horizontal, Metrics.padding)
                 .padding(.bottom, Metrics.padding)
         } controls: { typing in
@@ -536,11 +556,13 @@ private struct ScreenView: View {
     let session: PreviewSession
     let screen: PreviewScreen
     @Binding var longPress: Bool
+    /// 为假时按键不发给工作机：指认开着时（点按由盖在上面的 PointingLayer 接走）。
+    var acceptsInput = true
     @FocusState private var focused: Bool
 
     var body: some View {
         GeometryReader { geometry in
-            let fitted = Self.fit(session.frameSize, in: geometry.size)
+            let fitted = ScreenGeometry.fit(session.frameSize, in: geometry.size)
             ZStack(alignment: .topLeading) {
                 if let frame = session.frame {
                     Image(decorative: frame, scale: 1)
@@ -575,8 +597,8 @@ private struct ScreenView: View {
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onEnded { value in
                 focused = true
-                guard let start = Self.point(value.startLocation, in: fitted, frame: session.frameSize),
-                      let end = Self.point(value.location, in: fitted, frame: session.frameSize) else { return }
+                guard let start = ScreenGeometry.point(value.startLocation, in: fitted, frame: session.frameSize),
+                      let end = ScreenGeometry.point(value.location, in: fitted, frame: session.frameSize) else { return }
                 let moved = hypot(value.translation.width, value.translation.height)
                 if moved < 6 {
                     if longPress {
@@ -596,26 +618,12 @@ private struct ScreenView: View {
             .focusEffectDisabled()
             .focused($focused)
             .onKeyPress(phases: .down) { press in
-                guard let action = Self.action(for: press) else { return .ignored }
+                guard acceptsInput, let action = Self.action(for: press) else { return .ignored }
                 session.send(action)
                 return .handled
             }
             .onChange(of: geometry.size, initial: true) { _, size in session.laidOut(size) }
         }
-    }
-
-    /// 画面按比例放进窗口、居中。
-    private static func fit(_ frame: CGSize, in area: CGSize) -> CGRect {
-        guard frame.width > 0, frame.height > 0, area.width > 0, area.height > 0 else { return CGRect(origin: .zero, size: area) }
-        let scale = min(area.width / frame.width, area.height / frame.height)
-        let size = CGSize(width: frame.width * scale, height: frame.height * scale)
-        return CGRect(x: (area.width - size.width) / 2, y: (area.height - size.height) / 2, width: size.width, height: size.height)
-    }
-
-    /// 窗口里的一点换成画面坐标；落在画面外的不算。
-    private static func point(_ location: CGPoint, in fitted: CGRect, frame: CGSize) -> (x: Double, y: Double)? {
-        guard frame.width > 0, fitted.contains(location) else { return nil }
-        return (Double((location.x - fitted.minX) / fitted.width * frame.width).rounded(), Double((location.y - fitted.minY) / fitted.height * frame.height).rounded())
     }
 
     /// 一次按键换成动作：功能键与带 ⌘、⌃、⌥ 的组合按键名发，其余字符照打。
@@ -636,3 +644,19 @@ private struct ScreenView: View {
     }
 }
 
+/// 传过来的画面在窗口里的摆法：按比例放进、居中，窗口里的一点换成画面坐标。ScreenView 与指认的 PointingLayer 共用。
+enum ScreenGeometry {
+    /// 画面按比例放进窗口、居中。
+    static func fit(_ frame: CGSize, in area: CGSize) -> CGRect {
+        guard frame.width > 0, frame.height > 0, area.width > 0, area.height > 0 else { return CGRect(origin: .zero, size: area) }
+        let scale = min(area.width / frame.width, area.height / frame.height)
+        let size = CGSize(width: frame.width * scale, height: frame.height * scale)
+        return CGRect(x: (area.width - size.width) / 2, y: (area.height - size.height) / 2, width: size.width, height: size.height)
+    }
+
+    /// 窗口里的一点换成画面坐标；落在画面外的不算。
+    static func point(_ location: CGPoint, in fitted: CGRect, frame: CGSize) -> (x: Double, y: Double)? {
+        guard frame.width > 0, fitted.contains(location) else { return nil }
+        return (Double((location.x - fitted.minX) / fitted.width * frame.width).rounded(), Double((location.y - fitted.minY) / fitted.height * frame.height).rounded())
+    }
+}
