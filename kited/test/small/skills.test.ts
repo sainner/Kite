@@ -28,7 +28,7 @@ test('skill 清单：里层同名盖外层、项目盖系统、同级 .agents �
   mkdirSync(join(root, '.git'));
   const pkg = join(root, 'pkg');
 
-  // 系统层：SYSTEM_SKILLS 里现在只有 kite-onboard，用自己建的目录代替仓库里真实的那份
+  // 系统层：只建 SYSTEM_SKILLS 里的 kite-onboard，用自己建的目录代替仓库里真实的那份，其余的文件夹不存在时略过
   skill(join(system, 'kite-onboard'), '---\nname: kite-onboard\ndescription: 测试用的系统 skill\n---\n# 正文\n');
 
   // 根一级：.claude 里 alpha、shared、一个没有 SKILL.md 的文件夹；.agents 里 beta，shared 是指向 .claude 同名文件夹的相对软链接，再加一条断掉的链接

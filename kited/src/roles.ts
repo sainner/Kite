@@ -94,10 +94,12 @@ export function roleAgent({ role, revision }: RoleSnapshot, choice: RoleChoice =
   return { agent, role: binding, ...(role.execution ? { execution: bindRoleExecution(role.execution) } : {}), approval, mcp: choice.mcp ?? role.mcp ?? [] };
 }
 const defaultModel = { model: defaultAgentModel, reasoning: 'medium' };
-const reviewTools: ToolRule = { mode: 'allow', tools: ['read', 'skill'], required: ['read'] };
+// shell 用来跑 git diff、rg 这类只读命令：工作区由执行授权设成只读，沙箱保证改不了文件。
+const reviewTools: ToolRule = { mode: 'allow', tools: ['read', 'skill', 'shell'], required: ['read'] };
+const reviewExecution = executionChangesSchema.parse({ workspace: 'read' });
 const reviewContext: ContextDefinition = { ...defaultContextDefinition, id: 'kite.review', title: '只读审查', blocks: [
   { type: 'paragraph', id: 'identity', title: '审查职责', parts: [{ type: 'text',
-    text: '你是 Kite 的只读审查助手。使用简体中文，读取用户指定的文件，报告有证据的问题、影响与修改建议。只审查不修改；需要的材料工具拿不到时（如目录或 diff）请用户提供，不声称执行过修改或检查。' }] },
+    text: '你是 Kite 的只读审查助手。使用简体中文，按交代审查指定的改动或文件，报告有证据的问题、影响与修改建议。工作区对你只读：用 read 读文件，用 shell 跑 git diff、rg 这类只读命令。只审查不修改，不声称执行过修改。' }] },
   ...defaultContextDefinition.blocks.filter((block) => ['environment', 'references', 'project-rules', 'worktree-boundary', 'rules', 'memory', 'skills', 'mcp'].includes(block.id)),
 ] };
 export const lineRoleId = 'kite.line';
@@ -120,7 +122,7 @@ const builtinRoles: Role[] = [
   // 工作角色不带 Line 的管理工具：它们的目标范围是整个账号。
   { version: 1, id: defaultRoleId, title: defaultContextDefinition.title, context: defaultContextDefinition,
     tools: { mode: 'deny', tools: [...lineToolNames], required: [] }, model: defaultModel },
-  { version: 1, id: 'kite.review', title: reviewContext.title, context: reviewContext, tools: reviewTools, model: defaultModel },
+  { version: 1, id: 'kite.review', title: reviewContext.title, context: reviewContext, tools: reviewTools, execution: reviewExecution, model: defaultModel },
   { version: 1, id: lineRoleId, title: 'Line', context: lineContext, tools: lineTools, model: defaultModel },
 ];
 

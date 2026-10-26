@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     cpSync(join(root, 'kited/src'), join(kited, 'src'), { recursive: true });
     cpSync(join(root, 'shared'), join(runtime, 'shared'), { recursive: true });
     // 随 kited 带的 skill 整个文件夹复制到同一相对位置：代理读 SKILL.md，项目模板也从这里 import（kited/src/workspace/projects.ts）。
-    for (const skill of SYSTEM_SKILLS) cpSync(join(root, '.claude/skills', skill), join(runtime, '.claude/skills', skill), { recursive: true, dereference: true });
+    for (const skill of SYSTEM_SKILLS) cpSync(join(root, 'kited/skills', skill), join(kited, 'skills', skill), { recursive: true, dereference: true });
     for (const file of ['package.json', 'bun.lock']) copyFileSync(join(root, 'kited', file), join(kited, file));
     copyFileSync(join(import.meta.dir, 'install-macos.ts'), join(kited, 'scripts/install-macos.ts'));
     writeFileSync(join(kited, 'bunfig.toml'), '[run]\nshell = "system"\n');

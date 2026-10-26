@@ -70,7 +70,7 @@ bun run harness --resume <会话id>
 
 Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新验证上下文交接与压缩后的恢复，条件和证据见 [上下文翻译实验](research/2026-10-08-跨后端上下文翻译.md) 和 [Claude 会话重组实验](research/2026-10-09-Claude会话重组.md)。
 
-代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials、向用户提问的 question 及 agent 操作），「只读审查」只用 read 且 read 为必需；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
+代理配置由创建时的角色加草稿里的调整得来，绑定到实例，重启沿用已保存内容。内置角色「工作」可用全部工具（read、patch、shell、credentials、向用户提问的 question 及 agent 操作），「只读审查」只用 read、skill 与 shell、read 为必需，执行授权把工作区设成只读；工具的逐层约束见 [Agent 与插件契约](Agent与插件契约.md#32-角色与代理配置)，工具选择不能扩大授权。默认型号见 [共享模型目录](../shared/agent-models.json)，配置生效见 [线程通知投递](线程通知投递.md)，执行与恢复要求见 [harness 执行约定](harness-主循环.md) 和 [会话状态机](会话状态机.md)。
 
 ## 运行
 

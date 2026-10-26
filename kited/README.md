@@ -63,6 +63,7 @@ bun run harness --resume <会话id>
 | `src/operations/` | 实例操作契约、授权入口与操作收据 |
 | `src/agents/` | Agent 定义、工具的逐层约束、后端能力与共享模型清单入口 |
 | `src/roles.ts` | 角色目录，以及由角色生成代理初始配置 |
+| `skills/` | 随 kited 带的系统层 skill；kite-onboard 是指向仓库 `.claude/skills` 的软链接 |
 | `src/library-sync.ts` | 资源库与项目约束从账号级数据到本机缓存的同步 |
 | `src/context-templates.ts` | 后台场景的上下文模板目录 |
 | `src/template-emblems.ts` | 角色的点阵签名 |

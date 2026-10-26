@@ -9,13 +9,17 @@ import { basename, join, parse, relative, resolve, sep } from 'node:path';
 import { within } from '../../paths.ts';
 import type { ContextBinding } from './types.ts';
 
-/** 随 kited 带的 skill，都在仓库的 .claude/skills 下；打包复制到运行目录的同一位置，见 kited/scripts/package-macos.ts。 */
-export const SYSTEM_SKILLS = ['kite-onboard'] as const;
 /**
- * 开发时是仓库的 .claude/skills，安装后是运行目录里的同名位置；kited 升级在原路径换内容，路径不变。
+ * 随 kited 带的 skill，都在 kited/skills 下；打包复制到运行目录的同一位置，见 kited/scripts/package-macos.ts。不放仓库的 .claude/skills：
+ * 那里是在 Kite 仓库里用 Claude Code 时的项目层，与它自带的 simplify、code-review 同名。kite-onboard 也是这个仓库自己的项目规范，
+ * 文件留在 .claude/skills，这里是指过去的软链接。
+ */
+export const SYSTEM_SKILLS = ['kite-onboard', 'simplify', 'code-review'] as const;
+/**
+ * 开发时是仓库的 kited/skills，安装后是运行目录里的同名位置；kited 升级在原路径换内容，路径不变。
  * 取真实路径：给模型的路径和沙箱放行的路径都与文件工具规范化后的目标一致，macOS 上大小写不同的启动目录才对得上。
  */
-const bundledSkills = resolve(import.meta.dir, '../../../../.claude/skills');
+const bundledSkills = resolve(import.meta.dir, '../../../skills');
 export const systemSkillsDirectory = existsSync(bundledSkills) ? realpathSync(bundledSkills) : bundledSkills;
 
 export type SkillLayer = 'system' | 'user' | 'machine' | 'project';

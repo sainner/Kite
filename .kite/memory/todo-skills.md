@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: todo
   originSessionId: f9f38a52-a1b4-4312-ab56-ab90759a9e3e
-  modified: 2026-10-23T06:04:40.474Z
+  modified: 2026-10-26T09:25:41.940Z
 ---
 
 **状态：** skill 功能已实现，尚待真机验收，包括 Mac 窄窗口候选加载、上下键选择与 Tab 补全、二进制文件导入和同步。
@@ -21,6 +21,7 @@ metadata:
 - 输入框打 `/k`，候选行是否出现、点选后输入框变成 `/kite-onboard `；发出后气泡里命令名是否等宽显示，模型是否按正文做。Mac 首次直接进入窄窗口也要能加载候选；Mac 宽窄窗口与 iPad 外接键盘试上下键选择、Tab 补全，并确认中文组字不被抢键。
 - 资源库 Skill 页：新建、改名、加文件、改 SKILL.md、保存、恢复默认、删除，各在另一台工作机同步后是否生效。导入图片或 PDF，保存、同步后导出核对原文件，再试替换和删除。iPhone 上的页面、文件选择器与候选行也看一眼。
 - 压缩后重附：手动压缩一段用过 skill 的对话，看替代内容里是否有 `skills.loaded` 的通知。
+- 系统层的 simplify 与 code-review（10-26 从 Claude Code 2.1.310 移植）：`/simplify` 看是否同一条回复里开 4 个只读审查子代理、收齐 4 份回报才改；`/code-review` 看是否只开一个子代理、清单没被回报的 3000 字截掉、`--fix` 按清单改。两个后端各试一次。simplify 的并行是用户定的（10-26：「并行还是有必要的」），不要改成单遍；code-review 的 max 不照 Claude Code 扇出，因为子代理是常驻实例、回报唤醒每天限 40 次。
 
 外部 MCP 不走四层来源，只来自机器层，见 [[todo-context-capabilities]]。
 

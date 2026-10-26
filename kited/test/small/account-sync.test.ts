@@ -433,7 +433,7 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
   await cached(a, 'skill', () => !existsSync(skillDir(a, demo.name)));
   await until(() => !existsSync(skillDir(b, demo.name)), 'B 删除后本机文件夹删掉', 900);
   for (const k of [a, b]) {
-    expect((await skillsOn(k)).map((entry) => entry.name)).toEqual([onboardName]);
+    expect((await skillsOn(k)).map((entry) => entry.name)).toEqual([...SYSTEM_SKILLS].sort());
     expect(existsSync(join(k.home, 'skills')) ? readdirSync(join(k.home, 'skills')) : []).toEqual([]);
     expect(k.daemon.kite.accountData.get('skill', demo.name)).toBeUndefined();
   }
@@ -441,7 +441,7 @@ test('A 新建和更新的多文件 skill 同步到 B 后二进制附件字节�
   // 7. 随 kited 带的只能恢复默认，不能删
   const forbidden = await a.call('DELETE', `/skills/${onboardName}?expectedRevision=${onboard.defaultRevision}`);
   expect(forbidden.status).toBe(400);
-  expect((await skillsOn(a)).map((entry) => entry.name)).toEqual([onboardName]);
+  expect((await skillsOn(a)).map((entry) => entry.name)).toEqual([...SYSTEM_SKILLS].sort());
 }, 1000);
 
 // 真实 bug：首次同步时本机还没有此项目，之后登记已有项目不会再收到约束变更，因而留下无限制缓存。

@@ -15,8 +15,8 @@ import { clonePeer, type PeerRoute } from './peer-git.ts';
 import type { RegisteredProject } from '../account-data/registry.ts';
 import type { Project } from '../model.ts';
 // 模板只有一份，在项目规范（kite-onboard skill）里。文本 import：模板一改，依赖图就会选中导入相关的测试
-import GITIGNORE_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitignore' with { type: 'text' };
-import GITATTRIBUTES_TEMPLATE from '../../../.claude/skills/kite-onboard/templates/gitattributes' with { type: 'text' };
+import GITIGNORE_TEMPLATE from '../../skills/kite-onboard/templates/gitignore' with { type: 'text' };
+import GITATTRIBUTES_TEMPLATE from '../../skills/kite-onboard/templates/gitattributes' with { type: 'text' };
 
 export const projectOf = (r: RegisteredProject): Project => ({ id: r.id, name: r.name, remote: r.remote, createdAt: r.createdAt });
 
