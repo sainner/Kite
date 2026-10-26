@@ -14,6 +14,8 @@ struct EffortPicker: View {
     var enabled = true
     var commit: () -> Void = {}
     var cancel: () -> Void = {}
+    /// 档位名左右的留白。
+    static let labelInset: CGFloat = 8
     /// 按下时展开的，松手后留着还是收起见 onEnded。
     @State private var open = false
     /// Mac 上鼠标在上面。
@@ -63,7 +65,7 @@ struct EffortPicker: View {
             .font(Theme.secondary)
             .foregroundStyle(showsTicks ? .primary : .secondary)
             .animation(.snappy, value: effort)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, Self.labelInset)
             .frame(height: Metrics.paneButton)
         }
         .contentShape(Rectangle())

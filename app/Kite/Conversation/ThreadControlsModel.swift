@@ -483,7 +483,8 @@ struct ThreadEffortControl: View {
     let controls: ThreadControlsModel
 
     var body: some View {
-        HStack(spacing: 0) {
+        // 闪电按钮右半边本就空着，档位名左边的留白叠进去，两个挨着读成一组；闪电盖在上面，点到那段留白算它的
+        HStack(spacing: -EffortPicker.labelInset) {
             if controls.fastAvailable {
                 Button(action: controls.toggleFast) { Image(systemName: controls.fast ? "bolt.fill" : "bolt") }
                     .buttonStyle(PaneButtonStyle())
@@ -491,6 +492,7 @@ struct ThreadEffortControl: View {
                     .help("快速模式：出字更快，订阅额度消耗更多")
                     .accessibilityLabel("快速模式")
                     .accessibilityValue(controls.fast ? "开" : "关")
+                    .zIndex(1)
             }
             effort
         }
@@ -509,7 +511,7 @@ struct ThreadEffortControl: View {
                     Button(value.name) { controls.chooseEffort(value) }
                 }
             } label: {
-                Text(controls.effortTitle).font(Theme.secondary).foregroundStyle(.secondary).padding(.horizontal, 8)
+                Text(controls.effortTitle).font(Theme.secondary).foregroundStyle(.secondary).padding(.horizontal, EffortPicker.labelInset)
             }
                 .disabled(!controls.canChangeEffort)
         }
