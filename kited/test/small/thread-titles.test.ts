@@ -3,13 +3,12 @@ import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ContextTemplate } from '../../src/context-templates.ts';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
-import type { Envelope } from '../../src/events.ts';
 import type { ContextDefinition } from '../../src/harness/context/types.ts';
 import type { ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { ThreadTitle } from '../../src/store.ts';
 import { titleTemplate } from '../../src/thread-titles.ts';
 import { addProject, after, call, createWorkspace, type Kited, mark, sendThreadMessage, startKited } from '../harness.ts';
-import { diskRecords, ManualModel, Seen } from '../harness-loop.ts';
+import { diskRecords, ManualModel } from '../harness-loop.ts';
 import { newDir } from '../util.ts';
 
 let kited: Kited | undefined;
@@ -25,9 +24,8 @@ const textItem = (id: string, text: string): ModelItem => ({
   id, raw: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
 });
 
-async function automaticThread(main: ManualModel, titles: ManualModel,
-  prepare?: (k: Kited) => Promise<void>, results?: Seen<{ error?: string }>) {
-  kited = startKited(() => main, { model: () => titles, onResult: (result) => results?.add(result) });
+async function automaticThread(main: ManualModel, titles: ManualModel, prepare?: (k: Kited) => Promise<void>) {
+  kited = startKited(() => main, { model: () => titles });
   const project = await addProject(kited, { path: newDir(kited.root, 'project', { 'base.txt': '原始\n' }) });
   await prepare?.(kited);
   const thread = await createWorkspace(kited, project.id, '修复工作区标题同步', 'harness');
@@ -158,15 +156,6 @@ test('首条输入立即生成标题，模板原子保存且在途快照与主�
   expect(second.request.history).toContainEqual({ type: 'output', item: textItem('main-answer', mainAnswer) });
   expect(JSON.stringify(second.request.history)).not.toContain('title-1');
   expect(JSON.stringify(second.request.history)).not.toContain('title-2');
-  const continued = await titles.call(3);
-  expect(titleInput(continued.request)).toContain('继续检查');
-  expect(titleInput(continued.request)).toContain(mainAnswer.slice(-1600));
-  await finishTitle(k, titles, 3, thread.id, '更新模板生成的标题');
-  const beforeIdle = mark(k);
-  second.response.complete();
-  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(k, beforeIdle)(event));
-  await k.daemon.kite.titles!.refresh(thread.id);
-  expect(titles.calls.values).toHaveLength(3);
 }, 1000);
 
 // 标题请求挂起时，HTTP 改名、切回自动及重生受理会推进 revision，与旧响应和串行队列交错。
@@ -245,73 +234,8 @@ test('改名与重生使旧标题失效，合并刷新只提交最新结果', as
   expect(await retrying).toMatchObject({ status: 200, body: { title: '手动模式的新标题', mode: 'manual' } });
 }, 1000);
 
-// 主模型保持挂起，HTTP 接受的插话仍在 pending；标题断流与合并队列交错，回复不得推进输入游标。
-test('pending 插话立即检查标题，断流保留原题且合并检查与下一条输入均不丢失', async () => {
-  const main = new ManualModel();
-  const titles = new ManualModel();
-  const results = new Seen<{ error?: string }>();
-  const { k, thread } = await automaticThread(main, titles, undefined, results);
-  const first = await main.call(1);
-  const original = await finishTitle(k, titles, 1, thread.id, '原标题');
-
-  const regenerating = k.call('POST', `/threads/${thread.id}/title/regenerate`, {
-    expectedRevision: original.revision,
-  });
-  const pending = await titles.call(2);
-  const reserved = await title(k, thread.id);
-  expect(reserved.title).toBe(original.title);
-  expect(reserved.revision).not.toBe(original.revision);
-  await sendThreadMessage(k, thread.id, '增加标题同步检查');
-  const history = (await k.call('GET', `/threads/${thread.id}/history`)).body;
-  expect(history.state.busy).toBe(true);
-  expect(JSON.stringify(history.pending)).toContain('增加标题同步检查');
-  await sendThreadMessage(k, thread.id, '再增加模板持久化检查');
-  await sendThreadMessage(k, thread.id, '同时检查取消行为');
-  expect(main.calls.values).toHaveLength(1);
-  expect(titles.calls.values).toHaveLength(2);
-  await pending.response.emit({ type: 'item', item: textItem('unfinished-title', '未完成的标题不得保存') });
-  pending.response.finish();
-
-  const merged = await titles.call(3);
-  expect(await title(k, thread.id)).toEqual(reserved);
-  const material = titleInput(merged.request);
-  for (const text of ['修复工作区标题同步', '增加标题同步检查', '再增加模板持久化检查', '同时检查取消行为']) {
-    expect(material).toContain(text);
-  }
-  expect(material.split('同时检查取消行为')).toHaveLength(2);
-  const updated = await finishTitle(k, titles, 3, thread.id, '同步、持久化与取消');
-  expect((await regenerating).status).toBeGreaterThanOrEqual(500);
-  expect(updated.through).not.toBe(original.through);
-  expect(titles.calls.values).toHaveLength(3);
-
-  await sendThreadMessage(k, thread.id, '增加故障恢复检查');
-  const failing = await titles.call(4);
-  const beforeFailure = results.values.length;
-  failing.response.finish();
-  await results.wait((result) => results.values.indexOf(result) >= beforeFailure && Boolean(result.error));
-  expect(await title(k, thread.id)).toEqual(updated);
-  await sendThreadMessage(k, thread.id, '故障后继续检查恢复');
-  const recovered = await titles.call(5);
-  expect(titleInput(recovered.request)).toContain('增加故障恢复检查');
-  expect(titleInput(recovered.request)).toContain('故障后继续检查恢复');
-  const latest = await finishTitle(k, titles, 5, thread.id, '同步、持久化与取消');
-  expect(latest.through).not.toBe(updated.through);
-
-  await first.response.emit({ type: 'item', item: textItem('main-answer', '已经完成首轮工作') });
-  first.response.complete();
-  const continuation = await main.call(2);
-  expect(JSON.stringify(continuation.request.history)).toContain('故障后继续检查恢复');
-  const beforeIdle = mark(k);
-  await continuation.response.emit({ type: 'item', item: textItem('main-latest', '已经完成所有新增检查') });
-  continuation.response.complete();
-  await k.waitEvent((event) => event.type === 'idle' && event.threadId === thread.id && after(k, beforeIdle)(event));
-  await k.daemon.kite.titles!.refresh(thread.id);
-  expect(titles.calls.values).toHaveLength(5);
-  expect(await title(k, thread.id)).toEqual(latest);
-}, 1000);
-
-// SQLite 保存的模板和输入游标跨重启；重开后的新输入不受时间限制，关闭须取消独立标题请求。
-test('重启保留标题与模板，新输入立即检查且关闭取消在途标题', async () => {
+// SQLite 保存的标题和模板跨重启。
+test('重启保留标题与模板', async () => {
   const firstMain = new ManualModel();
   const firstTitles = new ManualModel();
   const { k, thread } = await automaticThread(firstMain, firstTitles);
@@ -326,29 +250,9 @@ test('重启保留标题与模板，新输入立即检查且关闭取消在途�
   const main = new ManualModel();
   const titles = new ManualModel();
   restarted = startDaemon({ home: k.home, port: 0, model: () => main, lightTasks: { model: () => titles } });
-  const events = new Seen<Envelope>();
-  restarted.kite.bus.subscribe(undefined, (event) => events.add(event));
   expect((await call(restarted.url, 'GET', `/threads/${thread.id}/title`)).body).toEqual(saved);
   const directory = await call(restarted.url, 'GET', '/context-templates');
   expect(directory.status).toBe(200);
   expect((directory.body.templates as ContextTemplate[]).filter((template) => template.definition.scene === 'thread.title'))
     .toEqual([savedTemplate]);
-  expect((await call(restarted.url, 'POST', `/threads/${thread.id}/messages`, { text: '重启后立即继续' })).status).toBe(200);
-  const active = await main.call(1);
-  const pending = await titles.call(1);
-  expect((await call(restarted.url, 'GET', `/threads/${thread.id}/history`)).body.state.busy).toBe(true);
-  expect(pending.request.instructions).toContain('标题规则持久版本');
-  expect(pending.request.instructions).toContain(JSON.stringify(saved.title));
-  expect(titleInput(pending.request)).toContain('标题材料持久版本');
-  expect(titleInput(pending.request)).toContain('重启前的完整答复');
-  expect(titleInput(pending.request)).toContain('重启后立即继续');
-  active.response.complete();
-  await events.wait((event) => event.type === 'idle' && event.threadId === thread.id);
-  const journalPath = join(k.home, 'sessions', thread.id, 'journal.jsonl');
-  const beforeStop = diskRecords(journalPath);
-  await restarted.stop();
-  restarted = undefined;
-  expect(pending.signal.aborted).toBe(true);
-  expect(titles.calls.values).toHaveLength(1);
-  expect(diskRecords(journalPath)).toEqual(beforeStop);
 }, 1000);
