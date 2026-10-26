@@ -49,6 +49,7 @@
 - [网页搜索与读网页收尾](todo-web-tools.md) — 三家接口待真 Key 验、合并的 API Key 窗口待验收；换家顺序固定等取舍待确认
 - [节假日表](todo-holiday-calendar.md) — DeepSeek 峰谷计价的法定节假日表每年补次年安排，现只有 2026
 - [终端插件收尾](todo-terminal-plugin.md) — 已实现待手测；预置脚本已移到预览的目标；跨端口网页待验、旁观设备尺寸、跨 kited 重启、后台命令输入
+- [预览的指认](todo-preview-pointing.md) — 网页已实现待手测、iOS 坐标待真机核对，协议 25；模拟器与 App 窗口、React 19 行号待做
 - [预览插件收尾](todo-preview-plugin.md) — 目标模型与浏览并进文件、能开外网待手测；旧工具名要清；Xcode 批准待跑；DeviceHub 裁不出；插件授预览待定
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧；10-25 新停靠栏下的一轮与看不见的头像停住
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
