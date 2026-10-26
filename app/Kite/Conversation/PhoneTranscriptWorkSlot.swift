@@ -196,22 +196,21 @@ final class PhoneWorkHeader: PhonePlainControl {
     }
 }
 
-/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉。
+/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
 final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
-    private var label: PhoneTextLine?
+    private var container: PhoneThinkingRowView?
     private var text = ""
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
+    private var presence: PanePresence?
 
-    override var hasView: Bool { label != nil }
+    override var hasView: Bool { container != nil }
 
     override var view: UIView {
-        if let label { return label }
-        let label = PhoneTextLine()
-        label.isAccessibilityElement = true
-        label.accessibilityTraits = .staticText
-        self.label = label
+        if let container { return container }
+        let container = PhoneThinkingRowView()
+        self.container = container
         show()
-        return label
+        return container
     }
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
@@ -219,12 +218,12 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
         guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
         self.text = TranscriptSpeech.thinking(text)
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont
+        presence = context.environment.panePresence
         show()
     }
 
     private func show() {
-        label?.set(text, font: font, color: .secondaryLabel)
-        label?.accessibilityLabel = text
+        container?.show(text, font: font, presence: presence)
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -237,7 +236,37 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     func didPlace() {}
 
     func releaseView() {
-        label = nil
+        container = nil
+    }
+}
+
+/// 思考行的视图：扫掠（PhoneActivityView）只盖在字上，不盖后面的空白，同工具组的汇总行。扫掠时字所在的层是透明的，读屏读这一整行。
+final class PhoneThinkingRowView: UIView {
+    private let activity = PhoneActivityView()
+    private let label = PhoneTextLine()
+
+    init() {
+        super.init(frame: .zero)
+        isAccessibilityElement = true
+        accessibilityTraits = .staticText
+        addSubview(activity)
+        activity.content.addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func show(_ text: String, font: UIFont, presence: PanePresence?) {
+        label.set(text, font: font, color: .secondaryLabel)
+        accessibilityLabel = text
+        activity.contentChanged()
+        activity.show(.sweeping, presence: presence)
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        activity.frame = CGRect(x: 0, y: 0, width: min(label.naturalWidth, bounds.width), height: bounds.height)
+        label.frame = activity.bounds
     }
 }
 #endif

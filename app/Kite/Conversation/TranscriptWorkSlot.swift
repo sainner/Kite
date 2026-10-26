@@ -215,25 +215,59 @@ final class WorkRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉。思考条目只在生成期间显示，完整摘要仍保留在记录中。
+/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
+/// 思考条目只在生成期间显示，完整摘要仍保留在记录中。
 final class ThinkingRowSlot: TranscriptRowSlot {
-    private let label = LineLabel()
+    private let container = ThinkingRowView()
 
     override var hasView: Bool { true }
-    override var view: NSView { label }
+    override var view: NSView { container }
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
         guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
-        label.set(TranscriptSpeech.thinking(text),
-                  font: Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as NSFont, color: .secondaryLabelColor)
+        container.show(TranscriptSpeech.thinking(text), environment: context.environment)
     }
 
     override func height(width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        let height = label.lineHeight
+        let height = container.height
         measured = (width, height)
         return height
+    }
+}
+
+/// 思考行的视图：扫掠只盖在字上，不盖后面的空白，同工具组的汇总行。
+final class ThinkingRowView: NSView {
+    private let activity = ToolActivityView()
+    private let label = LineLabel()
+
+    override var isFlipped: Bool { true }
+
+    init() {
+        super.init(frame: .zero)
+        addSubview(activity)
+        activity.content.addSubview(label)
+        activity.mode = .sweeping
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func show(_ text: String, environment: EnvironmentValues) {
+        label.set(text, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, color: .secondaryLabelColor)
+        activity.presence = environment.panePresence
+        activity.contentChanged()
+        needsLayout = true
+    }
+
+    /// 一行字的高。
+    var height: CGFloat { label.lineHeight }
+
+    override func layout() {
+        super.layout()
+        let width = min(label.textWidth, bounds.width)
+        activity.frame = CGRect(x: 0, y: 0, width: width, height: bounds.height)
+        label.frame = CGRect(x: 0, y: 0, width: width, height: bounds.height)
     }
 }
 #endif
