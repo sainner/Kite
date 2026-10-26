@@ -164,7 +164,7 @@ final class WindowLayout {
     /// 工作机决定实例是否存在（工作区在 WorkArea 里按停靠栏的顺序给出全部窗口）。本机只保留这些 ID 的台面集合与排布，新窗口只收进停靠栏，
     /// 由本机的动作放上台面。展开的那张没了先按还原处理。
     /// complete 是工作机给的完整清单：这时存档里排着、却不在清单里的窗口（上次退出时的草稿和新建页、已经没了的实例）也从台面拿掉，
-    /// 不然占着一块空白、没有卡片（2026-10-26 实测）。还没连上工作机时不算完整（见 WorkArea.rebuild），只拿掉上次知道、这次没了的。
+    /// 不然占着一块空白、没有卡片（2026-10-26 实测）。还没连上工作机、或插件定义还没读到时不算完整（见 WorkArea.rebuild），只拿掉上次知道、这次没了的。
     func reconcile(_ available: [Pane], complete: Bool = true) {
         guard !isFixed else { return }
         motionKind = .settle

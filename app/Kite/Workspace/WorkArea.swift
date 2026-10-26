@@ -9,7 +9,10 @@ final class WorkArea: Identifiable {
     var threads: [WorkThread] = []
     var instances: [RemotePluginInstance] = []
     var files: [String: FileBrowser] = [:]
-    var definitions: [RemotePluginDefinition] = []
+    var definitions: [RemotePluginDefinition] = [] {
+        // 定义比实例清单晚到时，有视图的实例这时才排得进来（见 panes(of:)）
+        didSet { if pluginClient != nil { rebuild() } }
+    }
     /// 这个项目的布局（配方），随项目读、library.changed 时重读，见 AppModel.refreshLayouts。
     var layouts: [ProjectLayout] = []
     private(set) var pluginClient: KitedClient?
@@ -373,8 +376,10 @@ final class WorkArea: Identifiable {
         if stillClosing != closingInstances { closingInstances = stillClosing }
         instances = remote.instances.filter { !closingInstances.contains($0.id) }
             .map { archivingInstances.contains($0.id) ? $0.archived : $0 } + openingInstances
+        // 插件定义和实例清单并行读：认得出每个开着的实例有没有视图，清单才算完整，不然冷启动时定义还没到，台面会被清空
+        let classified = instances.allSatisfy { $0.status != .open || definition(of: $0) != nil }
         layout.reconcile(Self.panes(of: instances, definitions: definitions, draft: draftPane, chooser: chooserOpen ? chooserPane : nil),
-                         complete: pluginClient != nil)
+                         complete: pluginClient != nil && classified)
         if let pendingShow, layout.panes.contains(Pane(pendingShow)) {
             self.pendingShow = nil
             layout.activate(Pane(pendingShow))
