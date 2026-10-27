@@ -40,6 +40,7 @@ struct FilePane: View {
     /// 控制区的翻页那组开着：按读完时的样子，读着的时候不跟着变。原文先按页读一次、接着整篇读进编辑器，
     /// 跟着变的话翻页那组先分出来又并回去。
     @State private var paged = false
+    @Namespace private var barGlass
 
     private var header: PaneHeader {
         // 网页的主标题是 localhost:端口或网站；文件的是当前文件的名字，还没选时是工作区文件夹的名字
@@ -377,10 +378,17 @@ struct FilePane: View {
         let paging = !showsWeb && paged
         let findable = searchTarget != nil
         let finding = searching && findable
+        let pagerMerged = !(showsWeb || paging)
+        // 并着的那块和中间那块并成同一块玻璃：点中间那块里的菜单时，系统把这块玻璃整个拿去变形成菜单，
+        // 不在原地留下并着的那个圆（2026-10-27 iPhone）。分开的那一刻解除，照常从中间那块分出来
+        let union: (Bool) -> String? = { $0 ? "info" : nil }
         return GlassRow(spacing: Metrics.paneButtonGap) {
             if !finding {
-                pager(web: showsWeb).glassMerge(showsWeb || paging ? .open : .merged(.trailing))
-                info(web: showsWeb, typing: typing).glassRowFills()
+                pager(web: showsWeb, merge: pagerMerged ? .merged(.trailing) : .open)
+                    .glassEffectUnion(id: union(pagerMerged), namespace: barGlass)
+                info(web: showsWeb, typing: typing)
+                    .glassEffectUnion(id: union(pagerMerged || !findable), namespace: barGlass)
+                    .glassRowFills()
             }
             ExpandingSearch(presented: $searching, text: $query, submit: { step(1) }) {
                 EmptyView()
@@ -388,6 +396,7 @@ struct FilePane: View {
                 searchAccessory
             }
             .glassMerge(findable ? .open : .merged(.leading))
+            .glassEffectUnion(id: union(!findable), namespace: barGlass)
             .glassRowFills(finding)
         }
         .containerValue(\.placesKeyboardButton, showsWeb)
@@ -404,7 +413,9 @@ struct FilePane: View {
     }
 
     /// 控制区左边：文件翻页，网页后退、前进。两边是同样的两个按钮，换着看时这块玻璃不动；网页的在 iPhone 上键盘升起时换成收起键盘。
-    private func pager(web showsWeb: Bool) -> some View {
+    /// 并没并着直接标在按钮组上，不隔着 KeyboardSwap：隔着的话 iPhone 上控制区换窗口整块插进来时，按钮组读不到并着，
+    /// 按开着的大小画在中间那块的左端，要等下一次环境变化才缩回去（2026-10-27 真机；直接标在按钮组上的搜索关闭按钮一直正常）。
+    private func pager(web showsWeb: Bool, merge: GlassMerge) -> some View {
         KeyboardSwap(active: showsWeb) {
             PaneHeaderButtonGroup {
                 ActionButton(showsWeb ? "后退" : "上一页", icon: "chevron.left") {
@@ -416,8 +427,9 @@ struct FilePane: View {
                 }
                 .disabled(showsWeb ? !web.canGoForward : filePage?.nextOffset == nil)
             }
+            .glassMerge(merge)
         } shown: {
-            KeyboardDismissButton()
+            KeyboardDismissButton().glassMerge(merge)
         }
     }
 

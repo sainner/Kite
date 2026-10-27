@@ -90,12 +90,18 @@ nonisolated enum GlassMerge: Equatable {
     case open
     /// 并进这一边挨着的那块开着的：.trailing 是右边那块，叠在它的左端；这一边没有就并进另一边的。
     case merged(HorizontalEdge)
+
+    /// 并着的内容怎么淡：分出来时等离开邻居再显出来，并回去时先藏起来。跟着挪动一起淡的话，图标一路压在邻居的图标上
+    /// （2026-10-27 iPhone 录屏：侧栏开关伸成搜索框时，关闭按钮的叉压着放大镜）。
+    static func fade(merged: Bool) -> Animation {
+        merged ? .easeOut(duration: 0.1) : .easeIn(duration: 0.15).delay(0.15)
+    }
 }
 
 extension View {
     /// GlassRow 里的一块开着还是并着。并着时里面的按钮组缩成一个按钮大的圆、内容藏起来（见 PaneHeaderButtonGroup），点不到、读屏跳过。
     func glassMerge(_ merge: GlassMerge) -> some View {
-        modifier(GlassMergePiece(merge: merge, transition: false))
+        modifier(GlassMergePiece(merge: merge))
     }
 
     /// GlassRow 里占满剩下的宽的那块。
@@ -104,45 +110,26 @@ extension View {
     }
 }
 
-/// 插进 GlassRow 的一块从挨着的那块里分出来，同 glassMerge。移除中的视图已经不在排布里、只会按原位淡出，要并回去就留着它、改 glassMerge。
-struct GlassMergeTransition: Transition {
-    let edge: HorizontalEdge
-
-    func body(content: Content, phase: TransitionPhase) -> some View {
-        content.modifier(GlassMergePiece(merge: phase.isIdentity ? .open : .merged(edge), transition: true))
-    }
-}
-
 extension EnvironmentValues {
     /// 所在的这块在 GlassRow 里并着，见 glassMerge。
     @Entry var glassMerged = false
 }
 
-/// 过渡写另一个键：叠在 glassMerge 外面，过渡走完以后仍按 glassMerge 的。
 private struct GlassMergePiece: ViewModifier {
     let merge: GlassMerge
-    let transition: Bool
     @Environment(\.glassMerged) private var outer
 
-    @ViewBuilder func body(content: Content) -> some View {
+    func body(content: Content) -> some View {
         let merged = merge != .open
-        let piece = content
+        content
             .environment(\.glassMerged, outer || merged)
             .allowsHitTesting(!merged)
             .accessibilityHidden(merged)
-        if transition {
-            piece.layoutValue(key: GlassMergeTransitionKey.self, value: merge)
-        } else {
-            piece.layoutValue(key: GlassMergeKey.self, value: merge)
-        }
+            .layoutValue(key: GlassMergeKey.self, value: merge)
     }
 }
 
 nonisolated private struct GlassMergeKey: LayoutValueKey {
-    static let defaultValue = GlassMerge.open
-}
-
-nonisolated private struct GlassMergeTransitionKey: LayoutValueKey {
     static let defaultValue = GlassMerge.open
 }
 
@@ -152,7 +139,12 @@ nonisolated private struct GlassRowFills: LayoutValueKey {
 
 /// 一行几块玻璃，开着的从左往右排、隔 spacing，标了 glassRowFills 的那块占满剩下的宽。并着的一块缩成一个按钮大的圆（玻璃的端头也是这么大），
 /// 叠在挨着的那块开着的端头上、不占地方，玻璃容器里两块合成一块；开合时它从邻居的端头分出来、并回去。
+/// 用不着的一块也一直留在排布里：紧凑布局里控制区换窗口时的玻璃变形要它在，拿掉就只剩硬切（2026-10-27 iPhone 对照）。
+/// 旁边那块里有菜单时，iOS 点开菜单会把那块玻璃拿去变形，并着的圆要和它 glassEffectUnion 成一块才不留在原地（见 FilePane 的控制区）；
+/// 并着时改用 Glass.identity 不行，开合时一块玻璃消失、一块出现，玻璃容器把变形排成先后两段，侧栏开关要等切换器散完才伸开；
+/// 在外面加透明度也藏不住玻璃容器里的玻璃和内容（同日 iPhone）。
 /// 不靠插入、移除视图：插进来的玻璃没有来处，只会在原地模糊淡入；移除中的视图不在排布里，按原位淡出（2026-10-24 Mac 小程序逐帧量过）。
+/// 新出现的一块先并着画一轮、再改 glassMerge 分出来（见 PaneHeaderActions），不用过渡：iPhone 上过渡修饰里改的环境值传不到内容。
 /// 并着的那块旁边要有开着的。玻璃容器由用的地方给，间距同 spacing。
 struct GlassRow: Layout {
     let spacing: CGFloat
@@ -170,7 +162,7 @@ struct GlassRow: Layout {
     }
 
     private func arrange(_ proposal: ProposedViewSize, _ subviews: Subviews) -> (width: CGFloat, pieces: [(x: CGFloat, size: CGSize)]) {
-        let merges = subviews.map { $0[GlassMergeTransitionKey.self] == .open ? $0[GlassMergeKey.self] : $0[GlassMergeTransitionKey.self] }
+        let merges = subviews.map { $0[GlassMergeKey.self] }
         let open = subviews.indices.filter { merges[$0] == .open }
         var sizes = subviews.map { $0.sizeThatFits(.unspecified) }
         let gaps = CGFloat(max(open.count - 1, 0)) * spacing

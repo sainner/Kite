@@ -43,7 +43,7 @@ struct PaneHeaderButtonGroup<Content: View>: View {
                 content
             }
         }
-        .opacity(merged ? 0 : 1)
+        .animation(GlassMerge.fade(merged: merged)) { $0.opacity(merged ? 0 : 1) }
         .frame(width: merged ? Metrics.paneHeaderButton - 2 * Metrics.paneHeaderGroupInset : nil)
         .padding(.horizontal, Metrics.paneHeaderGroupInset)
         .frame(maxWidth: expands && !merged ? .infinity : nil)
@@ -61,6 +61,8 @@ struct PaneHeaderButtonGroup<Content: View>: View {
 /// 换窗口时各组、各按钮按位置原地更新，玻璃形变、图标替换走系统自带的过渡。各窗口各写一套时右组的视图类型不同，
 /// 只能整块换掉，过渡是硬切或淡入淡出（2026-10-14 iPhone，角色上下文和签名之间；见 CompactPaneHeaderBar 的右组）。
 /// 切换器和各组排在一行玻璃里（GlassRow）：出现时从右边那块分出来，收起时并回去，右边没有就是左边那块。
+/// 新出现的先并着画一轮，下一轮再分出来：靠过渡改 glassMerge 的话，iPhone 上过渡修饰里改的环境值传不到内容，
+/// 内容一开始就整块不透明地压在右边那块上（2026-10-27 真机，换到浏览窗口时预览的眼睛压着侧栏图标）。
 struct PaneHeaderActions: View {
     var groups: [[PaneHeaderAction]] = []
     /// 菜单：会话的模型与更多操作、角色初始配置的默认模型与思考强度、辅助生成模板的模型。放在各组前面。
@@ -70,27 +72,26 @@ struct PaneHeaderActions: View {
     /// 窗口自己的控件，放在各组后面、最右边：浏览的侧栏开关，打开时伸成搜索框。
     var trailing: AnyView?
     @State private var lingering = LingeringActions()
-    /// 并回去走完时加一，重算一遍拿掉留着的那几块，见 LingeringActions.settle。
-    @State private var settled = 0
+    /// 留着的那几块拿掉、新出现的分出来时加一，重算一遍，见 LingeringActions 的 settle、arrive。
+    @State private var revision = 0
 
     var body: some View {
         // 收起的切换器、按钮组留着并进旁边那块，并完就拿掉；旁边没有开着的玻璃就直接拿掉
-        let _ = settled
+        let _ = revision
         let fixed = menus != nil || trailing != nil
         let shownSwitcher = lingering.switcher(switcher, keeps: fixed || !groups.isEmpty)
         let shownGroups = lingering.groups(groups, keeps: fixed || switcher != nil || !groups.isEmpty)
+        let opened = lingering.opened()
         if fixed || switcher != nil || !groups.isEmpty {
             GlassRow(spacing: Metrics.paneButtonGap) {
                 if let menus { menus }
                 if let shownSwitcher {
                     PaneViewSwitcherGroup(switcher: shownSwitcher)
-                        .glassMerge(switcher == nil ? .merged(.trailing) : .open)
-                        .transition(GlassMergeTransition(edge: .trailing))
+                        .glassMerge(opened.switcher ? .open : .merged(.trailing))
                 }
                 ForEach(Array(shownGroups.enumerated()), id: \.offset) { index, group in
                     PaneHeaderActionGroup(actions: group)
-                        .glassMerge(index < groups.count ? .open : .merged(.trailing))
-                    .transition(GlassMergeTransition(edge: .trailing))
+                        .glassMerge(index < opened.groups ? .open : .merged(.trailing))
                 }
                 if let trailing { trailing }
             }
@@ -99,8 +100,12 @@ struct PaneHeaderActions: View {
                 if !transaction.disablesAnimations { transaction.animation = .snappy }
                 let change = lingering.changed()
                 transaction.addAnimationCompletion(criteria: .removed) {
-                    if lingering.settle(after: change) { settled += 1 }
+                    if lingering.settle(after: change) { revision += 1 }
                 }
+            }
+            // 新出现的这一轮并着画出来了，下一轮再分出来；同一轮里分没有起点
+            .onChange(of: [switcher != nil ? 1 : 0, groups.count]) {
+                Task { withAnimation(.snappy) { if lingering.arrive() { revision += 1 } } }
             }
         }
     }
@@ -133,6 +138,8 @@ private final class LingeringActions {
     private var lastGroups: [[PaneHeaderAction]] = []
     private var shownSwitcher = false
     private var shownGroups = 0
+    /// 已经分出来的切换器、前几组；还没画过时照原样开着。
+    private var open: (switcher: Bool, groups: Int)?
     /// 每收开一次加一，只有最后那次走完才拿掉。
     private var generation = 0
 
@@ -147,6 +154,21 @@ private final class LingeringActions {
         shownGroups = current.count
         lastGroups = keeps ? current + lastGroups.dropFirst(current.count) : current
         return lastGroups
+    }
+
+    /// 这一轮开着的：收起的当场并回去，新出现的先并着，等 arrive。在 switcher、groups 之后调。
+    func opened() -> (switcher: Bool, groups: Int) {
+        let opened = open.map { (switcher: $0.switcher && shownSwitcher, groups: min($0.groups, shownGroups)) }
+            ?? (switcher: shownSwitcher, groups: shownGroups)
+        open = opened
+        return opened
+    }
+
+    /// 并着画过一轮的新块都分出来。有分出来的返回 true，要重算一遍。
+    func arrive() -> Bool {
+        guard let open, open.switcher != shownSwitcher || open.groups != shownGroups else { return false }
+        self.open = (switcher: shownSwitcher, groups: shownGroups)
+        return true
     }
 
     func changed() -> Int {
