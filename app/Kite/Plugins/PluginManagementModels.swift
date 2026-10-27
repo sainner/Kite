@@ -51,9 +51,9 @@ struct PluginGrantDraft {
     init(snapshot: InstanceGrants) { revision = snapshot.revision; grants = snapshot.grants }
     var request: GrantUpdate { GrantUpdate(expectedRevision: revision, grants: grants) }
 
-    private static let scopes: Set<String> = ["descendants", "workspace"]
+    private static let scopes: Set<String> = ["direct", "descendants", "workspace"]
 
-    /// 协作范围：对其他代理、monitor 与终端的授权共用的目标（descendants 仅后代、workspace 同工作区），改它就改这几项；没有这类授权时为 nil。
+    /// 协作范围：对其他代理、monitor 与终端的授权共用的目标（direct 直接关系、descendants 后代、workspace 同工作区），改它就改这几项；没有这类授权时为 nil。
     var scope: String? {
         get { grants.lazy.compactMap(\.targets?.kind).first { Self.scopes.contains($0) } }
         set {
@@ -117,7 +117,7 @@ nonisolated struct RemoteOperation: Decodable, Identifiable, Sendable {
     let grant: Grant?
     var id: String { name }
 
-    /// 授权的目标能不能写这一种（created、instances、descendants、workspace）。
+    /// 授权的目标能不能写这一种（created、instances、direct、descendants、workspace）。
     func accepts(_ kind: String) -> Bool { grant?.targets?.contains(kind) == true }
 }
 

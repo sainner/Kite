@@ -237,6 +237,9 @@ export class InstanceOperations {
     switch (targets.kind) {
       case 'created': return target.origin?.instanceId === source.id;
       case 'instances': return same && targets.instanceIds.includes(target.id);
+      // 同级是同一工作区里创建来源相同的；界面上开的都没有来源，彼此算同级。
+      case 'direct': return target.origin?.instanceId === source.id
+        || same && target.id !== source.id && target.origin?.instanceId === source.origin?.instanceId;
       case 'descendants': return this.descendant(source, target);
       case 'workspace': return same || this.descendant(source, target);
     }
@@ -251,7 +254,7 @@ export class InstanceOperations {
 
   /**
    * 一次 list 的筛选与每项共有的字段，调用方只查一次。
-   * 列出调用方够得着的实例：界面看这个工作区的全部，代理与插件按这项 list 授权的范围，含子工作区里的后代；workspaces 是要找的工作区。
+   * 列出调用方够得着、开着的实例：界面看这个工作区的全部，代理与插件按这项 list 授权的范围，含子工作区里的后代；workspaces 是要找的工作区。
    */
   private listing(caller: OperationCaller, workspaceId: string, name: ListOperation) {
     const source = caller.kind === 'ui' ? undefined : this.kite.store.instance(caller.instanceId)!;
@@ -261,7 +264,7 @@ export class InstanceOperations {
     const names = new Map(workspaces.map((w) => [w.id, w.name]));
     return {
       workspaces: workspaces.map((w) => w.id),
-      visible: (target: PluginInstance) => !inRange || inRange(target),
+      visible: (target: PluginInstance) => target.status === 'open' && (!inRange || inRange(target)),
       item: (instance: PluginInstance) => ({ instanceId: instance.id, title: instance.title, createdBy: instance.origin?.instanceId ?? null,
         createdAt: instance.createdAt,
         ...(instance.workspaceId !== workspaceId ? { workspace: { id: instance.workspaceId, name: names.get(instance.workspaceId) ?? '' } } : {}),
@@ -347,7 +350,7 @@ export class InstanceOperations {
           const role = instanceRole(instance);
           return { ...listing.item(instance), definitionId: instance.definitionId,
             role: role ? { id: role.id, title: instanceAgent(instance).context.title } : null,
-            status: instance.status, phase: state.phase, busy: state.busy,
+            phase: state.phase, busy: state.busy,
             waitingForResume: state.waitingForResume,
             state: state.waiting ? '等用户批准'
               : state.phase === 'stopping' ? '正在停止' : state.busy ? '运行中'
@@ -496,7 +499,7 @@ export class InstanceOperations {
       case 'terminal.list': {
         const listing = this.listing(caller, workspaceId, name);
         return { terminals: listing.workspaces.flatMap((id) => this.kite.store.instances(id))
-          .filter((instance) => instance.definitionId === terminalDefinitionId && instance.status === 'open' && listing.visible(instance))
+          .filter((instance) => instance.definitionId === terminalDefinitionId && listing.visible(instance))
           .map((instance) => ({ ...this.kite.terminals.describe(instance), ...listing.item(instance) })) };
       }
       case 'monitor.stop':

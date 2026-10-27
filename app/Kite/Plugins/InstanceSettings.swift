@@ -92,7 +92,7 @@ struct InstanceSettings: View {
             }
             if editable, draft != nil {
                 CardSection("协作授权", note: (definition?.agent != nil
-                    ? "协作范围决定这个代理能对准哪些代理、monitor 和终端：仅后代是它建的以及再往下建的，同工作区是工作区里的全部；超出后代范围时，停下别人的、经权限比它大的代理做事都要先经你批准。插件工具在下面逐项授予，新授权的何时生效见代理配置。"
+                    ? "协作范围决定这个代理能对准哪些代理、monitor 和终端：直接关系是它建的以及和它同一个来源建的，后代是它建的以及再往下建的；超出后代范围时，停下别人的、经权限比它大的代理做事都要先经你批准。插件工具在下面逐项授予，新授权的何时生效见代理配置。"
                     : "这个插件能经宿主调用工作区里的哪些实例和操作；起点是新建时拷来的资源库里这个插件的授权。")
                     + "修改后保存，撤回对后续调用立即生效。")
                 WorkspaceGrants(caller: caller, draft: $draft, operations: operations, roles: model.roles(in: area)?.roles ?? [])
@@ -243,8 +243,8 @@ struct WorkspaceGrants: View {
             if caller == "model", let scope = draft?.scope {
                 LabeledContent("协作范围") {
                     Picker("协作范围", selection: Binding(get: { scope }, set: { value in draft?.scope = value })) {
-                        Text("仅后代").tag("descendants")
-                        Text("同工作区").tag("workspace")
+                        Text("直接关系").tag("direct")
+                        Text("后代").tag("descendants")
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize().clickPointer()
                 }

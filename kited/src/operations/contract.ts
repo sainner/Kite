@@ -52,14 +52,14 @@ const cell = { browser: z.enum(workstationBrowsers).optional(), width: viewportE
 const coordinate = z.array(z.number().min(0)).length(2);
 const summary = z.object({
   ...listed, definitionId: id, role: z.object({ id, title: z.string() }).strict().nullable(),
-  status: z.enum(['open', 'archived']), phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
+  phase: z.enum(['idle', 'running', 'stopping', 'finishing']),
   busy: z.boolean(), waitingForResume: z.boolean(),
   /** 一行状态：空闲、运行中、等用户批准或上一回合失败。 */
   state: z.string(),
 }).strict();
 
 /**
- * 对其他代理、monitor 与终端的操作；代理按协作范围授予，这几项的授权共用一个目标范围（descendants 或 workspace），
+ * 对其他代理、monitor 与终端的操作；代理按协作范围授予，这几项的授权共用一个目标范围（direct 或 descendants），
  * 见 docs/实例操作.md「代理的协作范围」。
  */
 export const scopedOperations = ['agent.list', 'agent.send', 'agent.stop', 'agent.merge',
@@ -82,7 +82,7 @@ export const operationContracts = {
     output: z.object({ instanceId: id, workspaceId: id.optional() }).strict(),
   },
   'agent.list': {
-    title: '查询 agent', description: '查询你协作范围内的 agent 实例：谁建的、一行状态及你获准的操作。',
+    title: '查询 agent', description: '查询你协作范围内开着的 agent 实例：谁建的、一行状态及你获准的操作。',
     tool: 'agent_list', effect: 'read', retry: 'read',
     input: z.object({}).strict(), output: z.object({ agents: z.array(summary) }).strict(),
   },
@@ -291,10 +291,12 @@ export type OperationCaller = { kind: 'ui'; via?: z.infer<typeof inputVia>; rela
 const previewOperations = ['preview.open', 'preview.list', 'preview.action', 'preview.inspect', 'preview.read', 'preview.stop'] as const;
 
 /**
- * 授权的目标：created 是调用方直接创建的，instances 是显式列出的；descendants（仅后代）按创建来源逐层往下算，
- * workspace（同工作区）是所属工作区的全部。list 只取后两种，决定列出哪些。
+ * 授权的目标：created 是调用方直接创建的，instances 是显式列出的；direct（直接关系）是调用方直接创建的加上同一工作区里与它创建来源相同的，
+ * descendants（后代）按创建来源逐层往下算，workspace（同工作区）是所属工作区的全部。list 只取后三种，决定列出哪些。
+ * 代理的协作范围在 direct 与 descendants 里选，workspace 留给插件。
  */
-const range = z.discriminatedUnion('kind', [z.object({ kind: z.literal('descendants') }).strict(), z.object({ kind: z.literal('workspace') }).strict()]);
+const range = z.discriminatedUnion('kind', [z.object({ kind: z.literal('direct') }).strict(), z.object({ kind: z.literal('descendants') }).strict(),
+  z.object({ kind: z.literal('workspace') }).strict()]);
 const targets = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('created') }).strict(),
   z.object({ kind: z.literal('instances'), instanceIds: z.array(id) }).strict(),
@@ -327,17 +329,17 @@ export function grantTools(grant: OperationGrant): string[] {
   return tool ? [tool] : [];
 }
 
-/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、用预览，协作范围默认同工作区。自定义 manifest 不能自行授予。 */
+/** 仅宿主登记的代理获得默认授权：可按内置角色创建代理、开 monitor、用预览，协作范围默认直接关系。自定义 manifest 不能自行授予。 */
 export function defaultOperationGrants(definitionId: string): OperationGrant[] {
   if (definitionId !== 'kite.agent') return [];
   return [{ operation: 'agent.start', roleIds: ['kite.work', 'kite.review'] }, { operation: 'monitor.start' },
     ...previewOperations.map((operation) => ({ operation })),
-    ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'workspace' } }) as OperationGrant)];
+    ...scopedOperations.map((operation) => ({ operation, targets: { kind: 'direct' } }) as OperationGrant)];
 }
 
-/** 授权里的协作范围：目标是仅后代或同工作区的那几项共用的范围，没有这类授权时为 undefined。 */
-export const grantRange = (grants: OperationGrant[]): GrantRange | undefined => grants.flatMap((grant) =>
-  'targets' in grant && (grant.targets.kind === 'descendants' || grant.targets.kind === 'workspace') ? [grant.targets] : [])[0];
+/** 授权里的协作范围：目标是直接关系、后代或同工作区的那几项共用的范围，没有这类授权时为 undefined。 */
+export const grantRange = (grants: OperationGrant[]): GrantRange | undefined =>
+  grants.map((grant) => 'targets' in grant ? range.safeParse(grant.targets).data : undefined).find(Boolean);
 
 /** Line 实例启用时得到的管理授权；其他代理即使角色放开了 Line 的工具，也要用户另行授予。 */
 export const lineGrant: OperationGrant = { operation: 'line', actions: [...lineActions] };

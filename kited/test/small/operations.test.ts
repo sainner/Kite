@@ -463,7 +463,7 @@ const failedOutcome = (result: ToolResult | undefined) => {
 };
 
 /*
- * 几个部分的配合：协作范围是授权的目标，经 operation-grants 把 agent.stop 等几项的目标改成同工作区后，下一回合的 agent_stop 才能对准非后代；
+ * 几个部分的配合：协作范围是授权的目标，默认的直接关系让 agent_stop 能对准同级这种非后代；
  * 超出后代范围的停止在操作入口里经 Waits.approve 挂在调用方线程上，线程状态里出现这项审批，
  * 用户经 POST /threads/:id/waiting/:id 回应后工具调用才失败或继续，对方的回合随之照跑或真的被停下。
  * 停下时对方队里还有用户排着的话：agent_stop 带着停止方（by 是 A）经操作、主循环的停止收据到显示投影，
@@ -471,7 +471,7 @@ const failedOutcome = (result: ToolResult | undefined) => {
  * 真实出过的 bug：代理用 agent_stop 停下别的线程，用户排在那个线程队里的话被退进了停止方的工具结果，待发送里没了、也不回输入框；
  * 停下后队里留着输入时停止按钮一直在、再停什么也不做；用户再发一条被标成插话（midTurn），因为队里有留下的消息。
  */
-test('同工作区范围的代理停非后代的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；停下时用户排在对方队里的话不退给停止方，留在队里等继续、不能再停，用户再发一条开新一轮、不算插话', async () => {
+test('直接关系范围的代理停同级的代理要逐次等用户批准：拒绝时工具失败且对方照跑，批准后对方停下；停下时用户排在对方队里的话不退给停止方，留在队里等继续、不能再停，用户再发一条开新一轮、不算插话', async () => {
   const models = threadModels();
   kited = startKited(models.factory);
   const kk = kited;
@@ -502,7 +502,7 @@ test('同工作区范围的代理停非后代的代理要逐次等用户批准�
     return since;
   };
 
-  // 同工作区（默认）：B 不是 A 建的，每次停止都先问；拒绝时这次工具调用失败，B 照跑。
+  // 直接关系（默认）：B 和 A 都是界面上开的，是同级不是后代，每次停止都先问；拒绝时这次工具调用失败，B 照跑。
   expect((await kk.call('POST', `/threads/${aId}/messages`, { text: '停掉 B' })).status).toBe(200);
   const first = await approval(await stopB(await a.call(1), 'stop-denied'));
   expect(first.mustAsk).toBe(true);
