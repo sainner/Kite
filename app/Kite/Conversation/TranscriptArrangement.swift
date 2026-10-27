@@ -159,7 +159,9 @@ enum TranscriptPlacement: Equatable {
             func overlaps(_ area: CGRect) -> Bool {
                 old.maxY > area.minY && old.minY < area.maxY || old == .zero && y < area.maxY && y + estimate > area.minY
             }
-            let close = overlaps(near) && (overlaps(urgent) || CACurrentMediaTime() - started < Self.layoutBudget)
+            // 刚发出去的消息离多远都当场量：人翻在上面时它不在附近，按估的高（量过各行的平均）占位，
+            // 滑到底的那一下每帧只摆不排，气泡就按估的高撑开，滑完重排才缩回去
+            let close = slot.rise > 0 || overlaps(near) && (overlaps(urgent) || CACurrentMediaTime() - started < Self.layoutBudget)
             var height: CGFloat
             // 拖缝中按近似量的，停下后当作没量准
             let exact = !slot.provisional || resizing
