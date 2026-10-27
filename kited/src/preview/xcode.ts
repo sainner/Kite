@@ -214,8 +214,8 @@ function command(action: PreviewAction, size: { width: number; height: number })
   }
 }
 
-/** 界面结构里的一个控件：种类、文字、无障碍标识与位置（屏幕上的点）；depth 是缩进的层数。 */
-type Control = { depth: number; tag: string; text?: string; identifier?: string; x: number; y: number; width: number; height: number };
+/** 界面结构里的一个控件：种类、文字、无障碍标识与位置（屏幕上的点）。 */
+type Control = { tag: string; text?: string; identifier?: string; x: number; y: number; width: number; height: number };
 
 /**
  * 读 Xcode 给的界面结构：一行一个控件，缩进是层级，格式见 IDEDeviceInteraction 自带给模型的说明，如
@@ -225,7 +225,7 @@ type Control = { depth: number; tag: string; text?: string; identifier?: string;
 export function parseHierarchy(text: string): Control[] {
   return text.split('\n').flatMap((line) => {
     const frame = /\{\{(-?[\d.]+), (-?[\d.]+)\}, \{([\d.]+), ([\d.]+)\}\}/.exec(line);
-    const head = /^(\s*)(\w+)/.exec(line);
+    const head = /^\s*(\w+)/.exec(line);
     if (!frame || !head) return [];
     // 带引号的取到后面紧跟逗号或行尾的那个引号，文字里的逗号不算；不带引号的取到逗号
     const field = (key: string) => {
@@ -235,27 +235,19 @@ export function parseHierarchy(text: string): Control[] {
     const [x, y, width, height] = frame.slice(1).map(Number) as [number, number, number, number];
     const text = field('label') || /^\s*\w+ "(.*?)"/.exec(line)?.[1]?.trim() || field('title') || field('value') || field('placeholderValue');
     // 截到 200 个码元，切开的半个 emoji 去掉：单个的代理项 App 那边的 JSON 解不出来
-    return [{ depth: head[1]!.length, tag: head[2]!, x, y, width, height, identifier: field('identifier'),
+    return [{ tag: head[1]!, x, y, width, height, identifier: field('identifier'),
       text: text?.slice(0, 200).replace(/[\ud800-\udbff]$/, '') }];
   });
 }
 
 /**
- * 画面上这一点最上层的控件：界面结构按画的先后排（父在子前、后面的兄弟盖在前面的上面），盖住这一点的最后一个在最上面。
- * 它只是没有文字、没有标识的容器时沿它的上层往外找有内容的，都没有就还是它。按层级深浅挑不行：
- * 列表滚到标签栏底下时，被盖住的行里的字比标签栏的按钮深。
+ * 画面上这一点最上层有内容的控件：界面结构按画的先后排（父在子前、后面的兄弟盖在前面的上面），盖住这一点的越靠后越在上面。
+ * 没有文字、没有标识的容器跳过，按钮里的空容器取到按钮，盖在整屏上的空窗口取到下面的控件；都没有就取最上面的。
+ * 按层级深浅挑不行：列表滚到标签栏底下时，被盖住的行里的字比标签栏的按钮深。
  */
 export function controlAt(controls: Control[], x: number, y: number): Control | undefined {
-  const top = controls.findLastIndex((c) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height);
-  if (top < 0) return undefined;
-  // 倒着往前，比已经看到的都浅的是它的上层
-  for (let i = top, depth = Infinity; i >= 0; i--) {
-    const c = controls[i]!;
-    if (c.depth >= depth) continue;
-    depth = c.depth;
-    if (c.text || c.identifier || !['Other', 'Window', 'Application'].includes(c.tag)) return c;
-  }
-  return controls[top];
+  const covering = controls.filter((c) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height);
+  return covering.findLast((c) => c.text || c.identifier || !['Other', 'Window', 'Application'].includes(c.tag)) ?? covering.at(-1);
 }
 
 /**
@@ -374,10 +366,7 @@ export class SimulatorScreen implements Screen {
         if (!list.length) setTimeout(() => { if (this.controls === controls) this.controls = undefined; }, CONTROLS_RETRY_MS).unref();
       });
     }
-    const found = controlAt(await this.controls, x, y);
-    if (!found) return null;
-    const { depth: _, ...element } = found;
-    return element;
+    return controlAt(await this.controls, x, y) ?? null;
   }
 
   async info() { return {}; }

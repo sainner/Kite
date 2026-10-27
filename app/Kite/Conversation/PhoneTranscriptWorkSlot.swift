@@ -196,7 +196,7 @@ final class PhoneWorkHeader: PhonePlainControl {
     }
 }
 
-/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
+/// 生成中、前面不是工具组的思考：一行次要色小字，说的同读屏（TranscriptSpeech.summary），放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
 /// 正在压缩、最后一项不是工具组时末尾那行整理上下文也是它。
 final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneThinkingRowView?
@@ -216,12 +216,7 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        guard case .item(let item) = row.content else { return }
-        switch item.kind {
-        case .thinking(let text): self.text = TranscriptSpeech.thinking(text)
-        case .compacting: text = TranscriptSpeech.compacting
-        default: return
-        }
+        text = TranscriptSpeech.summary(row)
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont
         presence = context.environment.panePresence
         show()
@@ -249,6 +244,7 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
 final class PhoneThinkingRowView: UIView {
     private let activity = PhoneActivityView()
     private let label = PhoneTextLine()
+    private var shown: (text: String, font: UIFont)?
 
     init() {
         super.init(frame: .zero)
@@ -261,11 +257,15 @@ final class PhoneThinkingRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ text: String, font: UIFont, presence: PanePresence?) {
-        label.set(text, font: font, color: .secondaryLabel)
-        accessibilityLabel = text
-        activity.contentChanged()
+        // 思考流式刷新时说的字多半没变（有小标题时说小标题），没变就不重画扫掠的贴图
+        if shown?.text != text || shown?.font != font {
+            shown = (text, font)
+            label.set(text, font: font, color: .secondaryLabel)
+            accessibilityLabel = text
+            activity.contentChanged()
+            setNeedsLayout()
+        }
         activity.show(.sweeping, presence: presence)
-        setNeedsLayout()
     }
 
     override func layoutSubviews() {

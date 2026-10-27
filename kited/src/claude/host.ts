@@ -82,8 +82,8 @@ export async function openClaudeHost(options: {
   /** 进行中的压缩或撤销，期间不启动新回合；停止会取消其中的摘要请求。 */
   let compacting: Promise<void> | undefined;
   let compactionAbort: AbortController | undefined;
-  /** 本回合最近一次主循环模型请求的实测输入，收尾时与运行窗口配对；压缩后清除。 */
-  let measured: { requestId: string; tokens: number } | undefined;
+  /** 本回合最近一次主循环模型请求的实测输入 token，收尾时与窗口比较判断要不要自动压缩；压缩后清除。 */
+  let measured: number | undefined;
   let currentModel = '';
   let windowQuery: AbortController | undefined;
   const publish = () => options.events.emit({ type: 'claude.control', state: claudeState(data, phase, !!compacting) });
@@ -198,7 +198,7 @@ export async function openClaudeHost(options: {
     phase = 'idle';
     save();
     // 回合之间才能改写会话：用量达到窗口的 85% 时先压缩，之后再处理排队的输入。
-    if (!closing && !data.paused && options.compaction && window !== undefined && measured && measured.tokens >= Math.floor(window * AUTO_COMPACT_RATIO)) {
+    if (!closing && !data.paused && options.compaction && window !== undefined && measured !== undefined && measured >= Math.floor(window * AUTO_COMPACT_RATIO)) {
       void compaction({ compact: { id: randomUUID(), automatic: true } }).catch(() => {});
     }
     if (!closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
@@ -347,8 +347,7 @@ export async function openClaudeHost(options: {
     }, {
       message(message) {
         if (message.type === 'assistant' && message.parent_tool_use_id === null) {
-          const tokens = claudeInputTokens(message.message.usage);
-          measured = tokens === undefined ? undefined : { requestId: message.message.id, tokens };
+          measured = claudeInputTokens(message.message.usage);
         }
         if (message.type === 'result') terminal = message.is_error
           ? { kind: 'failed', message: 'errors' in message ? message.errors.join('\n') : 'Claude 执行失败' } : { kind: 'completed' };

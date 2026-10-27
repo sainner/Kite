@@ -72,6 +72,8 @@ export class TranscriptHistory {
   private activities = new Map<string, ThreadActivity>();
   /** 从空闲开始压缩的线程：阶段照显示协议是 running，但压缩不是回合。 */
   private compactingFromIdle = new Set<string>();
+  /** 投影被丢掉、等重建的线程：还连着的客户端副本出自旧投影，重建后在线程流里补一份完整历史。 */
+  private replaced = new Set<string>();
 
   constructor(private store: Store, private home: string, bus: Bus, private feed: TranscriptFeed) {
     feed.subscribe((e) => e.type === 'thread.state', (e) => { if (e.type === 'thread.state') this.observe(e.threadId, e.state, e.at); });
@@ -124,6 +126,7 @@ export class TranscriptHistory {
   async reset(t: ThreadContext): Promise<void> {
     await this.loadingTranscripts.get(t.id);
     this.transcripts.delete(t.id);
+    this.replaced.add(t.id);
     const projection = await this.load(t);
     this.feed.emit({ type: 'thread.state', threadId: t.id, state: projection.state() });
   }
@@ -155,6 +158,8 @@ export class TranscriptHistory {
       if (this.loadingTranscripts.get(t.id) !== promise) return projection;
       this.transcripts.set(t.id, projection);
       this.observe(t.id, projection.state());
+      // 连着的客户端收到的新事件会越过新投影的载入时刻，重连时只补变化就补不回旧投影与新投影的差别，这里整份替换
+      if (this.replaced.delete(t.id)) this.feed.emit({ type: 'thread.history', ...projection.snapshot() });
       return projection;
     };
     const promise = read().finally(() => { if (this.loadingTranscripts.get(t.id) === promise) this.loadingTranscripts.delete(t.id); });
@@ -167,6 +172,7 @@ export class TranscriptHistory {
     for (const id of ids) {
       this.transcripts.delete(id);
       this.loadingTranscripts.delete(id);
+      this.replaced.add(id);
       this.activities.delete(id);
       this.compactingFromIdle.delete(id);
     }

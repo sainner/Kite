@@ -144,7 +144,7 @@ async function events(kite: Kite, scope: EventScope, device?: string, lastEventI
   let heartbeat: Timer | undefined;
   const stream = new ReadableStream<string>({
     start(controller) {
-      // 首帧与订阅在同一同步段，重连总用当前快照替换旧副本。
+      // 首帧与订阅在同一同步段，中间不丢事件；带 Last-Event-ID 时线程首帧只补变化，见 TranscriptProjection.snapshot。
       const meta = { version: 1, cursor: kite.events.cursor, at: Date.now() };
       const initial = scope === 'catalog'
         ? { ...meta, type: 'catalog.snapshot', workspaces: kite.workspaces(), modelAccounts: kite.modelAccounts.current() ?? null }

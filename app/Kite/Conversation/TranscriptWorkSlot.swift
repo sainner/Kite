@@ -215,7 +215,7 @@ final class WorkRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
+/// 生成中、前面不是工具组的思考：一行次要色小字，说的同读屏（TranscriptSpeech.summary），放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
 /// 思考条目只在生成期间显示，完整摘要仍保留在记录中。正在压缩、最后一项不是工具组时末尾那行整理上下文也是它。
 final class ThinkingRowSlot: TranscriptRowSlot {
     private let container = ThinkingRowView()
@@ -225,12 +225,7 @@ final class ThinkingRowSlot: TranscriptRowSlot {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        guard case .item(let item) = row.content else { return }
-        switch item.kind {
-        case .thinking(let text): container.show(TranscriptSpeech.thinking(text), environment: context.environment)
-        case .compacting: container.show(TranscriptSpeech.compacting, environment: context.environment)
-        default: return
-        }
+        container.show(TranscriptSpeech.summary(row), environment: context.environment)
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -245,6 +240,7 @@ final class ThinkingRowSlot: TranscriptRowSlot {
 final class ThinkingRowView: NSView {
     private let activity = ToolActivityView()
     private let label = LineLabel()
+    private var shown: (text: String, font: NSFont)?
 
     override var isFlipped: Bool { true }
 
@@ -258,8 +254,12 @@ final class ThinkingRowView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ text: String, environment: EnvironmentValues) {
-        label.set(text, font: Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont, color: .secondaryLabelColor)
+        let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         activity.presence = environment.panePresence
+        // 思考流式刷新时说的字多半没变（有小标题时说小标题），没变就不重画扫掠的贴图
+        guard shown?.text != text || shown?.font != font else { return }
+        shown = (text, font)
+        label.set(text, font: font, color: .secondaryLabelColor)
         activity.contentChanged()
         needsLayout = true
     }

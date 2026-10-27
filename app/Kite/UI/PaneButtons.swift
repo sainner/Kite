@@ -82,6 +82,8 @@ struct PaneHeaderActions: View {
         let shownSwitcher = lingering.switcher(switcher, keeps: fixed || !groups.isEmpty)
         let shownGroups = lingering.groups(groups, keeps: fixed || switcher != nil || !groups.isEmpty)
         let opened = lingering.opened()
+        // 切换器在不在、有几组：变了才算收开一次
+        let shape = [switcher != nil ? 1 : 0, groups.count]
         if fixed || switcher != nil || !groups.isEmpty {
             GlassRow(spacing: Metrics.paneButtonGap) {
                 if let menus { menus }
@@ -96,7 +98,7 @@ struct PaneHeaderActions: View {
                 if let trailing { trailing }
             }
             .modifier(PaneGlassContainer())
-            .transaction(value: [switcher != nil ? 1 : 0, groups.count]) { transaction in
+            .transaction(value: shape) { transaction in
                 if !transaction.disablesAnimations { transaction.animation = .snappy }
                 let change = lingering.changed()
                 transaction.addAnimationCompletion(criteria: .removed) {
@@ -104,7 +106,7 @@ struct PaneHeaderActions: View {
                 }
             }
             // 新出现的这一轮并着画出来了，下一轮再分出来；同一轮里分没有起点
-            .onChange(of: [switcher != nil ? 1 : 0, groups.count]) {
+            .onChange(of: shape) {
                 Task { withAnimation(.snappy) { if lingering.arrive() { revision += 1 } } }
             }
         }

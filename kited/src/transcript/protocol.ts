@@ -60,6 +60,8 @@ export interface History {
   state: DisplayState;
 }
 export type ThreadDisplayEvent =
+  /** 工作机重建了显示投影（换后端、记录被整份换掉）：客户端整份替换副本，同首帧。 */
+  | ({ type: 'thread.history' } & Omit<History, 'threadId' | 'cursor' | 'since'>)
   | { type: 'thread.record'; record: DisplayRecord }
   | { type: 'thread.record.delta'; delta: DisplayDelta }
   | { type: 'thread.pending'; pending: PendingInput[] }

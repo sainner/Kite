@@ -62,9 +62,8 @@ struct PointedElement: Decodable, Equatable, Sendable {
     /// 颜色的色块。
     var swatch: Color? {
         guard let color, color.hasPrefix("#"), let value = UInt32(color.dropFirst(), radix: 16) else { return nil }
-        let channels = color.count == 9 ? value : value << 8 | 0xFF
-        return Color(.sRGB, red: Double(channels >> 24 & 0xFF) / 255, green: Double(channels >> 16 & 0xFF) / 255,
-                     blue: Double(channels >> 8 & 0xFF) / 255, opacity: Double(channels & 0xFF) / 255)
+        // #RRGGBBAA 的末两位是透明度
+        return color.count == 9 ? Color(hex: value >> 8).opacity(Double(value & 0xFF) / 255) : Color(hex: value)
     }
 
     /// 源码位置写成工作区里的相对路径，带行号的接上行号；在工作区外（依赖包里）的不算。
@@ -264,10 +263,11 @@ struct PointedElement: Decodable, Equatable, Sendable {
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         // CGContext 的原点在左下
         context.setStrokeColor(color)
-        // 描边的中线在元素外 1 点，整条线落在元素外面，圆角与元素的同心
-        let ring = CGRect(x: rect.minX, y: height - rect.maxY, width: rect.width, height: rect.height).insetBy(dx: -scale, dy: -scale)
-        let corner = min(cornerRadius + scale, ring.width / 2, ring.height / 2)
-        context.setLineWidth(2 * scale)
+        // 线宽同画面上的，描边的中线在元素外半个线宽，整条线落在元素外面，圆角与元素的同心
+        let half = PointingLayer.ringWidth / 2 * scale
+        let ring = CGRect(x: rect.minX, y: height - rect.maxY, width: rect.width, height: rect.height).insetBy(dx: -half, dy: -half)
+        let corner = min(cornerRadius + half, ring.width / 2, ring.height / 2)
+        context.setLineWidth(2 * half)
         context.addPath(CGPath(roundedRect: ring, cornerWidth: corner, cornerHeight: corner, transform: nil))
         context.strokePath()
         if let badge {
@@ -297,8 +297,8 @@ struct PointingLayer: View {
     /// 卡片的大小，摆的时候躲开层的边。
     @State private var cardSize = CGSize.zero
 
-    /// 框的线宽，线整条落在元素外面。
-    static let ringWidth: CGFloat = 2
+    /// 框的线宽，线整条落在元素外面；截图上的框也按它画（PreviewPointer.annotate）。
+    nonisolated static let ringWidth: CGFloat = 2
 
     var body: some View {
         GeometryReader { geometry in
@@ -449,6 +449,7 @@ private struct PointerTracker: NSViewRepresentable {
 
     final class TrackerView: NSView {
         var moved: ((CGPoint?) -> Void)?
+        private var inside = false
 
         override var isFlipped: Bool { true }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -459,14 +460,27 @@ private struct PointerTracker: NSViewRepresentable {
             addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp, .inVisibleRect], owner: self))
         }
 
-        override func mouseEntered(with event: NSEvent) { moved?(convert(event.locationInWindow, from: nil)) }
-        override func mouseMoved(with event: NSEvent) { moved?(convert(event.locationInWindow, from: nil)) }
-        override func mouseExited(with event: NSEvent) { moved?(nil) }
+        // 指针还在上面时画面被拿掉（如用键盘关掉窗口）收不到 mouseExited：补报一次，
+        // 不然 PointingKeys 一直留着这个画面的 start，连同它带着的整个预览视图
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window == nil, inside { report(nil) }
+        }
+
+        override func mouseEntered(with event: NSEvent) { report(convert(event.locationInWindow, from: nil)) }
+        override func mouseMoved(with event: NSEvent) { report(convert(event.locationInWindow, from: nil)) }
+        override func mouseExited(with event: NSEvent) { report(nil) }
+
+        private func report(_ point: CGPoint?) {
+            inside = point != nil
+            moved?(point)
+        }
     }
 }
 
 /// 键鼠上的指认（docs/实例操作.md「指认」）：指针在预览画面上时只按住 ⌥ 临时打开指认，松开就关（同点开关关掉）；
-/// 指认开着、指针在画面上时按 C 复制指针下元素的颜色，这个键不再往下发。临时打开时按了别的键就关掉，那个键照常发出去。
+/// 指认开着、指针在画面上时按 C 复制指针下元素的颜色，这个键不再往下发；焦点在输入框里（打字、拼音）或指针下的元素没有颜色时照常发出去。
+/// 临时打开时按了别的键就关掉，那个键照常发出去。
 @MainActor final class PointingKeys {
     static let shared = PointingKeys()
 
@@ -506,8 +520,8 @@ private struct PointerTracker: NSViewRepresentable {
         case .flagsChanged:
             if !Self.optionOnly(event.modifierFlags) { release() } else if holding == nil { begin() }
         case .keyDown:
-            if let pointer = hovered?.pointer, pointer.active, event.charactersIgnoringModifiers?.lowercased() == "c",
-               event.modifierFlags.intersection([.command, .control, .shift]).isEmpty {
+            if let pointer = hovered?.pointer, pointer.active, pointer.hover?.color != nil, event.charactersIgnoringModifiers?.lowercased() == "c",
+               event.modifierFlags.intersection([.command, .control, .shift]).isEmpty, !Self.typing(in: event.window) {
                 pointer.copyColor(toast: hovered?.toast)
                 return nil
             }
@@ -526,6 +540,11 @@ private struct PointerTracker: NSViewRepresentable {
     private func release() {
         holding?.stop()
         holding = nil
+    }
+
+    /// 焦点在可编辑的文字里：输入框的字段编辑器、文本视图。
+    private static func typing(in window: NSWindow?) -> Bool {
+        (window?.firstResponder as? NSTextView)?.isEditable == true
     }
 
     private static func optionOnly(_ flags: NSEvent.ModifierFlags) -> Bool {

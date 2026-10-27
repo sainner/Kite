@@ -52,9 +52,13 @@
     source = attributeSource(node) || svelteSource(node);
   }
 
-  // 脚本地址对应的 source map 与解析其中源文件的基准地址，取过的留在页面里，悬停时不重取；没有或取不到时为 null，取不到的下次再试。
+  // 脚本地址对应的 source map 与解析其中源文件的基准地址，取过的留在页面里，悬停时不重取；没有或取不到时为 null。
   // 基准是 source map 自己的地址，内嵌在 data: 里的（Vite）用脚本的地址
   const maps = globalThis[Symbol.for('kite.preview-point.maps')] ??= new Map();
+  // 只留查找用得到的，sourcesContent 这类大块不留在页面里
+  const slim = (map) => map.sections
+    ? { sections: map.sections.map(({ offset, map }) => ({ offset, map: map && slim(map) })) }
+    : { mappings: map.mappings, sources: map.sources, sourceRoot: map.sourceRoot };
   const sourceMap = (url) => {
     if (!maps.has(url)) {
       const load = async () => {
@@ -63,9 +67,10 @@
         if (at < 0) return null;
         const mapURL = new URL(code.slice(at + 17).split(/\s/, 1)[0], url);
         const map = await (await fetch(mapURL, { signal: AbortSignal.timeout?.(5000) })).json();
-        return { map, base: mapURL.protocol === 'data:' ? url : mapURL };
+        return { map: slim(map), base: mapURL.protocol === 'data:' ? url : mapURL };
       };
-      maps.set(url, load().catch(() => { maps.delete(url); return null; }));
+      // 取不到的（.map 404、不是 JSON、被跨域拦下、超时）过半分钟再试：开发服务器可能还在编译，又不能指针每动一下都重下整个脚本
+      maps.set(url, load().catch(() => { setTimeout(() => maps.delete(url), 30_000); return null; }));
     }
     return maps.get(url);
   };
@@ -173,8 +178,11 @@
   // 左上角的圆角（百分比按宽度算）换成视图里的点，框按它画
   const style = getComputedStyle(element);
   const hex = (value) => {
-    const context = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    const canvas = globalThis[Symbol.for('kite.preview-point.canvas')] ??= Object.assign(document.createElement('canvas'), { width: 1, height: 1 });
+    const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) return;
+    // 画布留着复用，先擦掉上次的，半透明的颜色才不叠在上面
+    context.clearRect(0, 0, 1, 1);
     context.fillStyle = value;
     context.fillRect(0, 0, 1, 1);
     const [r, g, b, a] = context.getImageData(0, 0, 1, 1).data;

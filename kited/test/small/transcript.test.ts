@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { startDaemon, type Daemon } from '../../src/daemon.ts';
 import type { WorkspaceModel } from '../../src/model.ts';
 import type { ThreadActivity } from '../../src/transcript/protocol.ts';
-import { addProject, call, chatgptLogin, createWorkspace, folderWorkspace, machine, startKited, type Kited } from '../harness.ts';
+import { addProject, call, chatgptLogin, claudeModel, createWorkspace, folderWorkspace, machine, startKited, waitIdle, type Kited } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
 import { commitAll, makeTemp, newDir, newRepo } from '../util.ts';
@@ -489,6 +489,56 @@ test('线程流带 Last-Event-ID 重连只补断线期间变过的记录，旧�
   expect(next.since).toBe(partial.cursor);
   expect(next.records!.map((record) => record.id)).toEqual([live.id]);
   expect(merge(merged, next.records!)).toEqual(latestFull.records!);
+}, 1000);
+
+/*
+ * 几部分的配合：投影重建、线程事件流、Last-Event-ID 重连。切换后端时工作机丢掉旧投影，从目标后端的原生记录重建。
+ * 要挡的情况（代码审查发现）：客户端一直连着，没收到整份历史，之后新投影发出的事件把它的 cursor 推过新投影的载入时刻，
+ * 此后每次带 Last-Event-ID 重连都只补变化，旧投影与新投影的差别永远补不回来。
+ */
+test('线程流连着时切换后端，流里补一条不带 since 的完整历史，用它的 cursor 重连只补变化，切换前的 cursor 重连得到完整快照', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '初始\n' }) });
+  const { id } = await createWorkspace(kk, project.id, '开始', 'harness');
+  const stream = await connect(kk.url, id);
+  await stream.events.wait((event) => event.type === 'thread.history');
+  const first = await model.call(1);
+  await first.response.emit({ type: 'item', item: { id: 'answer-before-switch', raw: { type: 'message', content: [
+    { type: 'output_text', text: '切换前的回复' },
+  ] } } });
+  first.response.complete();
+  await waitIdle(kk, id);
+  const settled = await stream.events.wait((event) => event.type === 'thread.state' && event.state?.phase === 'idle'
+    && event.state.busy === false && event.state.lastOutcome?.kind === 'completed');
+  const beforeSwitch = stream.events.values.length;
+
+  const config = await kk.call('GET', `/instances/${id}/agent-config`);
+  expect(config.status).toBe(200);
+  const switched = await kk.call('PUT', `/instances/${id}/agent-config`, {
+    expectedRevision: config.body.revision, agent: { ...config.body.instance.config.agent, model: claudeModel },
+  });
+  expect(switched.status).toBe(200);
+  expect((await kk.call('GET', `/threads/${id}`)).body.runtime).toBe('claude');
+  const replaced = await stream.events.wait((event) => stream.events.values.indexOf(event) >= beforeSwitch
+    && event.type === 'thread.history');
+  const full = await kk.call('GET', `/threads/${id}/history`);
+  expect(full.status).toBe(200);
+  expect(replaced.since).toBeUndefined();
+  expect(replaced.records).toEqual(full.body.records);
+  expect(replaced.pending).toEqual(full.body.pending);
+  expect(replaced.state).toEqual(full.body.state);
+
+  const resumed = await connect(kk.url, id, replaced.cursor);
+  const partial = await resumed.events.wait((event) => event.type === 'thread.history');
+  expect(partial.since).toBe(replaced.cursor);
+  expect(merge(replaced.records!, partial.records!)).toEqual(full.body.records);
+
+  const stale = await connect(kk.url, id, settled.cursor);
+  const restarted = await stale.events.wait((event) => event.type === 'thread.history');
+  expect(restarted.since).toBeUndefined();
+  expect(restarted.records).toEqual(full.body.records);
 }, 1000);
 
 // SQLite 和 native journal 在 daemon 关闭重开后共同重建视图；重开后（会话接着做）已有记录的 id 不变。

@@ -2,6 +2,7 @@
  * 本线程看到或改过的文件内容版本，给 patch 提示「上次看到之后别处改过」；只提示、不拦补丁，见 docs/harness-主循环.md 的 patch。
  * read、patch 直接登记；shell 改的按命令前后对比，看的按输出里有没有这个文件的原文认，命令里只提到文件名不算。
  * 记录只说明看到过哪一版，不代表内容仍在模型上下文里。
+ * 拿不准时宁可少提示：搜索结果对上一行就按整份登记，命令期间格式化之类改的也算看过；模型照旧原文改时 patch 对不上会直接失败。
  */
 import { randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -105,13 +106,18 @@ export class KnownFiles {
     };
     const located = new Map<string, Set<string>>();
     const lines = new Set<string>();
+    const add = (line: string) => { for (const form of [line.trim(), line.replace(MARK, '').trim()]) if (form.length >= DISTINCT) lines.add(form); };
+    const bare: string[] = [];
     for (const line of output.split('\n')) {
       const match = LOCATED.exec(line);
       const path = match ? file(match[1]!) : undefined;
       if (path) located.set(path, (located.get(path) ?? new Set()).add(match![2]!.trim()));
-      else for (const form of [line.trim(), line.replace(MARK, '').trim()]) if (form.length >= DISTINCT) lines.add(form);
+      else if (/\s/.test(line.trim())) add(line);
+      else bare.push(line);
     }
     for (const token of `${command}\n${output}`.match(PATH_TOKEN) ?? []) file(token);
+    // 只是一个文件名的行（rg --files、find 列出来的）不是原文，不然列文件的命令会把列出的文件挨个读一遍
+    for (const line of bare) if (!files.get(line.trim())) add(line);
 
     // 带路径的搜索结果在逐行时先放进了 files，先核对；再按提到的先后。
     let budget = SEEN_BUDGET;
