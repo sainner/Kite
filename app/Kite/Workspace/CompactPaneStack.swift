@@ -29,7 +29,7 @@ struct CompactPaneStack: View {
     }
 
     var body: some View {
-        let panes = group.layout.panes
+        let panes = row.panes
         let focused = group.layout.focused
         let swipe = row.swipe
         ZStack {
@@ -124,15 +124,20 @@ final class PaneRow {
         self.drawer = drawer
         self.width = width
         // 一开始就停在当前窗口上，第一帧不从第一个窗口挪过来
-        let page = layout.focused.flatMap { layout.panes.firstIndex(of: $0) } ?? 0
+        let page = layout.focused.flatMap { Self.panes(of: layout).firstIndex(of: $0) } ?? 0
         slide = WindowMotion(WindowPose(frame: CGRect(x: -CGFloat(page) * width, y: 0, width: 0, height: 0)))
         swipeActions = PaneSwipeActions(track: { [weak self] in self?.drag($0) },
                                         end: { [weak self] in self?.release($0, predicted: $1) },
                                         cancel: { [weak self] in self?.abandon() })
     }
 
+    /// 一行从左到右的窗口：底栏的停靠栏横排从右到左（见 DockModel.bandItems），一行跟它同向，停靠栏里靠后的在左边。
+    var panes: [Pane] { Self.panes(of: layout) }
+
+    private static func panes(of layout: WindowLayout) -> [Pane] { layout.panes.reversed() }
+
     /// 当前窗口的序号。
-    var page: Int? { layout.focused.flatMap { layout.panes.firstIndex(of: $0) } }
+    var page: Int? { layout.focused.flatMap { panes.firstIndex(of: $0) } }
 
     private func rest(_ page: Int?) -> CGFloat { -CGFloat(page ?? 0) * width }
 
@@ -152,7 +157,7 @@ final class PaneRow {
         do {
             try await Task.sleep(for: .milliseconds(400))
             while true {
-                let panes = layout.panes
+                let panes = self.panes
                 guard let page else { return }
                 let cold = panes.indices.filter { !warm.contains(panes[$0]) && $0 != page }
                 guard let next = cold.min(by: { abs($0 - page) < abs($1 - page) }) else { return }
@@ -176,13 +181,13 @@ final class PaneRow {
             // 正在滑的半路接住：从这一帧实际的位置接着拖
             swipe = Swipe(origin: slide.presentation(at: .now).frame.minX, page: page, dragging: true)
             slide.interacting = true
-            let panes = layout.panes
+            let panes = self.panes
             let neighbours = [page - 1, page + 1].filter(panes.indices.contains).map { panes[$0] }
             if !warm.isSuperset(of: neighbours) { warm.formUnion(neighbours) }
         }
         guard let swipe else { return }
         // 只能滑到开始时那个窗口的两旁，到头或滑过一个窗口后越拖越吃力
-        let low = rest(min(swipe.page + 1, layout.panes.count - 1)), high = rest(max(swipe.page - 1, 0))
+        let low = rest(min(swipe.page + 1, panes.count - 1)), high = rest(max(swipe.page - 1, 0))
         let x = swipe.origin + translation
         #if os(iOS)
         // 同抽屉：拖过切换分界、再拖回来都震一下；接手动画和松手不补震。
@@ -192,7 +197,7 @@ final class PaneRow {
         }
         let distance = x - rest(swipe.page)
         let edge = abs(distance) >= width * Self.switchFraction
-            && !layout.panes.indices.contains(swipe.page + (distance < 0 ? 1 : -1))
+            && !panes.indices.contains(swipe.page + (distance < 0 ? 1 : -1))
         if !holding { pastEdge = edge }
         else if edge != pastEdge {
             pastEdge = edge
@@ -207,7 +212,7 @@ final class PaneRow {
         let distance = x - rest(page)
         guard abs(distance) >= width * Self.switchFraction else { return page }
         let target = page + (distance < 0 ? 1 : -1)
-        return layout.panes.indices.contains(target) ? target : page
+        return panes.indices.contains(target) ? target : page
     }
     #endif
 
@@ -218,7 +223,7 @@ final class PaneRow {
         let commit = abs(distance) >= width * Self.switchFraction || (abs(projected) >= width * 0.4 && projected * distance > 0)
         let target = swipe.page + (distance < 0 ? 1 : -1)
         // 到头了那边没有窗口：同没拖够一样滑回来，不直接跳回去
-        settle(to: commit && layout.panes.indices.contains(target) ? target : swipe.page)
+        settle(to: commit && panes.indices.contains(target) ? target : swipe.page)
     }
 
     private func abandon() {
@@ -227,7 +232,7 @@ final class PaneRow {
 
     /// 松手：当前窗口当场换成要去的那个（标题栏的渐变、点按都跟着它），整行接着滑过去。
     private func settle(to target: Int) {
-        let panes = layout.panes
+        let panes = self.panes
         guard panes.indices.contains(target) else { snap(); return }
         swipe?.dragging = false
         slide.interacting = false

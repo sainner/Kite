@@ -86,7 +86,7 @@ extension PerfProbe {
         let layout = session.area.layout
         guard layout.panes.count > 1, let focused = layout.focused else { throw Failure("一行里只有一个窗口，不能横滑") }
         session.onFinish { layout.focus(focused) }
-        let forward: CGFloat = focused == layout.panes.last ? 1 : -1
+        let forward: CGFloat = focused == row.panes.last ? 1 : -1
         let distance = forward * row.width * 0.45
         try await ready(session)
         for index in 0..<pairs {

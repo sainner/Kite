@@ -202,9 +202,8 @@ final class CompactRowView: UIView {
 
     private func readModel() -> Read {
         var read = Read()
-        let layout = group.layout
-        read.panes = layout.panes
-        read.focused = layout.focused
+        read.panes = row.panes
+        read.focused = group.layout.focused
         read.warm = row.warm
         read.swipe = row.swipe
         read.moving = row.slide.moving
