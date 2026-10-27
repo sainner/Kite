@@ -26,12 +26,12 @@ final class ComposerField: NSTextField {
     private let coordinator = Coordinator()
     /// 量高用的同样配置的控件，不进视图层级：编辑中的字不在单元格里，拿现在的字量。
     private let measure = NSTextField()
-    /// 这段字不折行时要多宽、多高：拖缝每步宽度都变，比这宽时一行都不折，高不用再量。
-    private var unwrapped: (text: String, scale: CGFloat, width: CGFloat, height: CGFloat)?
+    /// 这段字不折行时要多宽、多高（没取整）：拖缝每步宽度都变，比这宽时一行都不折，高不用再量。
+    private var unwrapped: (text: String, width: CGFloat, height: CGFloat)?
     /// 折行时上一次按宽量的。
-    private var measured: (width: CGFloat, text: String, scale: CGFloat, height: CGFloat)?
-    /// 正好 8 行多高，跟宽度无关（每行一个字），字体、屏幕倍数变了才重量。
-    private var full: (scale: CGFloat, height: CGFloat)?
+    private var measured: (width: CGFloat, text: String, height: CGFloat)?
+    /// 正好 8 行多高（没取整），跟宽度无关（每行一个字），字体变了才重量。
+    private var full: CGFloat?
 
     init() {
         super.init(frame: .zero)
@@ -96,43 +96,48 @@ final class ComposerField: NSTextField {
     }
 
     /// 这么宽（控件的宽，含两边的行内边距）时显示 text 要多高：最少一行（空的时候是占位那一行），最多 8 行。
-    /// 照现版取整到像素：9 行以上时单元格给的是 8 行半截多一点，2 倍屏上取整后比正好 8 行矮半点，排版按这个矮的算，见 drawHeight。
-    /// 单元格比字宽时量出来的高和宽无关（2026-10-13 在同样配置的 NSTextField 上逐宽比过），所以先按字量一次不折行的宽和高，
-    /// 给的宽不比它窄就直接用；折行时才按宽量。
+    /// 照现版四舍五入到像素：9 行以上时单元格给的是 8 行半截多一点，2 倍屏上取整后比正好 8 行矮半点，排版按这个矮的算，见 drawHeight。
     func height(width: CGFloat, text: String) -> CGFloat {
-        let scale = scale
-        if unwrapped?.text != text || unwrapped?.scale != scale {
+        pixel(cellHeight(width: width, text: text), rounding: .toNearestOrAwayFromZero)
+    }
+
+    /// 控件本身摆多高：单元格要的高向上取整到像素，可以比排版的高（height）高一点，多出的伸到下面的留白里。
+    /// 单元格画字时放不下整行就不画那一行：每行要 16.006 点（13 点正文，2026-10-27 macOS 27.2 量过），2 到 8 行四舍五入后
+    /// 都少那一点，没在编辑时最后一行不见了（编辑中的字由字段编辑器画，不受影响）。
+    /// 9 行以上时单元格量出来比正好 8 行矮一点，现版照样画满 8 行（2026-10-13 逐像素比过），这里把控件摆成正好 8 行高。
+    func drawHeight(width: CGFloat, text: String) -> CGFloat {
+        let height = cellHeight(width: width, text: text), full = fullHeight
+        // 不到 8 行时比正好 8 行矮至少一行；超过 8 行时只矮那 1 点
+        return pixel(height < full && full - height < 8 ? full : height, rounding: .up)
+    }
+
+    /// 单元格显示 text 要的高，没取整。单元格比字宽时量出来的高和宽无关（2026-10-13 在同样配置的 NSTextField 上逐宽比过），
+    /// 所以先按字量一次不折行的宽和高，给的宽不比它窄就直接用；折行时才按宽量。
+    private func cellHeight(width: CGFloat, text: String) -> CGFloat {
+        if unwrapped?.text != text {
             let size = cellSize(width: 1e7, text: text)
-            unwrapped = (text, scale, size.width, pixel(size.height, scale))
+            unwrapped = (text, size.width, size.height)
         }
         if let unwrapped, width >= unwrapped.width { return unwrapped.height }
-        if let measured, measured.width == width, measured.text == text, measured.scale == scale { return measured.height }
-        let height = pixel(cellSize(width: width, text: text).height, scale)
-        measured = (width, text, scale, height)
+        if let measured, measured.width == width, measured.text == text { return measured.height }
+        let height = cellSize(width: width, text: text).height
+        measured = (width, text, height)
         return height
     }
 
-    /// 控件本身摆多高：排版的高（height）。只有 9 行以上时排版比正好 8 行矮一点，单元格放不下第 8 行就只画 7 行；
-    /// 现版照样画满 8 行、多出的一点伸到下面的留白里（2026-10-13 逐像素比过），这里把控件摆成正好 8 行高。
-    func drawHeight(width: CGFloat, text: String) -> CGFloat {
-        let height = height(width: width, text: text), full = fullHeight
-        // 不到 8 行时比正好 8 行矮至少一行；超过 8 行时只矮那 1 点
-        return height < full && full - height < 8 ? full : height
-    }
-
-    /// 正好 8 行多高。
+    /// 正好 8 行多高，没取整。
     private var fullHeight: CGFloat {
-        let scale = scale
-        if let full, full.scale == scale { return full.height }
+        if let full { return full }
         let text = Array(repeating: "行", count: Self.maximumLines).joined(separator: "\n")
-        let height = pixel(cellSize(width: 1e7, text: text).height, scale)
-        full = (scale, height)
+        let height = cellSize(width: 1e7, text: text).height
+        full = height
         return height
     }
 
-    private var scale: CGFloat { window?.backingScaleFactor ?? 2 }
-
-    private func pixel(_ value: CGFloat, _ scale: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
+    private func pixel(_ value: CGFloat, rounding: FloatingPointRoundingRule) -> CGFloat {
+        let scale = window?.backingScaleFactor ?? 2
+        return (value * scale).rounded(rounding) / scale
+    }
 
     private func cellSize(width: CGFloat, text: String) -> CGSize {
         measure.stringValue = text
