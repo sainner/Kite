@@ -1569,7 +1569,7 @@ export class Kite {
   }
   async history(id: string): Promise<History> { return (await this.transcripts.load(this.context(id))).snapshot(); }
   async threadState(id: string): Promise<DisplayState> { return (await this.transcripts.load(this.context(id))).state(); }
-  historyNow(id: string): History { return this.transcripts.snapshot(id); }
+  historyNow(id: string, after?: string): History { return this.transcripts.snapshot(id, after); }
   /** 线程的原生记录，调试查看用；from 是上次读到的各文件条数。 */
   rawTranscript(id: string, from: { journal: number; claude: number }): RawPage {
     const t = this.context(id);

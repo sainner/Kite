@@ -132,7 +132,8 @@ function eventScope(url: string): EventScope {
   return key === 'workspace' ? { workspaceId: id } : { threadId: id };
 }
 
-async function events(kite: Kite, scope: EventScope, device?: string): Promise<Response> {
+/** lastEventId 只对线程流有用：客户端副本的 cursor，首帧据此只补变过的记录（见 TranscriptProjection.snapshot）。 */
+async function events(kite: Kite, scope: EventScope, device?: string, lastEventId?: string): Promise<Response> {
   if (scope !== 'catalog') {
     if ('threadId' in scope) await kite.threadState(scope.threadId);
     else kite.workspace(scope.workspaceId);
@@ -149,7 +150,7 @@ async function events(kite: Kite, scope: EventScope, device?: string): Promise<R
         ? { ...meta, type: 'catalog.snapshot', workspaces: kite.workspaces(), modelAccounts: kite.modelAccounts.current() ?? null }
         : 'workspaceId' in scope
           ? { ...meta, type: 'workspace.model', workspaceId: scope.workspaceId, model: kite.workspace(scope.workspaceId) }
-          : { ...meta, type: 'thread.history', ...kite.historyNow(scope.threadId) };
+          : { ...meta, type: 'thread.history', ...kite.historyNow(scope.threadId, lastEventId) };
       controller.enqueue(encode(initial));
       unsubscribe = kite.events.subscribe((e) => inScope(e, scope), (e) => controller.enqueue(encode(e)));
       // 额度不随客户端轮询：首次有客户端连上时查一次，之后靠会话响应和显式刷新推送。
@@ -743,7 +744,8 @@ export function serve(kite: Kite, listen: Listen) {
         return kite.nameWorkspace(req.params.id, parsed.data);
       }) },
       '/workspaces/:id/archive': { POST: bound(async (req) => kite.archiveWorkspace(req.params.id, (await body(req)).force === true)) },
-      '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined)) },
+      '/events': { GET: bound((req) => events(kite, eventScope(req.url), new URL(req.url).searchParams.get('device') ?? undefined,
+        req.headers.get('last-event-id') ?? undefined)) },
       '/voice': { GET: voice },
       '/instances/:id/terminal': { GET: terminal },
       '/instances/:id/preview': { GET: preview },

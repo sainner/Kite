@@ -53,6 +53,8 @@ export interface History {
   version: 1;
   threadId: string;
   cursor: string;
+  /** 只补变化时是客户端带来的 cursor，records 只含之后变过的记录。 */
+  since?: string;
   records: DisplayRecord[];
   pending: PendingInput[];
   state: DisplayState;

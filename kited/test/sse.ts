@@ -1,10 +1,10 @@
 import { Seen } from './harness-loop.ts';
 
-/** 测试共用的 JSON SSE 消费器；等待时报告读流错误，调用方在 finally 或 afterEach 里关闭连接。 */
-export async function connectSse<T>(url: string, machineId: string) {
+/** 测试共用的 JSON SSE 消费器；等待时报告读流错误，调用方在 finally 或 afterEach 里关闭连接。headers 另加请求头，如 Last-Event-ID。 */
+export async function connectSse<T>(url: string, machineId: string, headers: Record<string, string> = {}) {
   const controller = new AbortController();
   const response = await fetch(url, {
-    headers: { 'X-Kite-Machine': machineId }, signal: controller.signal,
+    headers: { ...headers, 'X-Kite-Machine': machineId }, signal: controller.signal,
   });
   if (response.status !== 200 || !response.body) {
     controller.abort();

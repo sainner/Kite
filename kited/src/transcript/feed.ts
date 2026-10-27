@@ -12,13 +12,21 @@ export function inScope(event: DisplayEvent, scope: EventScope): boolean {
   return 'threadId' in event && event.threadId === scope.threadId && event.type !== 'thread.activity';
 }
 
-/** cursor 只标识本次服务进程中的投影版本。重连总发完整快照。 */
+/** cursor 只标识本次服务进程中的投影版本；线程流重连时据此只补变过的记录，见 TranscriptProjection.snapshot。 */
 export class TranscriptFeed extends Bus<DisplayEvent & { cursor: string }> {
   private epoch = randomUUID();
-  private seq = 0;
-  get cursor(): string { return `${this.epoch}:${this.seq}`; }
+  private count = 0;
+  get cursor(): string { return `${this.epoch}:${this.count}`; }
+  /** 最近一个事件的序号。 */
+  get seq(): number { return this.count; }
+  /** 本服务进程发出的 cursor 里的序号；别的进程的或认不出的为 undefined，不同进程的序号不可比较。 */
+  seqOf(cursor: string): number | undefined {
+    const split = cursor.lastIndexOf(':');
+    const seq = Number(cursor.slice(split + 1));
+    return split > 0 && cursor.slice(0, split) === this.epoch && Number.isSafeInteger(seq) && seq >= 0 && seq <= this.count ? seq : undefined;
+  }
   override emit(event: DisplayEvent): void {
-    this.seq++;
+    this.count++;
     super.emit({ ...event, cursor: this.cursor });
   }
 }

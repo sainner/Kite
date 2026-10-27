@@ -30,6 +30,9 @@ export class TranscriptProjection {
   private readonly claudeProjection: ClaudeProjection;
   private lastSeq = 0;
   private replaying = true;
+  /** 回放完时的事件序号与之后每条记录最后一次变化的序号：不早于前者的客户端副本只需补后来变过的记录。 */
+  private base = Infinity;
+  private changed = new Map<string, number>();
   private phase: Phase = 'idle';
   private busy = false;
   private waitingForResume = false;
@@ -100,11 +103,20 @@ export class TranscriptProjection {
     this.phase = 'idle';
     this.busy = false;
     this.replaying = false;
+    this.base = this.feed.seq;
   }
 
-  snapshot(): History {
+  /**
+   * after 是客户端副本的 cursor：出自这份投影时（同一服务进程、不早于回放完）只带之后变过的记录并标上 since，
+   * 待处理输入和状态照旧整份；否则整份历史。记录不会删除，新记录总在末尾，客户端按 id 替换、没有的追加。
+   */
+  snapshot(after?: string): History {
+    const since = after === undefined ? undefined : this.feed.seqOf(after);
+    const incremental = since !== undefined && since >= this.base;
+    const records = [...this.records.values()];
     return { version: 1, threadId: this.threadId, cursor: this.feed.cursor,
-      records: [...this.records.values()], pending: [...this.pending.values()], state: this.state() };
+      records: incremental ? records.filter((record) => (this.changed.get(record.id) ?? 0) > since) : records,
+      ...(incremental ? { since: after } : {}), pending: [...this.pending.values()], state: this.state() };
   }
 
   state(): DisplayState {
@@ -135,7 +147,9 @@ export class TranscriptProjection {
     if (record.generation !== 'streaming') this.inputPreviews.delete(record.id);
     this.records.set(record.id, record);
     this.emit({ type: 'thread.record', record });
+    this.touch(record.id);
   }
+  private touch(id: string): void { if (!this.replaying) this.changed.set(id, this.feed.seq); }
   private emitPending(): void { this.emit({ type: 'thread.pending', pending: [...this.pending.values()] }); }
 
   accept(event: Stamped<ThreadEvent>): void {
@@ -370,6 +384,7 @@ export class TranscriptProjection {
     } else return;
     this.records.set(record.id, { ...record, block: updated });
     this.emit({ type: 'thread.record.delta', delta });
+    this.touch(record.id);
   }
 
   private endDrafts(requestId?: string): void {

@@ -53,6 +53,8 @@ final class WorkThread: Identifiable {
     private var streamingChanges: Set<Int> = []
     private var streamingRefresh: Task<Void, Never>?
     private var positions: [String: Int] = [:]
+    /// 线程流最近处理过的事件的 cursor：重连时带上，工作机只补之后变过的记录；副本可能不全时清掉，下次整份重读。
+    private var cursor: String?
     private var received: Set<String> = []
     private var pending: [RemoteInput] = []
     private var outbox: [Message] = []
@@ -219,10 +221,11 @@ final class WorkThread: Identifiable {
         defer { if self.client == client { flushStreaming(); connected = false } }
         while !Task.isCancelled && self.client == client {
             do {
-                try await client.events(scope: .thread(id)) { event in
+                try await client.events(scope: .thread(id), after: cursor) { event in
                     try Task.checkCancellation()
                     guard self.client == client else { return }
-                    try self.apply(event)
+                    do { try self.apply(event) } catch { self.cursor = nil; throw error }
+                    if event.threadId == self.id, let cursor = event.cursor { self.cursor = cursor }
                 }
             } catch {
                 if Task.isCancelled || self.client != client { return }
@@ -243,19 +246,27 @@ final class WorkThread: Identifiable {
         case "thread.history":
             guard event.version == 1 else { throw KitedError(message: "会话协议版本不兼容") }
             let history = event.records ?? []
-            remoteRecords = history
-            positions = Dictionary(uniqueKeysWithValues: history.enumerated().map { ($0.element.id, $0.offset) })
-            received = Set(history.compactMap { ["human", "agent"].contains($0.block.type) ? $0.block.id : nil })
+            if let since = event.since {
+                // 只补了变化：按 id 换掉或追加在末尾，与整份快照一致（docs/会话显示协议.md 的 cursor）
+                guard since == cursor else { throw KitedError(message: "历史与本地副本对不上，重新同步") }
+                for record in history { upsert(record) }
+                recordsChanged = !history.isEmpty
+            } else {
+                remoteRecords = []
+                positions = [:]
+                received = []
+                for record in history { upsert(record) }
+                recordsChanged = true
+            }
+            TimingTrace.mark("会话 \(title) 历史已解码：\(history.count) 条\(event.since == nil ? "" : "（只补变化）")")
             pending = event.pending ?? []
             state = event.state
             connected = true
             historyLoaded = true
             error = nil
-            recordsChanged = true
         case "thread.record":
             guard let record = event.record else { return }
-            if let index = positions[record.id] {
-                remoteRecords[index] = record
+            if let index = upsert(record) {
                 // 压缩记录的变化（撤销）牵动整段收起，重新派生。
                 if record.block.type != "compacted", let visibleIndex = visiblePositions[index], let visible = record.record {
                     transcript.replaceRecord(at: visibleIndex, with: visible)
@@ -263,12 +274,9 @@ final class WorkThread: Identifiable {
                     recordsChanged = true
                 }
             } else {
-                positions[record.id] = remoteRecords.count
-                remoteRecords.append(record)
                 recordsChanged = true
             }
             if ["human", "agent"].contains(record.block.type), let id = record.block.id {
-                received.insert(id)
                 pending.removeAll { $0.id == id }
             }
         case "thread.record.delta":
@@ -296,6 +304,18 @@ final class WorkThread: Identifiable {
         if !failed.isDisjoint(with: confirmed) { error = nil }
         failed.subtract(confirmed)
         render(recordsChanged: recordsChanged)
+    }
+
+    /// 按 id 换掉已有的记录，没有的追加在末尾；返回换掉的那条的位置。
+    @discardableResult private func upsert(_ record: RemoteRecord) -> Int? {
+        if ["human", "agent"].contains(record.block.type), let id = record.block.id { received.insert(id) }
+        if let index = positions[record.id] {
+            remoteRecords[index] = record
+            return index
+        }
+        positions[record.id] = remoteRecords.count
+        remoteRecords.append(record)
+        return nil
     }
 
     private func flushStreaming() {

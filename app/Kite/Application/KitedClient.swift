@@ -304,6 +304,8 @@ struct RemoteEvent: Decodable {
     var activity: ThreadActivity?
     var workspaces: [RemoteWorkspace]?
     var cursor: String?
+    /// 线程历史只补变化时是重连带去的 cursor，records 只含之后变过的记录，见 WorkThread.apply。
+    var since: String?
     var records: [RemoteRecord]?
     var record: RemoteRecord?
     var delta: RemoteDelta?
@@ -420,8 +422,8 @@ struct KitedClient: Equatable {
         let _: JSON = try await request(path, method: "POST", body: body, as: JSON.self)
     }
 
-    /// 首帧包含所选范围的完整快照；取消任务时关闭 URLSession。
-    func events(scope: KitedEventScope = .catalog, receive: (RemoteEvent) async throws -> Void) async throws {
+    /// 首帧包含所选范围的完整快照；线程流带上本地副本的 cursor 时，工作机认得就只补变过的记录。取消任务时关闭 URLSession。
+    func events(scope: KitedEventScope = .catalog, after cursor: String? = nil, receive: (RemoteEvent) async throws -> Void) async throws {
         var thread: String?, workspace: String?
         switch scope {
         case .catalog: break
@@ -435,6 +437,7 @@ struct KitedClient: Equatable {
         var request = stream
         request.timeoutInterval = 60
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        if let cursor { request.setValue(cursor, forHTTPHeaderField: "Last-Event-ID") }
         let trace = TimingTrace.span("事件流 \(request.url?.query ?? "目录")")
         let (bytes, response): (URLSession.AsyncBytes, URLResponse)
         do { (bytes, response) = try await connection.bytes(for: request) }

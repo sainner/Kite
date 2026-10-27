@@ -114,10 +114,10 @@ export class TranscriptHistory {
     });
   }
 
-  snapshot(id: string): History {
+  snapshot(id: string, after?: string): History {
     const t = this.transcripts.get(id);
     if (!t) throw new KiteError('请先加载线程历史', 409);
-    return t.snapshot();
+    return t.snapshot(after);
   }
 
   /** 只在空会话切换后端后重建；已开始的原生历史不得用显示记录续跑。 */

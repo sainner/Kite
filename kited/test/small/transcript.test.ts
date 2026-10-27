@@ -30,6 +30,7 @@ type WireEvent = {
   status?: string;
   workspaces?: unknown[];
   cursor: string;
+  since?: string;
   at: number;
   version?: number;
   records?: RecordView[];
@@ -54,8 +55,9 @@ afterEach(async () => {
   for (const result of closed) if (result.status === 'rejected') throw result.reason;
 });
 
-async function connect(url: string, threadId?: string) {
-  const stream = await connectSse<WireEvent>(`${url}/events${threadId ? `?thread=${threadId}` : ''}`, (await machine(url)).id);
+async function connect(url: string, threadId?: string, lastEventId?: string) {
+  const stream = await connectSse<WireEvent>(`${url}/events${threadId ? `?thread=${threadId}` : ''}`, (await machine(url)).id,
+    lastEventId === undefined ? {} : { 'Last-Event-ID': lastEventId });
   streams.push(stream);
   return stream;
 }
@@ -398,6 +400,95 @@ test('SSE 重连保留流式分段、排队输入及交错工具结果所属的�
   const unmeasuredSnapshot = await unmeasuredReconnect.events.wait((event) => event.type === 'thread.history');
   expect(unmeasuredSnapshot.state).toEqual(unmeasuredHistory.body.state);
   await unmeasuredReconnect.close();
+}, 1000);
+
+/** App 合并只补变化的首帧：按 id 原位替换，没有的按收到的顺序接在末尾。 */
+function merge(copy: RecordView[], changed: RecordView[]) {
+  const records = new Map(copy.map((record) => [record.id, record]));
+  for (const record of changed) records.set(record.id, record);
+  return [...records.values()];
+}
+
+/*
+ * 几部分的配合：feed 的全局事件序号、投影里逐条记录的变化序号、SSE 首帧取的 cursor 要对得上，
+ * 断线期间流式 delta、工具阶段变化、新记录有一处没记上，App 重连后就悄悄显示旧内容。
+ * 第一次重连的 cursor 是断开前最后处理的线程事件；第二次用首帧自己的 cursor，之后只有一条 delta，
+ * 记变化序号时差一位（记成上一个事件的序号）就补不到这条。
+ */
+test('线程流带 Last-Event-ID 重连只补断线期间变过的记录，旧副本按 id 合并后与完整快照相同', async () => {
+  const model = new ManualModel();
+  kited = startKited(() => model);
+  const kk = kited;
+  const project = await addProject(kk, { path: newDir(kk.root, 'project', { 'base.txt': '初始\n' }) });
+  const { id } = await createWorkspace(kk, project.id, '开始', 'harness');
+  const first = await model.call(1);
+  // 另一台设备一直开着这个会话，用来等断线期间的变化落定。
+  const watcher = await connect(kk.url, id);
+  await watcher.events.wait((event) => event.type === 'thread.history');
+
+  const phone = await connect(kk.url, id);
+  const initial = await phone.events.wait((event) => event.type === 'thread.history');
+  expect(initial.since).toBeUndefined();
+  await first.response.emit({ type: 'item', item: { id: 'answer-pre', raw: { type: 'message', content: [
+    { type: 'output_text', text: '先说一句' },
+  ] } } });
+  const said = (await phone.events.wait((event) => event.type === 'thread.record' && event.record?.block.type === 'text'
+    && event.record.block.text === '先说一句')).record!;
+  await first.response.emit({ type: 'item.started', itemId: 'answer-live', kind: 'text' });
+  const live = (await phone.events.wait((event) => event.type === 'thread.record' && event.record?.block.type === 'text'
+    && event.record.generation === 'streaming')).record!;
+  await first.response.emit({ type: 'item.started', itemId: 'shell-gap', kind: 'tool_use', callId: 'shell-gap', name: 'shell' });
+  const last = await phone.events.wait((event) => event.type === 'thread.record' && event.record?.id === 'call:shell-gap'
+    && event.record.block.stage === 'generating');
+  // 本地副本只由首帧和整条记录建成，这段里没有 delta，副本就是 last 这一刻的准确内容。
+  const processed = phone.events.values.slice(0, phone.events.values.indexOf(last) + 1);
+  expect(processed.some((event) => event.type === 'thread.record.delta')).toBe(false);
+  const copy = merge(initial.records!, processed.flatMap((event) => event.type === 'thread.record' ? [event.record!] : []));
+  const human = copy.find((record) => record.block.type === 'human' && record.block.text === '开始')!;
+  expect(human).toBeDefined();
+  await phone.close();
+
+  // 断线期间：已有的流式正文只收 delta，生成中的工具整条换成执行完，出一条新的 tool_result，再排一条输入。
+  await first.response.emit({ type: 'delta', itemId: 'answer-live', field: 'text', part: 0, text: '断线时写的' });
+  await first.response.emit({ type: 'delta', itemId: 'shell-gap', field: 'arguments',
+    text: '{"description":"断线时跑","command":"printf gap"}' });
+  await first.response.emit({ type: 'item', item: { ...item('shell-gap', 'shell'), call: { id: 'shell-gap', name: 'shell',
+    arguments: { description: '断线时跑', command: 'printf gap' } } } });
+  const result = (await watcher.events.wait((event) => event.type === 'thread.record'
+    && event.record?.block.type === 'tool_result' && event.record.block.call === 'shell-gap')).record!;
+  expect((await kk.call('POST', `/threads/${id}/messages`, { id: 'queued-gap', text: '断线时排队' })).status).toBe(200);
+  await watcher.events.wait((event) => event.type === 'thread.pending' && event.pending?.some((entry) => entry.id === 'queued-gap') === true);
+
+  const resumed = await connect(kk.url, id, last.cursor);
+  const partial = await resumed.events.wait((event) => event.type === 'thread.history');
+  const fresh = await connect(kk.url, id);
+  const full = await fresh.events.wait((event) => event.type === 'thread.history');
+  expect(full.since).toBeUndefined();
+  expect(partial.since).toBe(last.cursor);
+  expect(full.records?.find((record) => record.id === live.id)?.block.text).toBe('断线时写的');
+  expect(full.records?.find((record) => record.id === 'call:shell-gap')?.block.stage).toBe('finished');
+  const changed = partial.records!.map((record) => record.id);
+  expect(changed).not.toContain(human.id);
+  expect(changed).not.toContain(said.id);
+  expect(changed).toContain(result.id);
+  const merged = merge(copy, partial.records!);
+  expect(merged).toEqual(full.records!);
+  expect(partial.pending).toEqual(full.pending!);
+  expect(partial.pending).toContainEqual(expect.objectContaining({ id: 'queued-gap' }));
+  expect(partial.state).toEqual(full.state!);
+  await resumed.close();
+  await fresh.close();
+
+  // 首帧的 cursor 也能当 Last-Event-ID：之后只有一条 delta，再连只补这一条。
+  await first.response.emit({ type: 'delta', itemId: 'answer-live', field: 'text', part: 0, text: '，又续一句' });
+  await watcher.events.wait((event) => event.type === 'thread.record.delta' && event.delta?.text === '，又续一句');
+  const again = await connect(kk.url, id, partial.cursor);
+  const next = await again.events.wait((event) => event.type === 'thread.history');
+  const latest = await connect(kk.url, id);
+  const latestFull = await latest.events.wait((event) => event.type === 'thread.history');
+  expect(next.since).toBe(partial.cursor);
+  expect(next.records!.map((record) => record.id)).toEqual([live.id]);
+  expect(merge(merged, next.records!)).toEqual(latestFull.records!);
 }, 1000);
 
 // SQLite 和 native journal 在 daemon 关闭重开后共同重建视图；重开后（会话接着做）已有记录的 id 不变。
