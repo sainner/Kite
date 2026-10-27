@@ -15,6 +15,9 @@ interface ClaudeProjectionTarget {
   context(value: DisplayState['context']): void;
 }
 
+/** 「[Request interrupted by user]」及工具调用时的「…for tool use]」，SDK 判断合成消息也按这个前缀。 */
+const CLAUDE_INTERRUPT_MARKER = '[Request interrupted by user';
+
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
   ? value.map((part) => object(part).text).filter((text) => typeof text === 'string').join(separator) : '';
 
@@ -98,8 +101,10 @@ export class ClaudeProjection {
         if (row.type === 'user') {
           const entry = this.inputs.get(row.uuid);
           if (entry?.status === 'cancelled') return;
+          // CLI 被打断后自己写的标记，只给模型看；打断由宿主的 lastOutcome 进状态，显示成 Kite 发的消息会被误读。
+          if (!entry && block.text.startsWith(CLAUDE_INTERRUPT_MARKER)) return;
           const inputId = entry?.input.id ?? row.uuid;
-          // user 是传输角色，原生中断及 hook 反馈也使用它；只有明确的人类来源才显示成人发消息。
+          // user 是传输角色，hook 反馈等也使用它；只有明确的人类来源才显示成人发消息。
           put(`input:${inputId}`, entry ? inputBlock(entry.input, entry.midTurn)
             : object(row.origin).kind === 'human' ? { type: 'human', id: inputId, text: block.text, midTurn: false }
             : { type: 'kite', text: block.text });
