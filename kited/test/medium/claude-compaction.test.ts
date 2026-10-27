@@ -73,9 +73,7 @@ test('Claude 中段压缩保留前缀思考与后段正文工具，撤销恢复�
     const last = transcript(thread.nativeId).filter((entry) => entry.type === 'assistant').at(-1);
     expect(current?.requestId).toBe(last.message.id);
     if (window !== undefined) {
-      expect(readClaudeControl(join(kk.home, 'sessions', id)).contextWindow).toEqual({
-        model: configuredModel, tokens: window, requestId: current!.requestId,
-      });
+      expect(readClaudeControl(join(kk.home, 'sessions', id)).contextWindow).toEqual({ model: configuredModel, tokens: window });
       await updates.wait((event) => event.type === 'thread.state'
         && event.state.context?.requestId === current!.requestId && event.state.context.windowTokens === window);
     }
@@ -232,7 +230,6 @@ test('Claude 中段压缩保留前缀思考与后段正文工具，撤销恢复�
   const seventh = await api.waitRequest((l) => l.main && l.lastUserText.includes(seventhText));
 
   await querying.promise;
-  expect((await history()).state.context?.windowTokens).toBeUndefined();
   expect(kk.events.slice(seventhMark).some((event) => record(event, 'context.compacted')
     || (event.type === 'idle' && event.threadId === id))).toBe(false);
   expect(api.log.slice(seventhAt).filter((entry) => entry.main)).toEqual([seventh]);

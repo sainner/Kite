@@ -22,8 +22,8 @@ const schema = z.object({
   paused: z.boolean().default(false),
   /** 切换后端前由另一后端处理过的输入，重发同一 ID 不再投递。 */
   importedInputs: z.array(z.string()).default([]),
-  /** CLI 上报的运行窗口，关联配置模型和对应的主循环用量，不能配给其他模型或旧请求。 */
-  contextWindow: z.object({ model: z.string().min(1), tokens: z.number().int().positive(), requestId: z.string().min(1) }).optional(),
+  /** CLI 上报的运行窗口，按配置模型保存：同一模型之后的请求（含回合中途）沿用，换模型时作废。 */
+  contextWindow: z.object({ model: z.string().min(1), tokens: z.number().int().positive() }).optional(),
   outcome: z.discriminatedUnion('kind', [z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
     z.object({ kind: z.literal('failed'), message: z.string() })]).optional(),
   /** 回合被 kited 退出打断（关闭时停下，或打开时发现崩溃），还没接着做；下一回合开始或人停下时清除，见 openClaudeHost。 */

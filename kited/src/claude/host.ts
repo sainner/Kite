@@ -189,7 +189,7 @@ export async function openClaudeHost(options: {
     } finally { if (windowQuery === query) windowQuery = undefined; }
     if (query.signal.aborted || closing || driver !== running) return;
     const window = usage?.window ?? (data.contextWindow?.model === currentModel ? data.contextWindow.tokens : undefined);
-    if (measured && window !== undefined) data.contextWindow = { model: currentModel, tokens: window, requestId: measured.requestId };
+    if (window !== undefined) data.contextWindow = { model: currentModel, tokens: window };
     // 进程还在：交给它、还没开始的留在它自己的队列里，由它接着处理，不重新排队。
     for (const entry of data.inputs) if (entry.status === 'active') entry.status = 'done';
     data.outcome = terminal ?? { kind: 'failed', message: 'Claude 回合结束但未返回结果' };

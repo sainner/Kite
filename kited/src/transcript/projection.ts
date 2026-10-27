@@ -124,9 +124,8 @@ export class TranscriptProjection {
     const open = status === 'open';
     const interactive = open;
     let context = this.context;
-    // 控制查询可能晚于用量消息，只给同一模型和请求的 Claude 测量补窗口；harness 自带请求快照中的窗口。
-    if (context && this.contextRuntime === 'claude' && this.claudeWindow?.model === this.configuredModel
-      && this.claudeWindow.requestId === context.requestId) {
+    // Claude 的窗口只在回合结束时查询，同一模型的进程窗口不变，回合中途的新请求沿用它；harness 自带请求快照中的窗口。
+    if (context && this.contextRuntime === 'claude' && this.claudeWindow?.model === this.configuredModel) {
       context = { ...context, windowTokens: this.claudeWindow.tokens };
     }
     return { phase: this.phase, busy: this.busy, ...(this.compacting ? { compacting: true } : {}), waitingForResume: this.waitingForResume, status,
