@@ -12,8 +12,11 @@ final class HostIsland: UIView {
     var hitRegion: (() -> CGRect?)?
     /// 接点按的范围按圆角算（输入区的玻璃）。
     var hitRadius: CGFloat = 0
-    /// 共用控制区换窗口时，新的拖动桥接接手；仍在淡出的旧内容不能再接同一次手势。
-    weak var controlsDragOwner: PaneControlDragView?
+    /// 控制区的拖动（横滑、上拉）归最近放进窗口的那条控制区：共用控制区换窗口时新的接手，仍在淡出的旧内容不再接同一次手势。
+    /// 归属的那条离开窗口时交还给还在窗口里的上一条：滑回刚离开的窗口时，SwiftUI 留用还在淡出的那条旧控制区，它没离开过窗口、
+    /// 不会再进一次，只靠「进窗口时接手」的话，新的那条淡完拆掉以后没有谁接手，控制区再也滑不动（2026-10-27 iPhone 探针）。
+    private(set) weak var controlsDragOwner: PaneControlDragView?
+    private var controlsDrags: [WeakControlsDrag] = []
 
     var rootView: AnyView {
         get { controller.rootView }
@@ -36,6 +39,25 @@ final class HostIsland: UIView {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func enterControlsDrag(_ drag: PaneControlDragView) {
+        controlsDrags.removeAll { $0.view == nil || $0.view === drag }
+        controlsDrags.append(WeakControlsDrag(view: drag))
+        settleControlsDrag()
+    }
+
+    func leaveControlsDrag(_ drag: PaneControlDragView) {
+        controlsDrags.removeAll { $0.view == nil || $0.view === drag }
+        settleControlsDrag()
+    }
+
+    private func settleControlsDrag() {
+        let owner = controlsDrags.last?.view
+        guard owner !== controlsDragOwner else { return }
+        controlsDragOwner?.release(from: self)
+        controlsDragOwner = owner
+        owner?.attach(to: self)
+    }
 
     /// 托管视图的理想大小（sizing 里有 intrinsicContentSize 时由 SwiftUI 维护）。
     var idealSize: CGSize { controller.view.intrinsicContentSize }
@@ -179,5 +201,10 @@ enum LayerBlur {
         filter.setValue(0, forKey: "inputRadius")
         return filter
     }
+}
+
+/// HostIsland 记着的控制区，离开窗口时自己摘掉；只弱引用。
+private struct WeakControlsDrag {
+    weak var view: PaneControlDragView?
 }
 #endif

@@ -15,7 +15,7 @@ struct PaneControlDrag: UIViewRepresentable {
 
     func updateUIView(_ view: PaneControlDragView, context: Context) { view.update(self) }
 
-    static func dismantleUIView(_ view: PaneControlDragView, coordinator: ()) { view.detach() }
+    static func dismantleUIView(_ view: PaneControlDragView, coordinator: ()) { view.leave() }
 }
 
 final class PaneControlDragView: UIView, UIGestureRecognizerDelegate {
@@ -51,28 +51,35 @@ final class PaneControlDragView: UIView, UIGestureRecognizerDelegate {
         drag.isEnabled = configuration.swipe != nil || configuration.pull != nil
     }
 
+    /// 识别器挂在所在的岛上，归谁由岛定（见 HostIsland.controlsDragOwner）。
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        detach()
-        guard window != nil else { return }
+        guard window != nil else { leave(); return }
         var ancestor = superview
         while let view = ancestor {
             if let island = view as? HostIsland {
-                island.controlsDragOwner?.detach()
-                island.controlsDragOwner = self
+                if self.island !== island { leave() }
                 self.island = island
-                island.addGestureRecognizer(drag)
+                island.enterControlsDrag(self)
                 return
             }
             ancestor = view.superview
         }
+        leave()
     }
 
-    func detach() {
-        cancel()
-        island?.removeGestureRecognizer(drag)
-        if island?.controlsDragOwner === self { island?.controlsDragOwner = nil }
+    func leave() {
+        island?.leaveControlsDrag(self)
         island = nil
+    }
+
+    func attach(to island: HostIsland) {
+        island.addGestureRecognizer(drag)
+    }
+
+    func release(from island: HostIsland) {
+        cancel()
+        island.removeGestureRecognizer(drag)
     }
 
     func gestureRecognizer(_ recognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
