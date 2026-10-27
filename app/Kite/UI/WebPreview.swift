@@ -250,7 +250,7 @@ private struct SafeAreaFreeWebView: UIViewControllerRepresentable {
     func element(at point: CGPoint) async -> PointedElement? {
         guard let page, let script = Self.pointScript else { return nil }
         // 交回 JSON 字符串，直接解码，不经字典再转一遍
-        let json = try? await page.callJavaScript("return JSON.stringify((\(script))(x, y));", arguments: ["x": point.x, "y": point.y], contentWorld: .page)
+        let json = try? await page.callJavaScript("return JSON.stringify(await (\(script))(x, y));", arguments: ["x": point.x, "y": point.y], contentWorld: .page)
         return PointedElement.decode(json as? String)
     }
 

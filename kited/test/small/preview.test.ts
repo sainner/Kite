@@ -197,7 +197,7 @@ test('工作机 Chromium 里的网页：设备问一点，回这一点上元素�
     expect(device.messages[button]).toEqual({
       control: {
         type: 'element', x: 100, y: 50,
-        element: { x: 0, y: 0, width: 200, height: 100, tag: 'button', text: '点了 0 次', id: 'count', file: 'src/Counter.tsx', line: 12, page: '/' },
+        element: { x: 0, y: 0, width: 200, height: 100, tag: 'button', text: '点了 0 次', color: '#000000', font: expect.any(String), id: 'count', file: 'src/Counter.tsx', line: 12, page: '/' },
       },
     });
     expect(device.messages[blank]).toEqual({ control: { type: 'element', x: 300, y: 200, element: null } });

@@ -52,7 +52,7 @@ export interface ScreenInfo { url?: string; pageTitle?: string }
 export type PointedElement = Record<string, unknown>;
 
 let pointSource: string | undefined;
-/** 指认脚本：一个函数表达式，调用方传 x、y。kited 与 App 共用一份，随运行文件带着 shared/，第一次用时读。 */
+/** 指认脚本：一个异步函数表达式，调用方传 x、y，等它的结果（Playwright、safaridriver 的执行都会等）。kited 与 App 共用一份，随运行文件带着 shared/，第一次用时读。 */
 export const pointScript = () => pointSource ??= readFileSync(new URL('../../../shared/preview-point.js', import.meta.url), 'utf8');
 
 export interface Screen {

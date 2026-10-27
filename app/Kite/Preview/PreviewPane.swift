@@ -133,7 +133,7 @@ private struct DeviceWebPreview: View {
                 PortPreview(client: client, port: port, store: store, link: area.webLink(for: instance.id, port: port), browser: browser,
                             report: { webFailure = $0 })
                     .id("\(port) \(reload)")
-                    .overlay { if pointer.active { PointingLayer(pointer: pointer) } }
+                    .overlay { PointingLayer(pointer: pointer) { pointer.start(area: area, client: client, preview: instance.title) } }
             } else {
                 // 正文不能是空的：PaneWindow 的标题栏和控制区挂在正文上，正文为空时一起不见（没选端口时整张卡片空白）
                 Color.clear
@@ -276,7 +276,7 @@ private struct ScreenPreview: View {
     var body: some View {
         PaneWindow(header: PaneHeader(title: instance.title, subtitle: area.previewSubtitle(instance, status: status)), notice: notice, actions: headerActions) {
             ScreenView(session: session, screen: status.screen, longPress: $longPress, acceptsInput: !pointer.active)
-                .overlay { if pointer.active { PointingLayer(pointer: pointer, pictureSize: session.frameSize) } }
+                .overlay { PointingLayer(pointer: pointer, pictureSize: session.frameSize) { pointer.start(area: area, client: client, preview: instance.title) } }
                 .padding(.horizontal, Metrics.padding)
                 .padding(.bottom, Metrics.padding)
         } controls: { typing in
