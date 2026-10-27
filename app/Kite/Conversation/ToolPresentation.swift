@@ -482,8 +482,12 @@ extension Work {
     /// 正在跑的那次调用。
     var running: Call? { calls.first { [.generating, .queued, .running].contains($0.state) } }
 
-    /// 汇总行说的：接在后面的思考正在生成时说思考，其次是正在跑的调用，再是汇总；这组还在做事时不说汇总，两次调用之间说上一次调用。
-    var headline: String { thinking.map(TranscriptSpeech.thinking) ?? running?.use.title ?? (active ? calls.last?.use.title : nil) ?? summary }
+    /// 汇总行说的：正在压缩上下文时说整理上下文，接在后面的思考正在生成时说思考，其次是正在跑的调用，再是汇总；
+    /// 这组还在做事时不说汇总，两次调用之间说上一次调用。
+    var headline: String {
+        if compacting { return TranscriptSpeech.compacting }
+        return thinking.map(TranscriptSpeech.thinking) ?? running?.use.title ?? (active ? calls.last?.use.title : nil) ?? summary
+    }
 
 }
 

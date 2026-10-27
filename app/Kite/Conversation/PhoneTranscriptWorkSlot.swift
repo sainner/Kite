@@ -197,6 +197,7 @@ final class PhoneWorkHeader: PhonePlainControl {
 }
 
 /// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
+/// 正在压缩、最后一项不是工具组时末尾那行整理上下文也是它。
 final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private var container: PhoneThinkingRowView?
     private var text = ""
@@ -215,8 +216,12 @@ final class PhoneThinkingRowSlot: TranscriptRowSlot, PhoneRowSlot {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
-        self.text = TranscriptSpeech.thinking(text)
+        guard case .item(let item) = row.content else { return }
+        switch item.kind {
+        case .thinking(let text): self.text = TranscriptSpeech.thinking(text)
+        case .compacting: text = TranscriptSpeech.compacting
+        default: return
+        }
         font = Theme.secondary.resolve(in: context.environment.fontResolutionContext).ctFont as UIFont
         presence = context.environment.panePresence
         show()

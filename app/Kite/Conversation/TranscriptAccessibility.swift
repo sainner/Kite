@@ -62,6 +62,8 @@ enum TranscriptSpeech {
         let shown = (heading ?? lines.joined(separator: " ")).replacingOccurrences(of: "**", with: "")
         return shown.isEmpty ? "思考中" : shown
     }
+    /// 正在压缩上下文：工具组汇总行或末尾那一行说的。
+    static let compacting = "整理上下文"
 
     /// 消息上面的附件。
     static func imageAttachment(_ name: String) -> String { "图片，\(name)" }
@@ -87,6 +89,7 @@ enum TranscriptSpeech {
             case .thinking(let text): return thinking(text)
             case .work(let work): return self.work(work)
             case .compacted(let compaction, _): return self.compaction(compaction)
+            case .compacting: return compacting
             }
         }
     }

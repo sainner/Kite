@@ -81,6 +81,7 @@ private extension Item.Kind {
             hasher.combine(5)
             hasher.combine(work.thinking?.utf8.count)
             hasher.combine(work.active)
+            hasher.combine(work.compacting)
             for call in work.calls {
                 hasher.combine(call.state)
                 hasher.combine(call.result != nil)
@@ -98,6 +99,7 @@ private extension Item.Kind {
             hasher.combine(7)
             hasher.combine(compaction.summary.utf8.count)
             hasher.combine(children.count)
+        case .compacting: hasher.combine(8)
         }
     }
 }

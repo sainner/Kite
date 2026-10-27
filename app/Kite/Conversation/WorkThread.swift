@@ -310,6 +310,7 @@ final class WorkThread: Identifiable {
 
     private func render(recordsChanged: Bool = false) {
         let running = state?.busy == true && ["running", "stopping", "finishing"].contains(state?.phase ?? "")
+        let compacting = running && state?.compacting == true
         let messages = pending.compactMap(\.queued) + outbox.map { Queued(message: $0) }
         if recordsChanged {
             var records: [Record] = []
@@ -327,9 +328,10 @@ final class WorkThread: Identifiable {
                 visiblePositions[index] = records.count
                 records.append(record)
             }
-            transcript = Transcript(root: transcript.root, records: records, running: running, pending: messages)
+            transcript = Transcript(root: transcript.root, records: records, running: running, compacting: compacting, pending: messages)
         } else {
             if transcript.running != running { transcript.running = running }
+            if transcript.compacting != compacting { transcript.compacting = compacting }
             transcript.pending = messages
         }
     }

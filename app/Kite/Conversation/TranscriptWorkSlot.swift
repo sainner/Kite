@@ -216,7 +216,7 @@ final class WorkRowView: NSView {
 }
 
 /// 生成中、前面不是工具组的思考：一行次要色小字，取哪段字见 TranscriptSpeech.thinking，放不下截掉；同工具组汇总行说思考时一样一直带像素扫掠。
-/// 思考条目只在生成期间显示，完整摘要仍保留在记录中。
+/// 思考条目只在生成期间显示，完整摘要仍保留在记录中。正在压缩、最后一项不是工具组时末尾那行整理上下文也是它。
 final class ThinkingRowSlot: TranscriptRowSlot {
     private let container = ThinkingRowView()
 
@@ -225,8 +225,12 @@ final class ThinkingRowSlot: TranscriptRowSlot {
 
     override func update(_ row: TranscriptRow, context: TranscriptRowContext) {
         super.update(row, context: context)
-        guard case .item(let item) = row.content, case .thinking(let text) = item.kind else { return }
-        container.show(TranscriptSpeech.thinking(text), environment: context.environment)
+        guard case .item(let item) = row.content else { return }
+        switch item.kind {
+        case .thinking(let text): container.show(TranscriptSpeech.thinking(text), environment: context.environment)
+        case .compacting: container.show(TranscriptSpeech.compacting, environment: context.environment)
+        default: return
+        }
     }
 
     override func height(width: CGFloat) -> CGFloat {

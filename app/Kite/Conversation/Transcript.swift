@@ -8,6 +8,8 @@ struct Transcript {
     var records: [Record] { didSet { if !replacingRecord { items = derive() } } }
     /// 有回合在进行（kited 的 busy）。没有结果的工具调用这时算正在跑，否则算没跑完。
     var running: Bool { didSet { items = derive() } }
+    /// 回合在跑时正在压缩上下文（kited 的 compacting）：最后一项是工具组就由它的汇总行说，不是就在末尾另起一行。
+    var compacting: Bool { didSet { items = derive() } }
     /// 发出去了、agent 还没收到的消息，按发出的顺序。收到的那一刻才变成一条记录，撤回的永远不进记录。
     /// 包含服务已接收但尚未纳入模型请求的输入（人发的和代理来信），以及客户端还没收到投递确认的消息。
     var pending: [Queued]
@@ -16,10 +18,11 @@ struct Transcript {
     private var replacingRecord = false
     private var locations: [Int: (item: Int, call: Int?)] = [:]
 
-    init(root: String, records: [Record] = [], running: Bool = false, pending: [Queued] = []) {
+    init(root: String, records: [Record] = [], running: Bool = false, compacting: Bool = false, pending: [Queued] = []) {
         self.root = root
         self.records = records
         self.running = running
+        self.compacting = compacting
         self.pending = pending
         items = derive()
     }
@@ -280,6 +283,8 @@ struct Item: Identifiable {
         case work(Work)
         /// 压缩的摘要；children 是被收起的原文。
         case compacted(Compaction, children: [Item])
+        /// 正在压缩上下文、最后一项不是工具组时接在末尾的一行，见 Transcript.compacting。
+        case compacting
     }
 }
 
@@ -290,6 +295,8 @@ struct Work {
     var thinking: String? = nil
     /// 回合在跑、这组是主对话的最后一项：agent 还在这组里做事，汇总行一直扫掠，不看各步的状态。
     var active = false
+    /// 这组是最后一项时正在压缩上下文：汇总行先说它。
+    var compacting = false
 }
 
 struct Call {
@@ -317,7 +324,10 @@ extension Transcript {
         var items = derive(byParent[nil] ?? [], parent: nil, byParent, compactions: compactions)
         if running, let last = items.indices.last, case .work(var work) = items[last].kind {
             work.active = true
+            work.compacting = compacting
             items[last].kind = .work(work)
+        } else if compacting {
+            items.append(Item(id: items.count, kind: .compacting))
         }
         return items
     }
