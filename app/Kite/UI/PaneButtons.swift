@@ -70,9 +70,12 @@ struct PaneHeaderActions: View {
     /// 窗口自己的控件，放在各组后面、最右边：浏览的侧栏开关，打开时伸成搜索框。
     var trailing: AnyView?
     @State private var lingering = LingeringActions()
+    /// 并回去走完时加一，重算一遍拿掉留着的那几块，见 LingeringActions.settle。
+    @State private var settled = 0
 
     var body: some View {
-        // 收起的切换器、按钮组留着并进旁边那块；旁边没有开着的玻璃就直接拿掉
+        // 收起的切换器、按钮组留着并进旁边那块，并完就拿掉；旁边没有开着的玻璃就直接拿掉
+        let _ = settled
         let fixed = menus != nil || trailing != nil
         let shownSwitcher = lingering.switcher(switcher, keeps: fixed || !groups.isEmpty)
         let shownGroups = lingering.groups(groups, keeps: fixed || switcher != nil || !groups.isEmpty)
@@ -92,7 +95,13 @@ struct PaneHeaderActions: View {
                 if let trailing { trailing }
             }
             .modifier(PaneGlassContainer())
-            .animation(.snappy, value: [switcher != nil ? 1 : 0, groups.count])
+            .transaction(value: [switcher != nil ? 1 : 0, groups.count]) { transaction in
+                if !transaction.disablesAnimations { transaction.animation = .snappy }
+                let change = lingering.changed()
+                transaction.addAnimationCompletion(criteria: .removed) {
+                    if lingering.settle(after: change) { settled += 1 }
+                }
+            }
         }
     }
 }
@@ -117,19 +126,41 @@ struct PaneHeaderActionGroup: View {
 }
 
 /// 右组里收起了还留着的切换器和按钮组，见 PaneHeaderActions。在 body 里记，不观察。
+/// 只留到并回去走完：并着的玻璃叠在旁边那块的端头，那块被系统拿走时就露出一个空圆
+/// （iPhone 点模型、更多，菜单从胶囊的玻璃变形出来；共用的标题栏从带按钮组的窗口换回会话时，几组一直留着）。
 private final class LingeringActions {
     private var lastSwitcher: PaneViewSwitcher?
     private var lastGroups: [[PaneHeaderAction]] = []
+    private var shownSwitcher = false
+    private var shownGroups = 0
+    /// 每收开一次加一，只有最后那次走完才拿掉。
+    private var generation = 0
 
     func switcher(_ current: PaneViewSwitcher?, keeps: Bool) -> PaneViewSwitcher? {
+        shownSwitcher = current != nil
         if let current { lastSwitcher = current } else if !keeps { lastSwitcher = nil }
         return lastSwitcher
     }
 
     /// 现在的各组，后面接着上次多出来的那几组。
     func groups(_ current: [[PaneHeaderAction]], keeps: Bool) -> [[PaneHeaderAction]] {
+        shownGroups = current.count
         lastGroups = keeps ? current + lastGroups.dropFirst(current.count) : current
         return lastGroups
+    }
+
+    func changed() -> Int {
+        generation += 1
+        return generation
+    }
+
+    /// 那次收开走完了，之后没再变：拿掉留着的。拿掉了返回 true，要重算一遍。
+    func settle(after change: Int) -> Bool {
+        let switcher = lastSwitcher != nil && !shownSwitcher
+        guard change == generation, switcher || lastGroups.count > shownGroups else { return false }
+        if switcher { lastSwitcher = nil }
+        lastGroups.removeLast(lastGroups.count - shownGroups)
+        return true
     }
 }
 
