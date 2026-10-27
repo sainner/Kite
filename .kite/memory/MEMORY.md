@@ -23,7 +23,7 @@
 - [界面工作与验收](feedback-ui-workflow.md) — 方案、连续推进、失灵诊断不靠猜、对照只测未知一边、真机验收；改完开 Debug 预览（先对 kited 版本）、自动操作前说清，自己开的 Kite 用完就关
 - [交互连续性](feedback-interaction-quality.md) — 公共控件（报一处按类修全、一种场景一个视图）、对象身份、动效性能；窗口动画不回弹、新建从添加入口展开、点阵收起；改尺寸只动相邻窗口；停靠栏新模型的样式决定；触屏上悬停按钮常驻、长按起拖、标题栏无右键菜单
 - [状态放标题栏](feedback-pane-status-placement.md) — 窗口状态归信息区，副行只放 description；为空画点阵图案配文字；弹窗副行说清做什么、状态写正文
-- [测试要克制](test-restraint.md) — 测试准入主来源；改设计只删旧断言、不改写、不给新功能补测试；事件断言与 PDF
+- [测试要克制](test-restraint.md) — 测试准入主来源；简单接入不扩测试、事件流不用白名单、PDF 手动冒烟、在研界面不写测试
 - [设计讨论先给意见](feedback-design-discussion.md) — 用户的总结是征求意见，落文档前先问；认可了具体方案就算已决定
 - [讲方案说大白话](feedback-plain-explanations.md) — 先讲现状和运行时谁做了什么、配小例子，解释术语、一次问一件事，流程选择给默认值
 - [扫描无用逻辑](feedback-dead-logic-review.md) — 沿执行与数据流判断，不能只看引用
