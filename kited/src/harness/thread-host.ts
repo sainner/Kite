@@ -133,7 +133,8 @@ export async function openThreadHost(options: ThreadHostOptions): Promise<Thread
     const policy = () => typeof options.policy === 'function' ? options.policy() : options.policy ?? workspacePolicy(cwd, env);
     const skills = options.skills ?? new SkillCatalog(cwd, systemSkillSources);
     const tools = localTools({
-      cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'), env, skills,
+      cwd, secrets: options.secrets, logDir: join(directory, 'commands'), diffDir: options.diffDir ?? join(directory, 'diffs'),
+      knownFiles: join(directory, 'known-files.json'), env, skills,
       ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
       ...(options.background ? { background: options.background } : {}),
       ...(options.outside ? { outside: options.outside } : {}),

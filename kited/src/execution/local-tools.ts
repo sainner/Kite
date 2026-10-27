@@ -11,6 +11,7 @@ import { loadSkill, systemSkillSources } from '../harness/context/skills.ts';
 import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/documents.ts';
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
+import { KnownFiles } from './known-files.ts';
 import { withReads } from './policy.ts';
 import { runCheck, type CheckHost } from '../check.ts';
 import { assertFileAccess, canonicalPath, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
@@ -67,6 +68,7 @@ diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File
 创建：每行以 + 开头；例如 "+甲\\n+乙\\n+" 创建带末尾换行的两行文件，空 diff 创建空文件。目标必须不存在。
 修改：以 @@ 开始，空格开头是原文上下文，- 开头是删除行，+ 开头是新增行；例如 "@@\\n 甲\\n-乙\\n+丁\\n 丙"。
 提供足够上下文定位目标；必要时用 @@ 函数名等原文行作为定位锚点。
+读过或改过的文件不用每次改前先 read：原文对不上补丁会失败，不会改错位置；文件在你上次看到之后被别处改过，结果里会提示。
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
 
 const checkDescription = '跑项目的检查（.kite/check），判断这个项目改坏了没有；代码项目通常是类型检查加受改动影响的测试。'
@@ -85,8 +87,9 @@ PDF 转为 Markdown 按页返回，用 pages 选页；结果会说明总页数�
 /**
  * skills 是宿主的 skill 清单（每次请求前刷新，见 SkillCatalog）：skill 工具、read 认的 skill 文件夹和沙箱的只读放行都按它；
  * 不给时只有系统层与项目层，按建工具时扫的那一份。check 给出时才有 check 工具，见 check.ts。
+ * knownFiles 是存本线程看到或改过的文件版本的文件（见 known-files.ts），不给时只记在内存里。
  */
-export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials' | 'background'> & { diffDir?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy);
+export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials' | 'background'> & { diffDir?: string; knownFiles?: string; policy?: ExecutionPolicy | (() => ExecutionPolicy);
   secrets?: SecretProvider; background?: ShellBackground; outside?: ShellOutside; skills?: SkillCatalog; check?: CheckHost }): Tool[] {
   const files = new WorkspaceFiles(options.cwd);
   const root = files.root;
@@ -107,8 +110,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
   const diffs = new FileDiffStore(options.diffDir ?? join(options.logDir, 'diffs'));
   const limit = options.outputLimit ?? 20_000;
   if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('工具输出限制必须为正整数');
-  // 只记录本次运行中读取或修改后已知的版本；不代表整文件仍在模型上下文里。
-  const versions = new Map<string, string>();
+  const known = new KnownFiles(root, options.knownFiles);
   const pdfs = new PdfReader(commandEnvironment(options.env));
   const background = options.background;
   const shellDescription = '在当前工作目录的操作系统沙箱中运行 shell 命令，可用 rg 搜索、运行构建与测试。网络和工作区外的资源按宿主授权访问；被禁止或拒绝时说明所需权限，不自行绕过或重放。'
@@ -143,7 +145,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       const result = scope.files.read({ ...args, path: scope.path });
       const selected = result.offset > result.totalLines ? '' : result.text.split('\n').map((line, i) => `${result.offset + i}: ${line}`).join('\n');
       const output = selected.length > limit ? `${selected.slice(0, limit)}\n（输出已截断，请缩小读取范围）` : selected;
-      versions.set(realpathSync(target), result.version);
+      known.set(realpathSync(target), result.version);
       return { status: 'success', output: `共 ${result.totalLines} 行\n${output}` };
     }, true),
     zodTool('skill', skillDescription, skillArgs, async ({ name }) => {
@@ -175,10 +177,10 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
         paths.add(key);
         if (type === 'create_file' && present) throw new Error(`新建目标已经存在：${path}`);
         const original = type === 'create_file' ? '' : files.text(target);
-        const known = versions.get(key);
-        const notice = type === 'create_file' ? '' : known === undefined
-          ? `提示：${path} 没有本次运行的读取或修改记录；依赖周边内容时请先 read。`
-          : known !== textVersion(original) ? `提示：${path} 自上次读取或修改后已有其他变化；依赖周边内容时请重新 read。` : '';
+        // 没看过的不提示：补丁对得上，说明模型知道那段原文。
+        const last = known.get(key);
+        const notice = type !== 'create_file' && last !== undefined && last !== textVersion(original)
+          ? `提示：${path} 在你上次看到或修改之后已有其他变化；依赖周边内容时请重新 read。` : '';
         let content: string | null = null;
         if (type !== 'delete_file') {
           // applyDiff 接收单文件正文；拒绝包装头，避免上游把它当终止符而忽略后续内容。
@@ -200,11 +202,11 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
         try {
           if (change.content === null) {
             unlinkSync(change.target);
-            versions.delete(change.key);
+            known.delete(change.key);
           } else {
             mkdirSync(dirname(change.target), { recursive: true });
             writeFileSync(change.target, change.content, { flag: change.type === 'create_file' ? 'wx' : 'w' });
-            versions.set(realpathSync(change.target), textVersion(change.content));
+            known.set(realpathSync(change.target), textVersion(change.content));
           }
           const completed = { path: change.path, before: change.original, after: change.content };
           try { diffs.save({ ...diff, files: [...diff.files, completed] }); }
@@ -254,12 +256,20 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
         // 只有这次命令运行期间到的消息才让它转后台。
         const interjection = new AbortController();
         const unsubscribe = background?.interjected(() => interjection.abort());
+        const before = known.watch();
         try {
-          return await runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput,
+          const result = await runCommand(command, timeout_ms, signal, { ...options, cwd: root, policy: policy(), credentials, onOutput: output ?? options.onOutput,
             ...(unsandboxed ? { unsandboxed: true, askNetwork: undefined } : {}),
             background: background && { now: interjection.signal, immediately: args.background === true,
               adopt: (adopted) => background.adopt(adopted, { command, turnId: context.turnId, callId: context.callId }) } });
-        } finally { unsubscribe?.(); }
+          // 输出只认交给模型的那一段。
+          known.seen(command, result.output);
+          return result;
+        } finally {
+          unsubscribe?.();
+          // 停下或出错的命令也可能已经改了文件。
+          known.settle(before);
+        }
       }),
     ...(check ? [zodTool('check', checkDescription, checkArgs, ({ all = false }, { signal, output }) => runCheck(all, signal, {
       ...check, command: { cwd: root, env: options.env, policy: policy(), onOutput: output ?? options.onOutput,

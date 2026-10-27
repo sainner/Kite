@@ -127,7 +127,7 @@ export async function openClaudeHost(options: {
     }
   };
   const tools = localTools({ cwd: options.cwd, diffDir: options.diffDir, logDir: join(options.directory, 'commands'),
-    env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets, skills: options.skills,
+    knownFiles: join(options.directory, 'known-files.json'), env: commandEnvironment(process.env), policy: options.policy, secrets: options.secrets, skills: options.skills,
     ...(options.askNetwork ? { askNetwork: options.askNetwork } : {}),
     ...(options.background ? { background: options.background } : {}),
     ...(options.outside ? { outside: options.outside } : {}),

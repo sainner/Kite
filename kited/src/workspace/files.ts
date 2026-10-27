@@ -1,6 +1,6 @@
 /** 文件插件与 agent 共用工作目录边界和文本读取；不提供操作系统沙箱。 */
 import { createHash } from 'node:crypto';
-import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { type BigIntStats, type Dirent, lstatSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { z } from 'zod';
@@ -54,6 +54,9 @@ export function textContent(size: number, read: () => string): string {
   return content;
 }
 
+/** 不读内容的文件版本：大小、修改时间和 inode 都没变就当作同一版本。 */
+export const statVersion = (stat: BigIntStats): string => [stat.size, stat.mtimeNs, stat.ino].map((n) => n.toString(36)).join('-');
+
 /** 文本内容的版本：完整内容的 sha256，读一页（textPage）和保存（WorkspaceFiles.write）用同一个。 */
 export const textVersion = (content: string): string => createHash('sha256').update(content).digest('hex');
 
@@ -86,13 +89,12 @@ export class WorkspaceFiles {
     return target;
   }
 
-  /** 普通文件与它的版本：大小、修改时间和 inode 都没变就当作同一版本，不读内容。 */
+  /** 普通文件与它的版本：见 statVersion，不读内容。 */
   regular(path: string) {
     const target = this.resolve(path);
     const stat = statSync(target, { bigint: true });
     if (!stat.isFile()) throw new KiteError('目标不是普通文件');
-    return { target, size: Number(stat.size), modified: Number(stat.mtimeMs),
-      version: [stat.size, stat.mtimeNs, stat.ino].map((n) => n.toString(36)).join('-') };
+    return { target, size: Number(stat.size), modified: Number(stat.mtimeMs), version: statVersion(stat) };
   }
 
   text(path: string): string {
