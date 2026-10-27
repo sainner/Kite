@@ -33,14 +33,17 @@ struct DirectoryStatus: View {
             return ["把工作机上的文件夹或远程仓库登记为项目，即可开始工作。"]
         case .idle:
             return ["点侧栏里项目旁的加号创建。"]
-        case .connecting, .unreachable:
-            guard let remote = workspace?.remote else { return ["正在连接账号下的工作机。"] }
-            var lines = ["\(remote.machine.name) · \(remote.workspace.cwd)", "目录已保留，连接后自动载入工作区内容。"]
-            if let updatedAt = connection?.updatedAt {
-                lines.append("目录更新于 \(Date(timeIntervalSince1970: Double(updatedAt) / 1000).formatted())")
-            }
-            return lines
+        case .connecting:
+            // 标题已说明在连，只补一句目录是什么时候的
+            return [catalogTime].compactMap(\.self)
+        case .unreachable:
+            guard let remote = workspace?.remote else { return [] }
+            return ["\(remote.machine.name) · \(remote.workspace.cwd)", "目录已保留，连接后自动载入工作区内容。", catalogTime].compactMap(\.self)
         }
+    }
+
+    private var catalogTime: String? {
+        connection?.updatedAt.map { "目录更新于 \(Date(timeIntervalSince1970: Double($0) / 1000).formatted())" }
     }
 
     private var error: String? { workspace == nil ? model.account.error : connection?.outdated?.detail ?? connection?.error }
