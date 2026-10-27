@@ -159,9 +159,9 @@ final class ThreadWindowView: NSView {
         let barHeight = glassHeight + margin
         place(controls, CGRect(x: 0, y: height - barHeight, width: width, height: barHeight))
         glass = CGRect(x: (width - glassWidth) / 2, y: height - barHeight, width: glassWidth, height: glassHeight)
-        if metrics.controlsHeight != barHeight { metrics.controlsHeight = barHeight }
-        // 对话和原始记录同 PaneControlsBar 在输入区顶上再空一段边距（iPhone、iPad 见 PhoneThreadWindowView.placeTranscript）
+        // 正文同 PaneControlsBar 在输入区顶上再空一段边距（iPhone、iPad 见 PhoneThreadWindowView.placeTranscript）
         let contentBottom = barHeight + margin
+        if metrics.contentBottom != contentBottom { metrics.contentBottom = contentBottom }
 
         // 从窗口原点铺到标题栏的右下角，标题栏摆在正文的位置上
         let origin = windowOrigin

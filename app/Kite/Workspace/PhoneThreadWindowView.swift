@@ -287,7 +287,6 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         let glassHeight = controls.height(forWidth: glassWidth)
         let barHeight = glassHeight + margin
         place(controls, CGRect(x: (width - glassWidth) / 2, y: height - barHeight, width: glassWidth, height: glassHeight))
-        if metrics.controlsHeight != barHeight { metrics.controlsHeight = barHeight }
 
         place(surface, bounds)
         place(fade, CGRect(x: 0, y: 0, width: width, height: state.headerHeight))
@@ -305,7 +304,6 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
                   headerHeight: 0, controlsInset: 0)
         }) { [weak self] in self?.invalidate() }
         let insets = compactInsets
-        if metrics.controlsHeight != insets.bottom { metrics.controlsHeight = insets.bottom }
         place(surface, bounds)
         // 键盘升降时外壳在键盘的动画块里排版：对话当场排、滚动位置跟着键盘的曲线走（iOS 的惯例），新露出来的行不带动画放进去（见 PhoneTranscriptView.realize）
         placeTranscript(state, headerHeight: insets.top, insets: insets, rowsWithoutAnimation: true)
@@ -322,9 +320,10 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty || state.raw
-        // 对话同 PaneControlsBar 在输入区顶上再空一段边距
+        // 正文同 PaneControlsBar 在输入区顶上再空一段边距；原始记录、签名、录音那一带都按它让（ThreadWindowMetrics）
         var insets = insets
         insets.bottom += Metrics.paneMargin
+        if metrics.contentBottom != insets.bottom { metrics.contentBottom = insets.bottom }
         if insets != self.insets {
             self.insets = insets
             list.setInsets(insets)
@@ -410,7 +409,7 @@ private struct PhoneTranscriptSurface: View {
             PhoneTranscriptSlot(list: list)
             if let raw = thread.raw {
                 RawTranscriptView(raw: raw, insets: EdgeInsets(top: metrics.header.size.height, leading: 0,
-                                                               bottom: metrics.controlsHeight, trailing: 0))
+                                                               bottom: metrics.contentBottom, trailing: 0))
             }
         }
         .ignoresSafeArea()

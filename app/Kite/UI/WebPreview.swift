@@ -120,20 +120,28 @@ private struct PlacedWebView: View {
     @Environment(\.windowGeometry) private var geometry
     /// 两栏之间那块的高。
     @State private var height: CGFloat = 0
-    /// 键盘收着时的高。
-    @State private var resting: CGFloat = 0
+    /// 键盘收着时的高，和那时的屏幕尺寸。
+    @State private var resting: Resting?
+
+    private struct Resting: Equatable {
+        var height: CGFloat
+        var screen: CGSize?
+    }
 
     var body: some View {
         // 键盘升没升按外壳的几何读：它和安全区在同一次排版里变；键盘通知到得晚，外壳在键盘通知里就已经排完了
         let keyboard = geometry?.keyboardShown == true
+        let screen = geometry?.screen
+        // 键盘升着时转了屏、换了分屏，升起前的高不再作数，跟着两栏之间排：页面变矮重排，总比按旧方向的高伸出屏幕外好
+        let kept = keyboard ? resting.flatMap { $0.screen == screen ? max($0.height, height) : nil } : nil
         Color.clear
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
             .overlay(alignment: .top) {
                 SafeAreaFreeWebView(page: page)
-                    .frame(height: keyboard ? max(resting, height) : nil)
+                    .frame(height: kept)
             }
-            .onChange(of: keyboard ? nil : height, initial: true) { _, height in
-                if let height { resting = height }
+            .onChange(of: keyboard ? nil : Resting(height: height, screen: screen), initial: true) { _, now in
+                if let now { resting = now }
             }
     }
 }
@@ -142,7 +150,15 @@ private struct PlacedWebView: View {
 private struct SafeAreaFreeWebView: UIViewControllerRepresentable {
     let page: WebPage
 
+    /// 交给托管控制器的页面。换了页面才换根视图：外面每次更新都换的话，拖缝、窗口动画时高度一变就多一轮比对。
+    @MainActor final class Coordinator {
+        var page: WebPage?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIViewController(context: Context) -> UIHostingController<WebView> {
+        context.coordinator.page = page
         let host = UIHostingController(rootView: WebView(page))
         host.safeAreaRegions = []
         host.view.backgroundColor = .clear
@@ -150,6 +166,8 @@ private struct SafeAreaFreeWebView: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ host: UIHostingController<WebView>, context: Context) {
+        guard context.coordinator.page !== page else { return }
+        context.coordinator.page = page
         host.rootView = WebView(page)
     }
 }

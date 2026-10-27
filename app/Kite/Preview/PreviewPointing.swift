@@ -129,20 +129,26 @@ struct PointedElement: Decodable, Equatable, Sendable {
         return thread.map { .info("指认：点一下选中元素，放进「\($0.title)」的输入框", symbol: "scope") }
     }
 
-    /// 打开或关掉；关掉时选过元素的话，把那个对话放上台面。
+    /// 打开或关掉。
     private func toggle(area: WorkArea, client: KitedClient, preview: String) {
-        if let target {
-            if !picks.isEmpty { area.bringUp(target.thread) }
-            self.target = nil
-            hover = nil
-            hovered = nil
-            picks = []
-            hold(false)
+        if active {
+            stop()
         } else {
             failure = nil
             target = Target(area: area, thread: area.pointingThread(), source: AttachmentSource(client: client, workspace: area.id), preview: preview)
             hold(true)
         }
+    }
+
+    /// 关掉；选过元素的话，把那个对话放上台面。没开着时什么也不做。
+    func stop() {
+        guard let target else { return }
+        if !picks.isEmpty { target.area.bringUp(target.thread) }
+        self.target = nil
+        hover = nil
+        hovered = nil
+        picks = []
+        hold(false)
     }
 
     /// 指针移到画面上这一点，nil 是移出了画面。

@@ -32,8 +32,9 @@
     }
     return out;
   };
+  // 截到 200 个码元，切开的半个 emoji 去掉：单个的代理项 App 那边的 JSON 解不出来
   const text = (element.getAttribute('aria-label') || element.getAttribute('alt') || element.getAttribute('placeholder')
-    || element.getAttribute('title') || visibleText(element)).replace(/\s+/g, ' ').trim().slice(0, 200);
+    || element.getAttribute('title') || visibleText(element)).replace(/\s+/g, ' ').trim().slice(0, 200).replace(/[\ud800-\udbff]$/, '');
 
   // 打包插件写的位置属性：code-inspector-plugin 是「文件:行:列:标签」，TanStack Devtools 是「文件:行:列」
   const attributeSource = (node) => {

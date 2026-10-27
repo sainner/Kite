@@ -16,7 +16,8 @@ extension EnvironmentValues {
     private var last: CGFloat?
 
     func height(for pane: Pane) -> CGFloat {
-        heights[pane] ?? last ?? Metrics.paneToolbarHeight + Metrics.paneMargin
+        // 上下各一段边距，见 PaneControlsBar
+        heights[pane] ?? last ?? Metrics.paneToolbarHeight + 2 * Metrics.paneMargin
     }
 
     func measured(_ height: CGFloat, for pane: Pane) {

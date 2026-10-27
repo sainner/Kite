@@ -2,14 +2,14 @@ import SwiftUI
 
 /// 原生的会话窗口外框（Mac 的 ThreadWindowView、iPhone 和 iPad 的 PhoneThreadWindowView）里，几个托管视图里放的 SwiftUI，两端共用。
 
-/// 原生外框量好的几项，托管视图里读：录音时底部那一带铺到多高（输入区的高），标题栏摆在窗口的哪儿、多大。
+/// 原生外框量好的几项，托管视图里读：正文底下让出多高（输入区连同它顶上那段边距，同 PaneControlsBar；录音时底部那一带也按它），标题栏摆在窗口的哪儿、多大。
 @MainActor @Observable final class ThreadWindowMetrics {
     struct Header: Equatable {
         var origin = CGPoint.zero
         var size = CGSize.zero
     }
 
-    var controlsHeight: CGFloat = 0
+    var contentBottom: CGFloat = 0
     var header = Header()
 }
 
@@ -132,9 +132,9 @@ struct ThreadBackdropRoot: View {
                 // 标题和说明排在标题栏和输入区之间，同 PaneWindow 的正文让出 safeAreaBar；图案照样铺满整个窗口（按 paneWindowFrame）
                 NewThreadStage(slot: pane.patternSlot)
                     .padding(.top, metrics.header.size.height)
-                    .padding(.bottom, metrics.controlsHeight)
+                    .padding(.bottom, metrics.contentBottom)
             } else if thread.hasTranscript {
-                ThreadVoiceBand(pane: pane, bottom: metrics.controlsHeight)
+                ThreadVoiceBand(pane: pane, bottom: metrics.contentBottom)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

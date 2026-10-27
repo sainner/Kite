@@ -155,6 +155,8 @@ private struct DeviceWebPreview: View {
         }
         .onChange(of: port) {
             webFailure = nil
+            // 指的那个页面没了；开关只在有端口时显示，不关就关不掉了，信息区也一直是指认的提示
+            pointer.stop()
             area.portChanged(instance.id, to: port)
         }
     }
@@ -284,8 +286,9 @@ private struct ScreenPreview: View {
                 case .simulator: simulatorControls
                 case .app, .none: appControls
                 }
-                PaneHeaderActionGroup(actions: [pointer.action(area: area, client: client, preview: instance.title)])
             }
+            // 打字时也在：指认开着时画面停着，得能关
+            PaneHeaderActionGroup(actions: [pointer.action(area: area, client: client, preview: instance.title)])
         }
         .task(id: connection) { await session.run(client: client) }
         .onChange(of: linkToOpen, initial: true) {

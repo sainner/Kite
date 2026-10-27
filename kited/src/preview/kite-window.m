@@ -306,6 +306,11 @@ static NSString *stringAttribute(AXUIElementRef element, CFStringRef name) {
   return nil;
 }
 
+/** 截到 200 个码元以内，不切开 emoji 这类几个码元组成的字：半个代理项转不成 JSON，整条回复就没了。 */
+static NSString *clipped(NSString *text) {
+  return text.length > 200 ? [text substringToIndex:[text rangeOfComposedCharacterSequenceAtIndex:200].location] : text;
+}
+
 static NSString *roleOf(AXUIElementRef element) {
   return [stringAttribute(element, kAXRoleAttribute) ?: @"?" stringByReplacingOccurrencesOfString:@"AX" withString:@""];
 }
@@ -326,7 +331,7 @@ static void axWalk(AXUIElementRef element, int depth, NSMutableString *out, int 
   NSString *value = stringAttribute(element, kAXValueAttribute), *identifier = stringAttribute(element, kAXIdentifierAttribute);
   [out appendFormat:@"%*s%@", depth * 2, "", roleOf(element)];
   if (label) [out appendFormat:@" \"%@\"", label];
-  if (value) [out appendFormat:@" value=%@", value.length > 200 ? [[value substringToIndex:200] stringByAppendingString:@"…"] : value];
+  if (value) [out appendFormat:@" value=%@", value.length > 200 ? [clipped(value) stringByAppendingString:@"…"] : value];
   if (identifier) [out appendFormat:@" id=%@", identifier];
   CFTypeRef enabled = NULL;
   if (AXUIElementCopyAttributeValue(element, kAXEnabledAttribute, &enabled) == kAXErrorSuccess && enabled) {
@@ -383,7 +388,7 @@ static NSDictionary *elementAt(CGPoint point) {
   NSMutableDictionary *found = [@{@"tag" : roleOf(element), @"x" : @(frame.origin.x), @"y" : @(frame.origin.y),
                                   @"width" : @(frame.size.width), @"height" : @(frame.size.height)} mutableCopy];
   CFRelease(element);
-  if (text) found[@"text"] = text.length > 200 ? [text substringToIndex:200] : text;
+  if (text) found[@"text"] = clipped(text);
   if (identifier) found[@"identifier"] = identifier;
   return found;
 }

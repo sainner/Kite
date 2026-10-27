@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { KiteError } from '../errors.ts';
 import { systemCommand } from '../system-command.ts';
-import type { Frame, PointedElement, PreviewAction, Screen } from './screen.ts';
+import { sameFrame, type Frame, type PointedElement, type PreviewAction, type Screen } from './screen.ts';
 
 /** 一条工具调用最多等这么久；开会话后第一次截图要等模拟器开机，实测约一分钟。 */
 const CALL_TIMEOUT_MS = 3 * 60_000;
@@ -234,19 +234,28 @@ export function parseHierarchy(text: string): Control[] {
     };
     const [x, y, width, height] = frame.slice(1).map(Number) as [number, number, number, number];
     const text = field('label') || /^\s*\w+ "(.*?)"/.exec(line)?.[1]?.trim() || field('title') || field('value') || field('placeholderValue');
-    return [{ depth: head[1]!.length, tag: head[2]!, x, y, width, height, identifier: field('identifier'), text: text?.slice(0, 200) }];
+    // 截到 200 个码元，切开的半个 emoji 去掉：单个的代理项 App 那边的 JSON 解不出来
+    return [{ depth: head[1]!.length, tag: head[2]!, x, y, width, height, identifier: field('identifier'),
+      text: text?.slice(0, 200).replace(/[\ud800-\udbff]$/, '') }];
   });
 }
 
 /**
- * 画面上这一点最上层的控件：盖住这一点的控件里层级最深的，同层的取靠后的（后面的画在上面）。
- * 最深的只是没有文字、没有标识的容器时往外找有内容的，都没有就还是最深的。
+ * 画面上这一点最上层的控件：界面结构按画的先后排（父在子前、后面的兄弟盖在前面的上面），盖住这一点的最后一个在最上面。
+ * 它只是没有文字、没有标识的容器时沿它的上层往外找有内容的，都没有就还是它。按层级深浅挑不行：
+ * 列表滚到标签栏底下时，被盖住的行里的字比标签栏的按钮深。
  */
 export function controlAt(controls: Control[], x: number, y: number): Control | undefined {
-  // 倒过来再按层级稳定排序：同层的靠后的在前
-  const covering = controls.filter((c) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height)
-    .reverse().sort((a, b) => b.depth - a.depth);
-  return covering.find((c) => c.text || c.identifier || !['Other', 'Window', 'Application'].includes(c.tag)) ?? covering[0];
+  const top = controls.findLastIndex((c) => c.width > 0 && c.height > 0 && x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height);
+  if (top < 0) return undefined;
+  // 倒着往前，比已经看到的都浅的是它的上层
+  for (let i = top, depth = Infinity; i >= 0; i--) {
+    const c = controls[i]!;
+    if (c.depth >= depth) continue;
+    depth = c.depth;
+    if (c.text || c.identifier || !['Other', 'Window', 'Application'].includes(c.tag)) return c;
+  }
+  return controls[top];
 }
 
 /**
@@ -260,8 +269,10 @@ export class SimulatorScreen implements Screen {
   private size?: { width: number; height: number };
   /** 刚做完的动作 Xcode 截的那一帧，紧接着给模型的那次截图用一次；隔久了不用，画面可能已经变了。 */
   private fresh?: { frame: Frame; at: number };
-  /** 指认用的界面结构：指认期间画面停着，悬停时不必每次请 Xcode；做了动作、截了新的一帧就作废。 */
+  /** 指认用的界面结构：指认期间画面停着，悬停时不必每次请 Xcode；做了动作、给设备截的画面变了就作废。 */
   private controls?: Promise<Control[]>;
+  /** 上次给设备截的画面，看画面变没变。 */
+  private shown?: Uint8Array;
 
   constructor(private udid: string, private tools: XcodeTools, private env: Record<string, string>) {}
 
@@ -277,51 +288,69 @@ export class SimulatorScreen implements Screen {
     return this.session;
   }
 
-  /** 做一条命令（空的只截图），返回 Xcode 截的一帧，要的话带上界面结构；会话被 Xcode 关掉了就重开一次。 */
-  private async run(interaction: string, withHierarchy = false): Promise<{ frame: Frame; hierarchy: string }> {
+  /** 做一条命令（空的只截图），Xcode 留下的截图和界面结构交给 read 读；会话被 Xcode 关掉了就重开一次。 */
+  private async synthesize<T>(interaction: string, read: (files: z.infer<typeof synthesized>) => T | Promise<T>): Promise<T> {
     if (this.closed) throw new KiteError('模拟器的画面已经关了', 409);
+    const call = async () => this.tools.call('DeviceInteractionSynthesize', { interactSessionKey: await this.open(), interactionCommand: interaction });
+    const session = this.open();
     let result: Record<string, unknown>;
     try {
-      result = await this.tools.call('DeviceInteractionSynthesize', { interactSessionKey: await this.open(), interactionCommand: interaction });
+      result = await call();
     } catch (error) {
       if (!/Session not found|timed out/i.test((error as Error).message)) throw error;
-      this.session = undefined;
-      result = await this.tools.call('DeviceInteractionSynthesize', { interactSessionKey: await this.open(), interactionCommand: interaction });
+      // 同时在做的几条一起发现会话没了时只重开一个
+      if (this.session === session) this.session = undefined;
+      result = await call();
     }
-    const files = synthesized.parse(result);
     try {
-      const image = new Bun.Image(readFileSync(files.screenshotPath));
-      const metadata = await image.metadata();
-      this.size = { width: metadata.width, height: metadata.height };
-      const data = await image.jpeg({ quality: 70 }).bytes();
-      const hierarchy = withHierarchy && files.hierarchyPath ? readFileSync(files.hierarchyPath, 'utf8') : '';
-      return { frame: { data, ...this.size }, hierarchy };
+      return await read(synthesized.parse(result));
     } finally {
       // Xcode 的临时目录里每步留四个文件，读完删掉
       for (const path of Object.values(result)) if (typeof path === 'string' && path.includes('/ActionArtifacts/')) rmSync(path, { force: true });
     }
   }
 
+  /** 做一条命令，返回 Xcode 截的一帧。 */
+  private run(interaction: string): Promise<Frame> {
+    return this.synthesize(interaction, async (files) => {
+      const image = new Bun.Image(readFileSync(files.screenshotPath));
+      const metadata = await image.metadata();
+      this.size = { width: metadata.width, height: metadata.height };
+      return { data: await image.jpeg({ quality: 70 }).bytes(), ...this.size };
+    });
+  }
+
+  /** 当前的界面结构；Xcode 同时截的图不用，不转码。 */
+  private hierarchy(): Promise<string> {
+    return this.synthesize('', (files) => files.hierarchyPath ? readFileSync(files.hierarchyPath, 'utf8') : '');
+  }
+
   async capture(forModel = false): Promise<Frame> {
-    this.controls = undefined;
     if (forModel) {
       const fresh = this.fresh;
       this.fresh = undefined;
-      return fresh && Date.now() - fresh.at < FRESH_MS ? fresh.frame : (await this.run('')).frame;
+      return fresh && Date.now() - fresh.at < FRESH_MS ? fresh.frame : await this.run('');
     }
     if (!this.size) await this.run('');
     const file = join(tmpdir(), `kite-simulator-${randomUUID()}.jpg`);
     try {
       const shot = await systemCommand([await simctl(this.env), 'io', this.udid, 'screenshot', '--type=jpeg', file], { env: this.env, timeoutMs: 15_000 });
       if (shot.code !== 0) throw new KiteError('没有截到模拟器的屏幕', 503);
-      return { data: readFileSync(file), ...this.size! };
+      const data = readFileSync(file);
+      // 画面变了界面结构才作废：别的设备实时看着时每截一帧都作废的话，指认几乎每次悬停都要请 Xcode
+      if (!this.shown || !sameFrame(data, this.shown)) {
+        this.controls = undefined;
+        this.shown = data;
+      }
+      return { data, ...this.size! };
     } finally { rmSync(file, { force: true }); }
   }
 
   async act(action: PreviewAction): Promise<void> {
     if (!this.size) await this.run('');
+    const frame = await this.run(command(action, this.size!));
+    // 做完再作废：动作当中悬停取的是动作之前的界面结构
     this.controls = undefined;
-    const { frame } = await this.run(command(action, this.size!));
     this.fresh = { frame, at: Date.now() };
   }
 
@@ -330,13 +359,16 @@ export class SimulatorScreen implements Screen {
   }
 
   async inspect(): Promise<string> {
-    const { hierarchy } = await this.run('', true);
+    const hierarchy = await this.hierarchy();
+    // 顺带给指认用，紧接着指认时不用再请一次 Xcode；空的不留，指认时自己再要
+    const controls = parseHierarchy(hierarchy);
+    if (controls.length) this.controls = Promise.resolve(controls);
     return hierarchy.length > HIERARCHY_CHARS ? `${hierarchy.slice(0, HIERARCHY_CHARS)}\n…（界面结构太长，后面截掉了）` : hierarchy;
   }
 
   async point(x: number, y: number): Promise<PointedElement | null> {
     if (!this.controls) {
-      const controls = this.controls = this.run('', true).then(({ hierarchy }) => parseHierarchy(hierarchy), () => []);
+      const controls = this.controls = this.hierarchy().then(parseHierarchy, () => []);
       // Xcode 偶尔不给界面结构（说明里说是无障碍的临时问题）：出错、为空的过一会儿再要，不在指针每动一下时都请一次 Xcode
       void controls.then((list) => {
         if (!list.length) setTimeout(() => { if (this.controls === controls) this.controls = undefined; }, CONTROLS_RETRY_MS).unref();
