@@ -44,6 +44,8 @@ final class WorkThread: Identifiable {
     private(set) var regeneratingTitle = false
     /// 选好的压缩起点（一条人发消息的 id），等在这条或之后的消息上选终点。
     var compactionStart: String?
+    /// 核对过、等确认的回退，见 RewindConfirmation。
+    var rewindRequest: RewindRequest?
     /// 调试模式：不为空时窗口的对话区换成原始记录，见 RawTranscript。
     var raw: RawTranscript?
     private(set) var client: KitedClient?
@@ -80,6 +82,7 @@ final class WorkThread: Identifiable {
     var canCompact: Bool { !isDraft && connected && state?.capabilities.compact == true }
     /// 压缩全部要有内容、空闲着：工作机只在空闲时压缩。
     var canCompactAll: Bool { canCompact && hasTranscript && !showStop && state?.compacting != true }
+    var canRewind: Bool { !isDraft && connected && state?.capabilities.rewind == true }
     var canRegenerateTitle: Bool { !isDraft && connected && state?.status == "open" && !regeneratingTitle }
     /// 圆环的阶段：在等人回应时是 waiting，圆环换警示黄、明暗起伏；正在压缩是 running 的子状态 compacting，弧画满再收掉。
     var statusPhase: String {
@@ -525,6 +528,31 @@ final class WorkThread: Identifiable {
         Task {
             do { let _: JSON = try await client.request("/threads/\(id)/compactions/\(compaction)", method: "DELETE", as: JSON.self); error = nil }
             catch { self.error = error.localizedDescription }
+        }
+    }
+
+    /// 回退前先请工作机核对：这条还在上下文里，文件回到哪一枚、会一起撤掉哪些代理的改动；核对完弹确认（RewindConfirmation）。
+    func prepareRewind(_ message: Message) {
+        guard let client, canRewind else { return }
+        Task {
+            do {
+                let response = try await client.request("/threads/\(id)/rewind", method: "POST",
+                    body: RewindBody(input: message.id, conversation: true, files: true, preview: true), as: RewindResponse.self)
+                rewindRequest = RewindRequest(message: message, files: response.files)
+                error = nil
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    /// 回退了对话的，这条的原文和附件放回输入框；对话的结果经工作机整份重发的历史送达，失败显示在状态里，同 compact。
+    func rewind(_ request: RewindRequest, conversation: Bool, files: Bool) {
+        guard let client else { return }
+        Task {
+            do {
+                try await client.post("/threads/\(id)/rewind", body: RewindBody(input: request.message.id, conversation: conversation, files: files))
+                if conversation { restoreDraft([request.message]) }
+                error = nil
+            } catch { self.error = error.localizedDescription }
         }
     }
 

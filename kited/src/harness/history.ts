@@ -11,6 +11,8 @@ interface Placed { seq: number; at: number }
 interface SavedRequest extends Placed {
   id: string;
   turnId: string;
+  contextId: string;
+  configurationId: string;
   inputs: Input[];
   notifications: Extract<ContextItem, { type: 'notification' }>[];
   items: ModelItem[];
@@ -21,8 +23,8 @@ interface SavedRequest extends Placed {
   usage?: { input: number; output: number };
 }
 
-/** 导入段记着来源后端中已导入的最后位置，重组 Claude 会话时据此原样拷贝原生条目。 */
-type Imported = Placed & { imported: ContextItem[]; source: { id: string; through: string } };
+/** 导入段记着来源后端中已导入的最后位置，重组 Claude 会话时据此原样拷贝原生条目；instructions 是那时来源后端已告知的基础上下文。 */
+type Imported = Placed & { imported: ContextItem[]; source: { id: string; through: string }; instructions?: string };
 type Segment = SavedRequest | (Placed & { feedback: string }) | Imported;
 
 /** 实际进入请求的历史中的一段：一个原始段，或一次压缩的替代内容。 */
@@ -108,8 +110,10 @@ export class HarnessHistory {
 
   constructor(records: readonly JournalRecord[]) {
     for (const row of records) this.apply(row);
-    const first = records.find((row) => row.type === 'request.started');
-    const last = records.findLast((row) => row.type === 'request.started');
+    // 代理已知的基础上下文与工具按仍在历史里的请求算，回退掉的不算。
+    const isRequest = (segment: Segment): segment is SavedRequest => 'id' in segment;
+    const first = this.segments.find(isRequest);
+    const last = this.segments.findLast(isRequest);
     if (first && last) {
       const base = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === first.contextId);
       const current = records.find((row) => row.type === 'context.prepared' && row.snapshot.id === last.contextId);
@@ -122,8 +126,8 @@ export class HarnessHistory {
       }
       if (configuration?.type === 'request.configured') this.toolDefinitions = structuredClone(configuration.snapshot.tools);
       // 另一后端在此后已告知的基础上下文，不再作为更新重复投递。
-      const imported = records.findLast((row) => row.type === 'context.imported');
-      if (imported?.type === 'context.imported' && imported.seq > last.seq && imported.instructions !== undefined) {
+      const imported = this.segments.findLast((segment): segment is Imported => 'imported' in segment);
+      if (imported && imported.seq > last.seq && imported.instructions !== undefined) {
         this.currentStable = imported.instructions;
         this.currentRoster = undefined;
       }
@@ -200,7 +204,7 @@ export class HarnessHistory {
           if (!this.pending.delete(id)) throw new Error('请求使用了非待处理输入');
           return this.inputs.get(id)!;
         });
-        const request: SavedRequest = { id: row.requestId, turnId: row.turnId, inputs, notifications,
+        const request: SavedRequest = { id: row.requestId, turnId: row.turnId, contextId: row.contextId, configurationId: row.configurationId, inputs, notifications,
           items: [], started: new Set(), results: new Map(), ended: false, seq: row.seq, at: row.at };
         this.requests.set(row.requestId, request);
         this.segments.push(request);
@@ -267,7 +271,8 @@ export class HarnessHistory {
           }
         }
         this.notificationCursor = Math.max(this.notificationCursor, row.notificationCursor);
-        this.segments.push({ imported: structuredClone(row.items), source: { id: row.id, through: row.source.through }, seq: row.seq, at: row.at });
+        this.segments.push({ imported: structuredClone(row.items), source: { id: row.id, through: row.source.through }, seq: row.seq, at: row.at,
+          ...(row.instructions !== undefined ? { instructions: row.instructions } : {}) });
         return;
       case 'context.compacted': {
         if (this.compactions.has(row.id)) throw new Error('压缩记录重复');
@@ -286,6 +291,20 @@ export class HarnessHistory {
         if (!compaction || compaction.reverted || !this.outermost().includes(compaction)) throw new Error('撤销压缩的记录无效');
         compaction.reverted = true;
         this.contextChanged = { seq: row.seq, automatic: false };
+        return;
+      }
+      case 'context.rewound': {
+        if (this.openTurn || this.unfinishedRequest() || this.pending.size) throw new Error('只能在空闲且没有待处理输入时回退');
+        const index = this.segments.findIndex((segment) => segment.seq === row.from);
+        if (index < 0) throw new Error('回退记录无效');
+        this.segments.length = index;
+        for (const compaction of this.compactions.values()) if (compaction.end > row.from) compaction.reverted = true;
+        this.contextChanged = { seq: row.seq, automatic: false };
+        // 回退掉的回合不再有结果要人处理。
+        this.lastOutcome = undefined;
+        this.waitingForResume = false;
+        this.exited = false;
+        this.exits = 0;
         return;
       }
     }
@@ -319,10 +338,25 @@ export class HarnessHistory {
       } else if ('imported' in segment) {
         const inputs = segment.imported.flatMap((item) => item.type === 'input' ? [item.input] : []);
         if (inputs[0]?.id === id) return { segment, input: inputs[0] };
-        if (inputs.some((input) => input.id === id)) throw new Error('这条消息在一段整体导入的历史中间，不能作为压缩边界');
+        if (inputs.some((input) => input.id === id)) throw new Error('这条消息在一段整体导入的历史中间，不能从这里切开');
       }
     }
-    throw new Error('找不到这条消息，不能作为压缩边界');
+    throw new Error('上下文里找不到这条消息');
+  }
+
+  /**
+   * 回退到这条输入之前：从它所在的段起作废。同一次请求里排在它前面的人发消息会被一起丢掉，不允许；来信与通知随它一起丢。
+   * calls 是作废的段里的工具调用，用来找文件该回到哪一枚快照。
+   */
+  rewindPoint(id: string): { from: number; calls: string[] } {
+    const { segment } = this.inputSegment(id);
+    if ('inputs' in segment && segment.inputs.slice(0, segment.inputs.findIndex((input) => input.id === id)).some(fromUser)) {
+      throw new Error('这条消息和前面的消息是一起交给代理的，从前面那条回退');
+    }
+    const calls = this.segments.slice(this.segments.indexOf(segment)).flatMap((dropped) => 'items' in dropped
+      ? dropped.items.flatMap((item) => item.call ? [item.call.id] : [])
+      : 'imported' in dropped ? dropped.imported.flatMap((item) => item.type === 'output' && item.item.call ? [item.item.call.id] : []) : []);
+    return { from: segment.seq, calls };
   }
 
   /** 新范围只能完整包含或完全避开仍有效的压缩。 */

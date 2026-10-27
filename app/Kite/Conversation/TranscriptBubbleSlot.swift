@@ -197,7 +197,7 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
     }
 
     /// 消息的操作栏，和气泡靠着的那边对齐，同 MessageActionButtons：排队中人发的是重试发送（发送失败时）、编辑、取消发送，排队中的来信不是用户写的、没有这几项；
-    /// 收到了的是压缩起点和终点。都有复制，折起来的还有展开全文；Kite 的通知没有压缩。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
+    /// 收到了的是压缩起点和终点，人发的还有回退。都有复制，折起来的还有展开全文；Kite 的通知没有压缩。点了先收起操作栏，再在 snappy 动画里做这件事。读着会话的状态，变了列表重排（见 TranscriptListView.placeActions）。
     func actionItems() -> (side: HorizontalEdge, items: [ActionItem])? {
         guard let message, let context, context.actionable, let thread = context.environment[WorkThread.self] else { return nil }
         let selection = context.environment.selectedRow
@@ -229,6 +229,10 @@ final class BubbleRowSlot: TranscriptRowSlot, ActionBarProviding {
                                         perform: done { thread.compact(through: message.id) }))
                 items.append(ActionItem(title: "取消压缩起点", icon: "xmark", perform: done { thread.compactionStart = nil }))
             }
+        }
+        if !queued, !letter {
+            items.append(ActionItem(title: "回退到这条之前", icon: "arrow.uturn.backward", enabled: thread.canRewind,
+                                    perform: done { thread.prepareRewind(message) }))
         }
         if foldable {
             let expanded = expanded

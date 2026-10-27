@@ -1,6 +1,6 @@
 ---
 name: todo-development-workflow
-description: 宿主 Git 与会话历史操作的待评估能力
+description: 宿主 Git 与会话分叉的待评估能力
 metadata:
   type: todo
 ---
@@ -8,7 +8,7 @@ metadata:
 **状态：** 待评估，未确认排期。
 **来源：** 开发工作流与工作机未完成项清单。
 
-待确认沙箱内 agent 所需的宿主 Git 暂存提交入口，以及会话历史回退与分叉。文件快照回退不等于会话历史回退。
+待确认沙箱内 agent 所需的宿主 Git 暂存提交入口，以及会话分叉（从某条消息开出一个新代理）。对话回退已做，规则见 docs/harness-主循环.md「回退」。
 
 其他候选项包括采纳提交说明辅助生成、二进制冲突选择，以及确有需求的 Claude 历史元数据、插话附件和子 agent 展示。Claude 功能按 [接入边界](../../docs/kited.md#会话后端与宿主边界) 逐项选择。
 

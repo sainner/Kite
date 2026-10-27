@@ -54,6 +54,8 @@ export interface Runtime {
   cancel?(inputId: string): Promise<void>;
   compact?(request: CompactionRequest): Promise<void>;
   revertCompaction?(id: string): Promise<void>;
+  /** 见 ThreadRunner.rewind。 */
+  rewind?(inputId: string, dryRun?: boolean): Promise<{ calls: string[] }>;
 }
 
 
@@ -284,5 +286,6 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
     cancel: (inputId) => thread.runner.cancel(inputId),
     compact: (request) => thread.runner.compact(request),
     revertCompaction: (id) => thread.runner.revertCompaction(id),
+    rewind: (inputId, dryRun) => thread.runner.rewind(inputId, dryRun),
   };
 }

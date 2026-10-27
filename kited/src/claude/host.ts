@@ -204,6 +204,17 @@ export async function openClaudeHost(options: {
     if (!closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
     else options.events.idle(data.outcome);
   };
+  /** 压缩与回退改写会话之前：停下常驻进程（retire），把 Claude 自上次导入以来的内容导入 journal。 */
+  const importForReshape = async (retire = true) => {
+    await restarting;
+    if (retire && driver) { const retired = driver; driver = undefined; await retired.shutdown(); }
+    for (const record of importClaude(options.directory, options.cwd, options.nativeId)) {
+      options.events.emit({ type: 'harness', event: { type: 'record', record } });
+    }
+  };
+  /** 按 journal 现在的上下文重组 Claude 会话，下一回合启动进程时从这里恢复；没有要交接的内容时不动会话。 */
+  const rebuild = (model = options.prepare(data.through).agent.model.model) =>
+    syncToClaude(options.directory, options.cwd, options.nativeId, model);
   /**
    * Claude 线程的压缩与撤销：停下空闲的常驻进程，把 Claude 内容导入 journal，在 journal 上按 harness 的规则压缩或撤销，
    * 再按结果重组 Claude 会话，下一回合启动进程时从重组后的会话恢复。范围校验在返回前完成，摘要与重组在后台进行；
@@ -222,11 +233,7 @@ export async function openClaudeHost(options: {
     const accepted = new Promise<void>((resolve, reject) => { validated = (error) => { checked = true; if (error) reject(error); else resolve(); }; });
     compactionAbort = abort;
     const job = (async () => {
-      await restarting;
-      if (driver) { const retired = driver; driver = undefined; await retired.shutdown(); }
-      for (const record of importClaude(options.directory, options.cwd, options.nativeId)) {
-        options.events.emit({ type: 'harness', event: { type: 'record', record } });
-      }
+      await importForReshape();
       const prepared = options.prepare(data.through);
       const available = [...tools, ...prepared.tools].filter((tool) => prepared.allowed.has(tool.name));
       const effort = prepared.agent.model.reasoning === 'default' ? undefined : prepared.agent.model.reasoning as Options['effort'];
@@ -257,7 +264,7 @@ export async function openClaudeHost(options: {
         await runner.settled();
         if (errors.length) throw new Error(errors.join('\n'));
       });
-      await syncToClaude(options.directory, options.cwd, options.nativeId, prepared.agent.model.model);
+      await rebuild(prepared.agent.model.model);
       measured = undefined;
     })();
     compacting = job.catch((error: unknown) => {
@@ -512,12 +519,34 @@ export async function openClaudeHost(options: {
     },
     compact: (request) => compaction({ compact: request }),
     revertCompaction: (id) => compaction({ revert: id }),
+    /** 同压缩：把 Claude 内容导入 journal，在 journal 上回退，再按结果重组 Claude 会话，下一回合从重组后的会话恢复。 */
+    async rewind(inputId, dryRun = false) {
+      requireStorage();
+      if (closing || compacting || stopping || phase !== 'idle') throw new KiteError('会话正在执行，空闲后才能回退', 409);
+      if (data.inputs.some((entry) => entry.status === 'queued' || entry.status === 'submitted')) throw new KiteError('还有没交给代理的消息，处理完再回退', 409);
+      // 只核对时进程照样闲着；要重组会话就得先停下它。
+      await importForReshape(!dryRun);
+      const result = await withThreadJournal(options.directory, (journal) => new HarnessRunner({ cwd: options.cwd, journal,
+        prepareRequest: () => { throw new Error('回退不请求模型'); },
+        onEvent(event) { if (event.type === 'record') options.events.emit({ type: 'harness', event }); } }).rewind(inputId, dryRun));
+      if (dryRun) return result;
+      try { await rebuild(); }
+      catch (error) {
+        // 同压缩：记录已回退而会话没重组，继续之前须先补做重组。
+        data.outcome = { kind: 'failed', message: `回退没有完成：${(error as Error).message}` }; data.paused = true; save(); publish();
+        throw new KiteError(data.outcome.message, 409);
+      }
+      measured = undefined;
+      data.outcome = undefined; data.paused = false; data.exited = false; data.exits = 0; interrupted = false;
+      save(); publish();
+      return result;
+    },
     async resume() {
       requireStorage();
       if (phase !== 'idle' || compacting) throw new KiteError('请先停止执行', 409);
-      // 压缩已记录而重组失败时在这里补做；没有待交接的内容时不改动会话。
+      // 压缩或回退已记录而重组失败时在这里补做；没有待交接的内容时不改动会话。
       if (options.compaction && !driver) {
-        try { await syncToClaude(options.directory, options.cwd, options.nativeId, options.prepare(data.through).agent.model.model); }
+        try { await rebuild(); }
         catch (error) { throw new KiteError(`重组 Claude 会话失败：${(error as Error).message}`, 409); }
       }
       // 被 kited 退出打断的由 pump 放上那条继续说明。

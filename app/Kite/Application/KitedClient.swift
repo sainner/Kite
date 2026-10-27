@@ -10,6 +10,8 @@ nonisolated struct RemoteState: Decodable, Equatable, Sendable {
         let cancel: Bool
         var switchRuntime: Bool? = nil
         var compact: Bool? = nil
+        /// 只看这个代理空闲；连文件一起回退还要同一工作区的代理全部空闲，由工作机核对。
+        var rewind: Bool? = nil
     }
     let phase: String
     let busy: Bool
@@ -164,6 +166,23 @@ struct StopRequest: Encodable {
 }
 
 struct StopResponse: Decodable { let returned: [RemoteInput] }
+
+/// 回退到一条输入之前；preview 只核对。
+struct RewindBody: Encodable {
+    let input: String
+    let conversation: Bool
+    let files: Bool
+    var preview: Bool? = nil
+}
+
+/// 回退时文件的去向：回到哪一枚快照，之后改过文件、改动会一起撤掉的其他代理。代理在这条之后没改过文件时工作机不给。
+struct RewindFiles: Decodable, Equatable {
+    struct Other: Decodable, Equatable { let id: String; let title: String }
+    let snapshot: String
+    let others: [Other]
+}
+
+struct RewindResponse: Decodable { var files: RewindFiles? }
 
 struct ThreadTitleSnapshot: Decodable {
     let title: String

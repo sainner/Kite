@@ -122,7 +122,7 @@ export class TranscriptHistory {
     return t.snapshot(after);
   }
 
-  /** 只在空会话切换后端后重建；已开始的原生历史不得用显示记录续跑。 */
+  /** 切换后端、回退对话之后按原生记录重建，连着的客户端收到一份完整历史；已开始的原生历史不得用显示记录续跑。 */
   async reset(t: ThreadContext): Promise<void> {
     await this.loadingTranscripts.get(t.id);
     this.transcripts.delete(t.id);

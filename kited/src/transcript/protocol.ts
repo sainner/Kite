@@ -47,7 +47,8 @@ export interface DisplayState {
   error?: string;
   /** 最近一次完成请求的输入用量与当时生效的运行窗口；窗口未知时不能用模型最大能力计算百分比。 */
   context?: { requestId: string; inputTokens: number; windowTokens?: number; measuredAt: number };
-  capabilities: { send: boolean; interrupt: boolean; resume: boolean; cancel: boolean; switchRuntime?: boolean; compact?: boolean };
+  /** rewind 只看这个线程空闲；连文件一起回退还要求同一工作区的线程全部空闲，由回退请求核对。 */
+  capabilities: { send: boolean; interrupt: boolean; resume: boolean; cancel: boolean; switchRuntime?: boolean; compact?: boolean; rewind?: boolean };
 }
 export interface History {
   version: 1;
@@ -60,7 +61,7 @@ export interface History {
   state: DisplayState;
 }
 export type ThreadDisplayEvent =
-  /** 工作机重建了显示投影（换后端、记录被整份换掉）：客户端整份替换副本，同首帧。 */
+  /** 工作机重建了显示投影（换后端、回退对话、记录被整份换掉）：客户端整份替换副本，同首帧。 */
   | ({ type: 'thread.history' } & Omit<History, 'threadId' | 'cursor' | 'since'>)
   | { type: 'thread.record'; record: DisplayRecord }
   | { type: 'thread.record.delta'; delta: DisplayDelta }

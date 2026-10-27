@@ -34,6 +34,42 @@ extension Animation {
     static let actionBar = Animation.snappy(duration: 0.25)
 }
 
+/// 要回退到的那条人发消息，和工作机核对出的文件去向（没有时代理在这之后没改过文件）。
+struct RewindRequest {
+    let message: Message
+    let files: RewindFiles?
+}
+
+/// 回退的确认：对话和文件一起、只回退对话、只回退文件放在同一个弹窗里；代理在这之后没改过文件时只有回退对话。
+/// 两端的消息操作栏都经 WorkThread.prepareRewind 走到这里，会话窗口挂着它（ThreadPaneSupport）。
+struct RewindConfirmation: ViewModifier {
+    @Environment(WorkThread.self) private var thread
+
+    func body(content: Content) -> some View {
+        content
+            .alert("回退到这条消息之前？", isPresented: Binding(get: { thread.rewindRequest != nil }, set: { if !$0 { thread.rewindRequest = nil } }),
+                   presenting: thread.rewindRequest) { request in
+                if request.files != nil {
+                    Button("对话和文件一起回退") { thread.rewind(request, conversation: true, files: true) }
+                    Button("只回退对话") { thread.rewind(request, conversation: true, files: false) }
+                    Button("只回退文件") { thread.rewind(request, conversation: false, files: true) }
+                } else {
+                    Button("回退对话") { thread.rewind(request, conversation: true, files: false) }
+                }
+                Button("取消", role: .cancel) {}
+            } message: { request in
+                Text(Self.explanation(request.files))
+            }
+    }
+
+    private static func explanation(_ files: RewindFiles?) -> String {
+        let conversation = "回退对话：这条和之后的对话从会话里去掉，代理不再记得，这条的原文放回输入框。"
+        guard let files else { return conversation + "这条之后代理没有改过文件，文件不用动。" }
+        let others = files.others.isEmpty ? "" : "，\(files.others.map { "「\($0.title)」" }.joined(separator: "、"))在这之后对文件的改动也会一起撤掉"
+        return conversation + "回退文件：整个工作区的文件回到代理处理这条之前\(others)；回退前的现状会自动存一份快照，可以找回。"
+    }
+}
+
 #if os(iOS)
 /// agent 说的一段话的操作栏：复制、翻译、从这里分叉（翻译、分叉还没做）。iPhone、iPad 的原生列表托管它（PhoneProseRowSlot.actionBar）；
 /// Mac 的见 ProseRowSlot.actionItems。
@@ -54,7 +90,7 @@ struct AgentTextActions: View {
     }
 }
 
-/// 消息气泡的操作栏：人发的排队中是重试、编辑、取消发送（代理来信没有）；收到了的是压缩起点和终点（Kite 的通知没有）。都有复制，折起来的还有展开全文。
+/// 消息气泡的操作栏：人发的排队中是重试、编辑、取消发送（代理来信没有）；收到了的是压缩起点和终点（Kite 的通知没有），人发的还有回退。都有复制，折起来的还有展开全文。
 /// iPhone、iPad 的原生列表托管它（PhoneBubbleRowSlot.actionBar）；Mac 的见 BubbleRowSlot.actionItems，按钮和这里一一对应，改的时候两处一起改。
 struct MessageActionButtons: View {
     let message: Message
@@ -96,6 +132,10 @@ struct MessageActionButtons: View {
                     .disabled(!thread.canCompact)
                 ActionButton("取消压缩起点", icon: "xmark") { done { thread.compactionStart = nil } }
             }
+        }
+        if !queued, !letter, compactable {
+            ActionButton("回退到这条之前", icon: "arrow.uturn.backward") { done { thread.prepareRewind(message) } }
+                .disabled(!thread.canRewind)
         }
         if foldable {
             ActionButton(expanded ? "收起" : "展开全文",

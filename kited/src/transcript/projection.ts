@@ -24,8 +24,10 @@ export class TranscriptProjection {
   private requestWindows = new Map<string, number>();
   private claudeWindow?: ClaudeState['contextWindow'];
   private configuredModel: string;
-  /** 段的首条输入：压缩范围按输入的显示记录定位，Claude 段的内容来自另一份记录，按 seq 对不上位置。 */
+  /** 段的首条输入：压缩范围与回退点按输入的显示记录定位，Claude 段的内容来自另一份记录，按 seq 对不上位置。 */
   private segmentInputs = new Map<number, string>();
+  /** 各次压缩的范围终点（seq，不含），回退时与 HarnessHistory 同样按它判断压缩是否仍然有效。 */
+  private compactionEnds = new Map<string, number>();
   private compacting = false;
   private readonly claudeProjection: ClaudeProjection;
   private lastSeq = 0;
@@ -123,6 +125,8 @@ export class TranscriptProjection {
     const status = this.threadStatus === 'archived' ? 'archived' : this.workspaceStatus;
     const open = status === 'open';
     const interactive = open;
+    // 切换后端和回退都要空闲、队列里也没有消息。
+    const settled = open && !this.busy && this.phase === 'idle' && this.pending.size === 0;
     let context = this.context;
     // Claude 的窗口只在回合结束时查询，同一模型的进程窗口不变，回合中途的新请求沿用它；harness 自带请求快照中的窗口。
     if (context && this.contextRuntime === 'claude' && this.claudeWindow?.model === this.configuredModel) {
@@ -138,8 +142,7 @@ export class TranscriptProjection {
         // 停下后留在队列里、等继续的不算要停的：再停一次什么也不做
         interrupt: interactive && (this.busy || (this.pending.size > 0 && !this.waitingForResume)) && this.phase !== 'stopping',
         resume: interactive && !this.busy && this.waitingForResume, cancel: interactive,
-        switchRuntime: open && !this.busy && this.phase === 'idle' && this.pending.size === 0,
-        compact: open && !this.busy && this.phase === 'idle' } };
+        switchRuntime: settled, compact: open && !this.busy && this.phase === 'idle', rewind: settled } };
   }
   private emit(event: ThreadDisplayEvent): void { if (!this.replaying) this.feed.emit({ ...event, threadId: this.threadId }); }
   private put(record: DisplayRecord): void {
@@ -297,13 +300,10 @@ export class TranscriptProjection {
         break;
       case 'context.compacted': {
         const ids = [...this.records.keys()];
-        const at = (seq: number | undefined) => {
-          const input = seq === undefined ? undefined : this.segmentInputs.get(seq);
-          return input === undefined ? -1 : ids.indexOf(`input:${input}`);
-        };
         // 自动压缩从会话开头算起；范围到最新时取到这条记录之前。
-        const first = row.automatic ? 0 : at(row.range.from);
-        const end = row.range.until === undefined ? ids.length : at(row.range.until);
+        const first = row.automatic ? 0 : this.segmentIndex(ids, row.range.from);
+        const end = row.range.until === undefined ? ids.length : this.segmentIndex(ids, row.range.until);
+        this.compactionEnds.set(row.id, row.range.until ?? row.seq);
         const range = first >= 0 && end > first ? { from: ids[first]!, through: ids[end - 1]! } : {};
         put(`compaction:${row.id}`, { type: 'compacted', id: row.id, text: row.summary, automatic: row.automatic, ...range });
         this.context = undefined;
@@ -317,7 +317,28 @@ export class TranscriptProjection {
         this.emit({ type: 'thread.state', state: this.state() });
         break;
       }
+      case 'context.rewound': {
+        // 从那一段的首条输入起都不再显示；范围完全在回退点之前的压缩照旧生效，规则同 HarnessHistory。
+        // 记录只增不删，客户端靠宿主随后整份重发的历史拿到结果。
+        const ids = [...this.records.keys()];
+        const start = this.segmentIndex(ids, row.from);
+        if (start >= 0) for (const id of ids.slice(start)) {
+          const block = this.records.get(id)!.block;
+          const end = block.type === 'compacted' && !block.reverted && block.id !== undefined ? this.compactionEnds.get(block.id) : undefined;
+          if (end === undefined || end > row.from) this.records.delete(id);
+        }
+        this.lastOutcome = undefined;
+        this.error = undefined;
+        this.context = undefined;
+        break;
+      }
     }
+  }
+
+  /** seq 那一段的首条输入在显示记录里的位置；找不到时为 -1。 */
+  private segmentIndex(ids: string[], seq: number): number {
+    const input = this.segmentInputs.get(seq);
+    return input === undefined ? -1 : ids.indexOf(`input:${input}`);
   }
 
   private stream(event: ModelStreamEvent, requestId: string, at: number): void {

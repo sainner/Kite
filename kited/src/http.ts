@@ -726,6 +726,13 @@ export function serve(kite: Kite, listen: Listen) {
         await kite.revertCompaction(req.params.id, req.params.compaction);
         return { ok: true };
       }) },
+      '/threads/:id/rewind': { POST: bound(async (req) => {
+        const parsed = z.object({ input: z.string().min(1), conversation: z.boolean(), files: z.boolean(), preview: z.boolean().optional() }).strict()
+          .refine((request) => request.conversation || request.files).safeParse(await body(req));
+        if (!parsed.success) throw new KiteError('回退请求无效');
+        const { input, ...options } = parsed.data;
+        return kite.rewind(req.params.id, input, options);
+      }) },
       '/threads/:id/messages/:message/cancel': { POST: bound((req) => kite.cancel(req.params.id, req.params.message)) },
       '/workspaces/:id/snapshots': { GET: bound((req) => kite.snapshots(req.params.id)) },
       '/workspaces/:id/restore': {

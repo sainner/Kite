@@ -42,7 +42,7 @@
 - [工作区协作](todo-workspace-collaboration.md) — 后台与内嵌实例的界面呈现、已归档实例的查看与恢复，待设计
 - [事件来源](todo-event-sources.md) — 文件/插件观察的路由与合并；主动触发已定为通用 monitor
 - [执行边界](todo-execution-boundaries.md) — Linux（含沙箱外命令、监听端口、上级目录）、资源限制、项目收紧是否停旧命令
-- [开发工作流](todo-development-workflow.md) — 宿主 Git、会话回退与分叉的待评估能力
+- [开发工作流](todo-development-workflow.md) — 宿主 Git、会话分叉的待评估能力
 - [远程连接与托管运维](todo-remote-connections.md) — iPhone 局域网周期断连已修与验证范围、取证做法；两台 Mac 间时快时慢（10-22 实测，待测中继与局域网）；托管容量备份、凭据重绑和多机关系
 - [订阅凭据续期](todo-subscription-auth.md) — ChatGPT 自动刷新和安全存储
 - [DeepSeek 待实测](todo-deepseek-validation.md) — 纯文字已跑通；工具回合推理交回、跨厂商推理占位、图片待验
@@ -61,5 +61,6 @@
 - [消息附件收尾](todo-attachments.md) — 输入框那一行待验收、Mac 点开方式待定、真机待测；中途带图交给 Claude 没测
 - [快速模式验收](todo-fast-mode.md) — 真实请求能成功、提速没确认，界面待验收；Codex 用量没按快速模式折算待定
 - [重连只补变化](todo-reconnect-sync.md) — 线程流按 Last-Event-ID 增量已实现、待真实组网量改后；改前基线与量法；落盘缓存、目录瘦身待定
+- [对话回退验收](todo-rewind.md) — 回退到一条人发消息之前已实现、协议 27；两端界面待验收，跨后端回退没有自动测试
 - [会话快捷操作](todo-session-shortcuts.md) — 压缩全部、清空上下文、Esc 停止、上键撤回已提交未验收；压缩全部要新工作机，iPhone 过渡没看
 - [工作区现况收尾](todo-workspace-instances.md) — 提示词带名单、变化走通知，已提交待真实会话验收；名单每变一次多存一份提示词快照，涨明显再改

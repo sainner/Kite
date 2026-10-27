@@ -108,7 +108,8 @@ export async function syncToClaude(directory: string, cwd: string, nativeId: str
 
 /**
  * Claude 自己产生的、位于 after 之后的条目，在每条输入处分段；through 是各段在 Claude 会话中的最后位置。
- * 宿主不对 Claude 会话回退或分叉，文件顺序即对话顺序。
+ * 宿主对会话的改动（压缩、回退）都是在 journal 上做完再整体重组，重组写入的条目带 kite 标记、在这里跳过，
+ * 上次导入之后的条目按文件顺序就是对话顺序。
  */
 export function claudeToHarness(entries: ClaudeEntry[], control: ClaudeControl, after?: string): Array<{ items: ContextItem[]; through: string }> {
   const own = entries.filter((entry) => entry.uuid && !entry.isSidechain && !entry.kite);
@@ -234,7 +235,7 @@ function claudeBlocks(item: ModelItem, calls: Map<string, { id: string; name: st
 }
 
 /**
- * harness 一侧压缩或撤销过时整体重组 Claude 会话：追加一个压缩分界，再接上按 harness 当前实际上下文合成的完整历史，
+ * harness 一侧压缩、撤销或回退过时整体重组 Claude 会话：追加一个压缩分界，再接上按 harness 当前实际上下文合成的完整历史，
  * 并把 last-prompt 指向新叶子。CLI 加载时丢弃分界之前的条目，原条目留在文件里供显示（见 readClaudeMessages）。
  * 2026-10-09 在 CLI 2.1.280 上验证，见 spikes/compaction：分界的 type、subtype 须排在行首附近，CLI 只在每行开头一段里识别；
  * 合成的助手消息须用新的 message.id，同 id 的条目会被合并，分界之前的原条目也会并进来；不更新 last-prompt 时新输入接到旧叶子上。
@@ -243,9 +244,8 @@ function claudeBlocks(item: ModelItem, calls: Map<string, { id: string; name: st
  */
 function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget & { importId: string; through: string; after: number }) {
   const units = replayUnits(records);
-  // 移除尚未交给 Claude 的压缩/撤销，得到重组前的上下文；后面新产生的普通段仍在，才能比较完整共同前缀。
-  const before = replayUnits(records.filter((row) => row.seq <= options.after
-    || (row.type !== 'context.compacted' && row.type !== 'context.compaction.reverted')));
+  // 移除尚未交给 Claude 的压缩/撤销/回退，得到重组前的上下文；后面新产生的普通段仍在，才能比较完整共同前缀。
+  const before = replayUnits(records.filter((row) => row.seq <= options.after || !reshaping(row)));
   const thinking = activeClaudeThinking(options.native ?? []);
   let unchanged = true;
   const keep = (block: Record<string, unknown>) => !isThinking(block) || (unchanged && thinking.has(JSON.stringify(block)));
@@ -368,17 +368,26 @@ function rebaseToClaude(records: readonly JournalRecord[], options: ClaudeTarget
   }
   close();
   release();
+  // 回退到最开头时上下文是空的。CLI 只认停在用户或助手消息上的叶子，停在分界上会退回原来的叶子（测试见 claude-rewind），
+  // 所以放一句说明给模型；显示时重组写入的条目都去掉。
+  if (options.parent && !entries.some((entry) => entry.type === 'user' || entry.type === 'assistant')) text(REWOUND_TO_START);
   entries.push({ type: 'last-prompt', lastPrompt, leafUuid: parent, sessionId: options.nativeId, kiteRebase: options.importId });
   return { entries, inputIds };
 }
 
+/** 回退到最开头、重组出的 Claude 会话里没有消息时，交给模型的那一句。 */
+const REWOUND_TO_START = '之前的对话已全部回退，从下一条消息重新开始。';
+
+/** 改动已有历史的记录：Claude 会话只追加接不上，要整体重组。 */
+const reshaping = (row: JournalRecord) => row.type === 'context.compacted' || row.type === 'context.compaction.reverted' || row.type === 'context.rewound';
+
 /**
  * harness 在 after 之后自己产生的记录，按锁定 CLI 的原生条目形态合成；导入记录本就来自 Claude，跳过。
- * 这段期间压缩或撤销过时改为整体重组。
+ * 这段期间压缩、撤销或回退过时改为整体重组。
  */
 export function harnessToClaude(records: readonly JournalRecord[], after: number, options: ClaudeTarget) {
   const tail = records.filter((row) => row.seq > after && row.type !== 'context.imported');
-  const reshaped = tail.some((row) => row.type === 'context.compacted' || row.type === 'context.compaction.reverted');
+  const reshaped = tail.some(reshaping);
   if (!reshaped && !tail.some((row) => ['request.started', 'turn.feedback', 'turn.finished'].includes(row.type))) return undefined;
   const through = String(records.at(-1)!.seq);
   const importId = randomUUID();

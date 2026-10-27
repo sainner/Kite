@@ -49,7 +49,8 @@ const staleTool = (tool: Tool): Tool => ({ ...tool, validate() {},
   async execute() { return { status: 'error', output: `工具 ${tool.name} 的定义已变化，请先用 ${TOOL_SEARCH} 重新加载再调用` }; } });
 
 export class HarnessRunner implements ThreadRunner {
-  private readonly history: HarnessHistory;
+  /** 回退后按记录重建，见 rewind。 */
+  private history: HarnessHistory;
   /** 正在生成压缩摘要；自动压缩沿用回合的取消信号。 */
   private compaction?: { controller: AbortController };
   private active?: Turn;
@@ -189,7 +190,7 @@ export class HarnessRunner implements ThreadRunner {
     this.assertOpen();
     if (!request.id) throw new Error('压缩请求必须有 id');
     if (this.history.compactions.has(request.id)) return;
-    if (this.active || this.pumping || this.stopping) throw new Error('会话正在执行，空闲后才能压缩');
+    this.assertSettled('压缩');
     let from: number;
     let until: number | undefined;
     let range: string;
@@ -241,13 +242,27 @@ export class HarnessRunner implements ThreadRunner {
 
   async revertCompaction(id: string): Promise<void> {
     this.assertOpen();
-    if (this.active || this.pumping || this.stopping) throw new Error('会话正在执行，空闲后才能撤销压缩');
+    this.assertSettled('撤销压缩');
     const compaction = this.history.compactions.get(id);
     if (!compaction) throw new Error('没有这次压缩');
     if (compaction.reverted) return;
     if (!this.history.outermost().includes(compaction)) throw new Error('只能撤销最外层的压缩');
     this.record({ type: 'context.compaction.reverted', id });
     this.setPhase('idle');
+  }
+
+  async rewind(inputId: string, dryRun = false): Promise<{ calls: string[] }> {
+    this.assertOpen();
+    this.assertSettled('回退');
+    if (this.history.pending.size) throw new Error('还有没交给代理的消息，处理完再回退');
+    const { from, calls } = this.history.rewindPoint(inputId);
+    if (dryRun) return { calls };
+    this.interrupted = false;
+    this.record({ type: 'context.rewound', id: randomUUID(), inputId, from });
+    // 代理已知的基础上下文、工具与通知现况要按留下的请求重算，从记录重建最省事。
+    this.history = new HarnessHistory(this.options.journal.records);
+    this.setPhase('idle');
+    return { calls };
   }
 
   async shutdown(): Promise<void> {
@@ -264,6 +279,11 @@ export class HarnessRunner implements ThreadRunner {
 
   async settled(): Promise<void> {
     while (this.pumping) await this.pumping;
+  }
+
+  /** 动历史的操作（压缩、撤销压缩、回退）只能在没有回合、压缩与停止进行时做。 */
+  private assertSettled(action: string): void {
+    if (this.active || this.pumping || this.stopping) throw new Error(`会话正在执行，空闲后才能${action}`);
   }
 
   private assertOpen(): void {

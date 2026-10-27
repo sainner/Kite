@@ -52,6 +52,7 @@ const event = z.discriminatedUnion('type', [
   z.object({ type: z.literal('context.compacted'), id, range: z.object({ from: z.number().int().positive(), until: z.number().int().positive().optional() }),
     automatic: z.boolean(), items: z.array(contextItem), summary: z.string(), usage: raw.optional() }),
   z.object({ type: z.literal('context.compaction.reverted'), id }),
+  z.object({ type: z.literal('context.rewound'), id, inputId: id, from: z.number().int().positive() }),
 ]);
 const record = z.intersection(
   z.object({ version: z.literal(1), seq: z.number().int().positive(), at: z.number().int().nonnegative() }), event,

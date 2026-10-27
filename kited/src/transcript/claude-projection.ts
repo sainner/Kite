@@ -38,7 +38,7 @@ export class ClaudeProjection {
     for (const entry of state.inputs) {
       this.inputs.set(entry.sdkId, entry);
       if (['queued', 'submitted'].includes(entry.status) || (entry.status === 'active' && !entry.delivered)) pending.set(entry.input.id, { ...entry.input, midTurn: entry.midTurn });
-      if (!this.target.replaying() && entry.delivered && !this.target.records.has(`input:${entry.input.id}`)) {
+      if (!this.target.replaying() && entry.delivered && !this.written(entry)) {
         this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: inputBlock(entry.input, entry.midTurn) });
       }
     }
@@ -47,9 +47,17 @@ export class ClaudeProjection {
   restoreInputs(): void {
     // 宿主已确认收下、但 CLI 尚未来得及写入原生历史的输入仍然可见，不自动重放。
     for (const entry of this.inputs.values()) {
-      if (!entry.delivered || entry.status === 'cancelled' || this.target.records.has(`input:${entry.input.id}`)) continue;
+      if (!entry.delivered || entry.status === 'cancelled' || this.written(entry)) continue;
       this.target.put({ id: `input:${entry.input.id}`, at: entry.at, block: inputBlock(entry.input, entry.midTurn) });
     }
+  }
+
+  /**
+   * CLI 已经把这条输入写进原生历史：有它的显示记录，或原生记录里见过这一行（sdkId 就是原生行的 uuid）。
+   * 后者让回退掉的输入不再被当作「收下了、还没写进去」补显示，它们的显示记录已经删了。
+   */
+  private written(entry: ClaudeState['inputs'][number]): boolean {
+    return this.target.records.has(`input:${entry.input.id}`) || this.rows.has(entry.sdkId);
   }
 
   /** SDK 的增量、完整块和历史统一使用消息 ID + 块序号，工具始终以 call ID 对齐。 */

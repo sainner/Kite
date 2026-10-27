@@ -216,6 +216,19 @@ export async function restore(worktree: string, workspaceId: string, target: str
   return { safety, current, label };
 }
 
+/**
+ * 回退对话时文件该回到的快照：作废的工具调用最早改出的那一枚的前一枚。snapshots 是 list 的结果（新的在前），
+ * undone 是会被撤掉的那几枚，含其他线程打的。作废的调用没改过文件时为 undefined。
+ */
+export function rewindTarget(snapshots: Snapshot[], calls: string[]): { target: Snapshot; undone: Snapshot[] } | undefined {
+  const dropped = new Set(calls);
+  const first = snapshots.findLastIndex((snapshot) => snapshot.toolUseIds.some((id) => dropped.has(id)));
+  if (first < 0) return undefined;
+  const target = snapshots[first + 1];
+  if (!target) throw new KiteError('找不到代理处理这条消息之前的快照', 409);
+  return { target, undone: snapshots.slice(0, first + 1) };
+}
+
 /** 找本会话的一枚快照，commit 可以是缩写；不存在或不属于本会话返回 null。 */
 export async function findSnapshot(cwd: string, workspaceId: string, commit: string): Promise<string | null> {
   // 只收提交号，别的写法（分支名、以 - 开头的参数）一律不认

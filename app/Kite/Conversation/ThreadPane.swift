@@ -169,7 +169,7 @@ private struct MacThreadTranscript: View {
 }
 
 /// 会话窗口里不占地方的几样：录音时空会话的签名和底部那一带随响度起伏、窗口关掉时停掉自己的录音、
-/// 窗口动画走完才订阅历史、选中的行、标题和角色的弹窗。Mac 窄窗口挂在 ThreadPane 上，原生外框挂在 ThreadPaneBridge 上。
+/// 窗口动画走完才订阅历史、选中的行、回退确认、标题和角色的弹窗。Mac 窄窗口挂在 ThreadPane 上，原生外框挂在 ThreadPaneBridge 上。
 struct ThreadPaneSupport: ViewModifier {
     let pane: ThreadPaneModel
     @Environment(WorkThread.self) private var thread
@@ -197,6 +197,7 @@ struct ThreadPaneSupport: ViewModifier {
                 await thread.observe()
             }
             .environment(\.selectedRow, $pane.selected)
+            .modifier(RewindConfirmation())
             .alert("重新生成标题失败", isPresented: Binding(
                 get: { pane.titleError != nil }, set: { if !$0 { pane.titleError = nil } }
             )) {

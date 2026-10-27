@@ -25,7 +25,7 @@ import { normalizeRemote, remoteHost } from './remote-url.ts';
 import { gitTry, isDirty, revParse } from './workspace/git.ts';
 import { fetchBranch, lsRemote, pushBranch, tracking } from './workspace/remote.ts';
 import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
-import { capture, changesBetween, findSnapshot, list, restore, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
+import { capture, changesBetween, findSnapshot, list, restore, rewindTarget, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
 import { childChanged, commitParent, mergeChild, mergeParent } from './workspace/children.ts';
 import { compactTemplate } from './harness/compaction.ts';
 import { RUNNING_MARKER } from './harness/thread-host.ts';
@@ -143,6 +143,9 @@ export type MergeResult = { status: 'merged' | 'unchanged' } | { status: 'confli
 const MERGE_ATTEMPTS = 3;
 /** initiator 是发起合回的代理；threadId 与 afterResolution 是处理冲突的回合正常结束后宿主接着合；check 是操作层的授权复核。 */
 type MergeOptions = { initiator?: string; threadId?: string; afterResolution?: boolean; check?: () => void };
+/** files 是文件回到的那枚快照，others 是之后改过文件、改动会一起撤掉的其他代理。 */
+export interface RewindResult { files?: { snapshot: string; others: Array<{ id: string; title: string }> } }
+
 /** continue 见 Kite.restoreWorkspace。 */
 type TransferOptions = { operationId?: string; timeoutMs?: number; continue?: Array<{ threadId: string; inputs: Input[] }> };
 /** 提交 PR 时已推上去的分支（分支与提交记在工作区的 pullRequest 上）：base 是 PR 的目标分支，target 是合进来的远程主线引用。 */
@@ -1963,14 +1966,55 @@ export class Kite {
       await this.assertIdle(id);
       const full = await findSnapshot(checkout.path, id, commit);
       if (!full) throw new KiteError('找不到这个工作区的快照', 404);
-      await this.serial(`snap:${id}`, async () => {
-        const { safety, current, label } = await restore(w.cwd, id, full);
-        for (const [snapshot, title] of [[safety, '回退前自动保存'], [current, label]] as const) {
-          if (snapshot.created) this.bus.emit({ type: 'workspace.snapshot', workspaceId: id,
-            commit: snapshot.commit, label: title, changedFiles: snapshot.changedFiles });
+      await this.restoreSnapshot(id, full);
+    });
+  }
+  /** 调用方持有工作区控制锁，已确认线程全部空闲。 */
+  private async restoreSnapshot(id: string, commit: string): Promise<void> {
+    const { workspace: w } = this.workspace(id);
+    await this.serial(`snap:${id}`, async () => {
+      const { safety, current, label } = await restore(w.cwd, id, commit);
+      for (const [snapshot, title] of [[safety, '回退前自动保存'], [current, label]] as const) {
+        if (snapshot.created) this.bus.emit({ type: 'workspace.snapshot', workspaceId: id,
+          commit: snapshot.commit, label: title, changedFiles: snapshot.changedFiles });
+      }
+    });
+    this.changed(id);
+  }
+  /**
+   * 回退到一条输入之前。conversation：代理不再记得这条及之后的对话；files：整个工作区的文件回到代理处理这条之前，
+   * 也就是作废的工具调用最早改出的那枚快照的前一枚，之后其他线程的改动一起撤掉（都能从「回退前自动保存」找回）。
+   * 先核对，再恢复文件，最后回退对话：对话没回退成时文件已经恢复，可以单独重试对话。preview 只核对，报出文件回到哪一枚、
+   * 会被一起撤掉改动的其他代理。作废的调用没改过文件时不动文件，结果里没有 files。
+   */
+  rewind(id: string, inputId: string, options: { conversation: boolean; files: boolean; preview?: boolean }): Promise<RewindResult> {
+    return this.controlThread(id, async () => {
+      const t = this.openThread(id);
+      const r = await this.runner(t);
+      if (!r.rewind) throw new KiteError('这个后端暂不支持回退', 409);
+      // 只核对时不要求其他线程空闲：确认框要能弹出来，只回退对话也用不着它们停下。
+      if (options.files && !options.preview) await this.assertIdle(t.workspaceId);
+      const [plan, snapshots] = await Promise.all([r.rewind(inputId, true), options.files ? this.snapshots(t.workspaceId) : undefined])
+        .catch((error: Error) => { throw error instanceof KiteError ? error : new KiteError(error.message, 409); });
+      let files: RewindResult['files'];
+      if (snapshots) {
+        const point = rewindTarget(snapshots, plan.calls);
+        if (point) {
+          const others = [...new Set(point.undone.flatMap((snapshot) => snapshot.threadId && snapshot.threadId !== id ? [snapshot.threadId] : []))];
+          files = { snapshot: point.target.commit,
+            others: others.map((other) => ({ id: other, title: this.store.instance(other)?.title ?? '已删除的代理' })) };
         }
-      });
-      this.changed(id);
+      }
+      if (!options.preview) {
+        if (files) await this.restoreSnapshot(t.workspaceId, files.snapshot);
+        if (options.conversation) {
+          try { await r.rewind(inputId); }
+          catch (error) { throw new KiteError(`${files ? '文件已经回退，' : ''}对话没有回退：${(error as Error).message}`, 409); }
+          // 显示记录只增不删，整份重建后推给客户端。
+          await this.transcripts.reset(this.context(id));
+        }
+      }
+      return files ? { files } : {};
     });
   }
   /**

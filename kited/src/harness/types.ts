@@ -238,7 +238,12 @@ export type JournalEvent =
    */
   | { type: 'context.compacted'; id: string; range: { from: number; until?: number }; automatic: boolean;
       items: ContextItem[]; summary: string; usage?: JsonObject }
-  | { type: 'context.compaction.reverted'; id: string };
+  | { type: 'context.compaction.reverted'; id: string }
+  /**
+   * 回退到 inputId 那条输入之前：seq 不小于 from 的段（从那条输入所在的段起）此后都不进上下文，覆盖到这些段的压缩一并作废，
+   * 完全在它之前的压缩照旧。之后的新段照常追加。
+   */
+  | { type: 'context.rewound'; id: string; inputId: string; from: number };
 
 export type JournalRecord = JournalEvent & { version: 1; seq: number; at: number };
 
@@ -306,6 +311,8 @@ export interface ThreadRunner {
   compact(request: CompactionRequest): Promise<void>;
   /** 撤销最外层的一次压缩。 */
   revertCompaction(id: string): Promise<void>;
+  /** 回退到 inputId 那条输入之前，见 context.rewound；dryRun 只核对。calls 是回退后作废的工具调用。 */
+  rewind(inputId: string, dryRun?: boolean): Promise<{ calls: string[] }>;
   shutdown(): Promise<void>;
   /** 等到当前推进（含排队回合及收尾）停下；不触发新工作。 */
   settled(): Promise<void>;
