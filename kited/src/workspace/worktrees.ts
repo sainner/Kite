@@ -2,7 +2,7 @@
  * 工作区的工作树：放在 Kite 数据目录里，从检出（裸仓库）开出。建好之后由调用方写入设了路径的项目密钥，再跑项目的初始化脚本 .kite/setup。
  * 检出里没有可以带入的忽略文件，所以不处理 worktree.symlinkDirectories 与 .worktreeinclude。
  */
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { KiteError } from '../errors.ts';
 import { git, gitTry } from './git.ts';
@@ -90,8 +90,9 @@ export function removeSecretFile(worktree: string, path: string): void {
  * 环境只带开发工具的基础设置。网络在项目级网络授权落地前放行。
  */
 export async function runSetup(checkout: string, worktree: string, logPath: string, home: string, signal?: AbortSignal): Promise<{ exit: number; tail: string } | null> {
-  const script = join(worktree, '.kite', 'setup');
-  if (!existsSync(script)) return null;
+  if (!existsSync(join(worktree, '.kite', 'setup'))) return null;
+  // 沙箱只放行工作树的真实路径：数据目录的 worktrees 换成指向别的盘的符号链接后，经链接的路径在沙箱里打不开（Operation not permitted，sh 退出 126）
+  const script = join(realpathSync(worktree), '.kite', 'setup');
   mkdirSync(dirname(logPath), { recursive: true });
   const env = commandEnvironment(process.env);
   const policy = await harnessPolicy({ cwd: worktree, env, home, repository: checkout });

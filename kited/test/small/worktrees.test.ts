@@ -2,7 +2,7 @@
  * 沙箱里的 setup：检出是 Kite 数据目录里的裸仓库，工作树从它开出。
  */
 import { expect, test } from 'bun:test';
-import { chmodSync } from 'node:fs';
+import { chmodSync, mkdirSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 // setup 的沙箱宿主按路径起子进程，不在 import 链上；按文本引入，宿主改动时 .kite/check 才会选中这里。
 import '../../src/execution/sandbox-callback-host.ts' with { type: 'text' };
@@ -69,4 +69,32 @@ test('setup 在沙箱里能读检出、写工作树，写不了检出、读不�
   expect(hits).toBe(0);
   expect(lexists(join(checkout, 'from-setup.txt'))).toBe(false);
   expect(read(join(worktree, 'from-setup.txt'))).toBe('来自 setup\n');
+}, 1000);
+
+/*
+ * 真实出过的 bug：用户把数据目录的 worktrees 搬到外置盘、原处换成符号链接（~/.kite/worktrees -> /Volumes/.../Worktrees），
+ * 之后 setup 在沙箱里一律退出 126（/bin/sh: …/.kite/setup: Operation not permitted）。依赖 macOS Seatbelt 对符号链接的判定：
+ * 读权限默认拒绝 /、只放行工作树的真实路径，拒绝区域里的符号链接连元数据都不给，经链接的路径打不开。
+ * 脚本照真实项目常见写法先 cd "$(dirname "$0")/.."，$0 也要在沙箱里能用。
+ */
+test('数据目录的 worktrees 是指向别处的符号链接时，经链接路径开出的工作树里 setup 照样能跑，按 $0 回到工作树也能写文件', async () => {
+  const root = temp();
+  const home = join(root, 'kite');
+  const moved = join(root, 'external', 'Worktrees');
+  mkdirSync(moved, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  symlinkSync(moved, join(home, 'worktrees'));
+  const checkout = checkoutPath(home, 'project');
+  const setup = ['#!/bin/sh', 'cd "$(dirname "$0")/.." || exit 3', 'echo 来自 setup > from-setup.txt', ''].join('\n');
+  const source = newRepo(root, 'source', { '.kite/setup': setup }, null);
+  chmodSync(join(source, '.kite/setup'), 0o755);
+  commitAll(source, '可执行');
+  git(root, 'clone', '-q', '--bare', source, checkout);
+  const worktree = worktreePath(home, 'project', 'w1');
+  await addWorktree(checkout, worktree, 'kite/w1', git(checkout, 'rev-parse', 'main'));
+
+  const result = await runSetup(checkout, worktree, join(home, 'logs', 'w1-setup.log'), home);
+
+  expect(result?.exit, result?.tail).toBe(0);
+  expect(read(join(moved, 'project', 'w1', 'from-setup.txt'))).toBe('来自 setup\n');
 }, 1000);
