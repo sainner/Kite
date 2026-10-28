@@ -29,7 +29,8 @@ nonisolated struct SidebarStickyRegion: Sendable {
     }
 }
 
-/// 每层只裁掉被上级吸顶标题遮住的部分；被推出固定位置的标题同样接受裁切。
+/// 每层只裁掉被上级吸顶标题遮住的部分；被推出固定位置的标题同样接受裁切。只裁竖向，横向放出 railMargin：
+/// 侧栏收起时行的底色往左多铺这一段（sidebarFullWidth）。
 struct SidebarScrollingClip: ViewModifier {
     var topOverflow: CGFloat = 0
     var movingHeader: SidebarStickyRegion?
@@ -57,7 +58,8 @@ struct SidebarScrollingClip: ViewModifier {
                         return topOverflow + clipTop - frame.minY
                     }()
                     let clippedStart = min(proxy.size.height, max(0, start))
-                    Path(CGRect(x: 0, y: clippedStart, width: proxy.size.width, height: proxy.size.height - clippedStart))
+                    let bleed = SidebarMetrics.railMargin
+                    Path(CGRect(x: -bleed, y: clippedStart, width: proxy.size.width + 2 * bleed, height: proxy.size.height - clippedStart))
                         .fill(.black)
                 }
             }

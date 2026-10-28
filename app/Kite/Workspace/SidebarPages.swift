@@ -216,10 +216,11 @@ private struct LibrarySection<ID: Hashable>: View {
     let open: (ID?) -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
-    @State private var expanded = true
+    @Environment(\.sidebarExpansion) private var expansion
 
     var body: some View {
         let selected = model.extensionPage == page
+        let expanded = expansion.binding(page, selected: selected)
         let current = selected ? current : nil
         SidebarStickySection(headerHeight: metrics.rowHeight) {
             SidebarListRow(selected: selected) { foreground in
@@ -228,10 +229,10 @@ private struct LibrarySection<ID: Hashable>: View {
                 }
                 .buttonStyle(SidebarButtonStyle(foreground: foreground))
                 .accessibilityAddTraits(selected ? .isSelected : [])
-                SidebarDisclosureButton(title: page.title, noun: page.title, isExpanded: $expanded, foreground: foreground)
+                SidebarDisclosureButton(title: page.title, noun: page.title, isExpanded: expanded, foreground: foreground)
             }
         } content: {
-            if expanded {
+            if expanded.wrappedValue {
                 SidebarSubgroups(linked: true) {
                     ForEach(groups) { group in
                         let selectedIndex = group.items.firstIndex { $0.id == current }
@@ -254,6 +255,8 @@ private struct LibrarySection<ID: Hashable>: View {
                                         .contentShape(Rectangle())
                                     }
                                     .buttonStyle(.pointingPlain)
+                                } target: {
+                                    SidebarTreeTarget(title: item.title) { open(item.id) }
                                 }
                             }
                         }
@@ -262,6 +265,7 @@ private struct LibrarySection<ID: Hashable>: View {
                 }
             }
         }
+        .sidebarRailGroup()
     }
 }
 
@@ -273,8 +277,8 @@ struct SectionPages: View {
     var body: some View {
         @Bindable var model = model
         switch model.sidebarSection {
-        case .drive: DeviceSidebar(onSelect: onSelect)
-        case .extensions: ExtensionSidebar(onSelect: onSelect)
+        case .drive: DeviceSidebar(onSelect: onSelect).modifier(SidebarExpansionScope())
+        case .extensions: ExtensionSidebar(onSelect: onSelect).modifier(SidebarExpansionScope())
         case .settings: SidebarPageList(selection: $model.settingsPage, onSelect: onSelect)
         case .workspaces: EmptyView()
         }
@@ -469,7 +473,7 @@ private struct DeviceSidebar: View {
     var onSelect: () -> Void
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
-    @State private var collapsed: Set<String> = []
+    @Environment(\.sidebarExpansion) private var expansion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -481,13 +485,14 @@ private struct DeviceSidebar: View {
     private func deviceList(_ title: String, devices: [AccountDevice]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(Theme.caption).foregroundStyle(.secondary)
+                .sidebarRailCentered(leading: metrics.itemInset)
                 .padding(.horizontal, metrics.itemInset)
                 .padding(.bottom, 4)
                 .accessibilityAddTraits(.isHeader)
             ForEach(devices) { device in
                 let connection = model.connections.values.first { $0.deviceID == device.id }
                 let selected = connection.map { model.accountWorker?.id == $0.id } ?? false
-                let isExpanded = expanded(device.id)
+                let isExpanded = connection == nil ? .constant(false) : expansion.binding(device.id, selected: selected)
                 SidebarStickySection(headerHeight: metrics.rowHeight) {
                     SidebarListRow(selected: selected) { foreground in
                         DeviceStatusIcon(device: device, connection: connection)
@@ -509,19 +514,13 @@ private struct DeviceSidebar: View {
                         pages(connection)
                     }
                 }
+                .sidebarRailGroup()
             }
             if devices.isEmpty {
                 Text("暂无\(title)").font(Theme.caption).foregroundStyle(.tertiary)
                     .padding(.horizontal, metrics.itemInset)
+                    .sidebarExpandedOnly()
             }
-        }
-    }
-
-    private func expanded(_ id: String) -> Binding<Bool> {
-        Binding {
-            !collapsed.contains(id)
-        } set: { expanded in
-            if expanded { collapsed.remove(id) } else { collapsed.insert(id) }
         }
     }
 
@@ -530,13 +529,14 @@ private struct DeviceSidebar: View {
         return SidebarTreeRows(items: DrivePage.allCases,
                                selectedIndex: current ? DrivePage.allCases.firstIndex(of: model.drivePage) : nil) { page in
             let selected = current && model.drivePage == page
+            let open = {
+                model.accountMachineID = connection.id
+                model.drivePage = page
+                onSelect()
+            }
             SidebarTreeRow(selected: selected) {
                 HStack(spacing: 0) {
-                    Button {
-                        model.accountMachineID = connection.id
-                        model.drivePage = page
-                        onSelect()
-                    } label: {
+                    Button(action: open) {
                         HStack(spacing: 6) {
                             Text(page.title).lineLimit(1)
                             Spacer(minLength: 0)
@@ -551,6 +551,8 @@ private struct DeviceSidebar: View {
                             .modifier(SidebarRevealedControl(pinned: connection.readingModelAccounts))
                     }
                 }
+            } target: {
+                SidebarTreeTarget(title: "\(connection.machine.name) · \(page.title)", action: open)
             }
             .disabled(!page.available)
         }

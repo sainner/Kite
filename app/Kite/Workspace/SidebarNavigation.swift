@@ -66,6 +66,7 @@ private struct SidebarNavigationStyle: ButtonStyle {
                     .overlay {
                         metrics.rowShape.fill(Color.black.opacity(!selected ? 0 : configuration.isPressed ? 0.12 : hovering ? 0.06 : 0))
                     }
+                    .sidebarFullWidth()
             }
             .opacity(isEnabled ? 1 : 0.45)
             .onHover { hovered = $0 }
@@ -90,17 +91,19 @@ private struct SidebarNavigationLabel: View {
                 .symbolVariant(selected ? .fill : .none)
                 .opacity(0.65)
                 .frame(width: metrics.labelExtent)
-            Text(title).font(Theme.sidebarHeading).lineLimit(1)
+            Text(title).font(Theme.sidebarHeading).lineLimit(1).sidebarExpandedOnly()
             Spacer(minLength: 0)
             if let note {
                 Text(note).font(Theme.caption).monospacedDigit()
                     .foregroundStyle(selected ? Color.white.opacity(0.8) : Color.secondary)
                     .frame(minWidth: metrics.rowHeight)
+                    .sidebarExpandedOnly()
             }
             if devices {
                 // 只有一台时标记落在数字方格的中心
                 DeviceMarks(onAccent: selected)
                     .padding(.trailing, ((metrics.rowHeight - DeviceMarks.size(metrics)) / 2).rounded())
+                    .sidebarExpandedOnly()
             }
         }
         .modifier(SidebarIconTint(foreground: selected ? Color.white : Color.primary, allowsHover: !selected))
@@ -108,40 +111,25 @@ private struct SidebarNavigationLabel: View {
 }
 
 /// 一级导航：标志栏下面一列全宽按钮，选中项用主题色背景配白字。两端相同，iPhone 放在侧栏抽屉顶部。
-/// 设置不在这里，入口是用户栏末尾的设置按钮。
-/// 收起的侧栏里只留图标竖着排。
+/// 设置不在这里，入口是用户栏末尾的设置按钮。侧栏收起时只露出图标，选中的底色收成图标列里的一块。
 struct SidebarNavigation: View {
-    /// 收起的图标栏里只要图标。
-    var iconsOnly = false
     @Environment(AppModel.self) private var model
-    @Environment(\.sidebarMetrics) private var metrics
 
     var body: some View {
-        VStack(spacing: iconsOnly ? 12 : 4) {
+        VStack(spacing: 4) {
             ForEach(SidebarSection.allCases.filter(\.navigable)) { section in
                 let selected = model.sidebarSection == section
-                let button = Button {
+                Button {
                     withAnimation(.snappy) { model.sidebarSection = section }
                 } label: {
-                    if iconsOnly {
-                        Image(systemName: section.symbol)
-                            .font(.system(size: metrics.labelExtent - 4, weight: .bold))
-                            .symbolVariant(selected ? .fill : .none)
-                            .modifier(SidebarIconTint(foreground: selected ? Color.white : Color.primary, allowsHover: !selected))
-                            .opacity(0.65)
-                            .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
-                            .background(selected ? Color.accentColor : .clear, in: sidebarRowShape)
-                            .contentShape(sidebarRowShape)
-                    } else {
-                        SidebarNavigationLabel(title: section.title, systemImage: section.symbol,
-                                               note: section.count(in: model).map(String.init), devices: section == .drive,
-                                               selected: selected)
-                    }
+                    SidebarNavigationLabel(title: section.title, systemImage: section.symbol,
+                                           note: section.count(in: model).map(String.init), devices: section == .drive,
+                                           selected: selected)
                 }
+                .buttonStyle(SidebarNavigationStyle(selected: selected))
                 .help(section.title)
+                .accessibilityLabel(section.title)
                 .accessibilityAddTraits(selected ? .isSelected : [])
-                if iconsOnly { button.buttonStyle(SidebarButtonStyle()) }
-                else { button.buttonStyle(SidebarNavigationStyle(selected: selected)) }
             }
         }
     }
@@ -151,6 +139,8 @@ struct SidebarNavigation: View {
 struct SidebarUserBar: View {
     @Environment(AppModel.self) private var model
     @Environment(\.workspacePresentation) private var presentation
+    @Environment(\.sidebarMetrics) private var metrics
+    @Environment(\.sidebarTuck) private var tuck
 
     private var user: AccountUser? { model.account.user }
 
@@ -196,10 +186,13 @@ struct SidebarUserBar: View {
                 }
             }
             .padding(.leading, presentation == .tiled ? 3 : 6)
+            .sidebarExpandedOnly()
             Spacer(minLength: 0)
+            // 侧栏收起时跟着右边缘走，停在图标列正中；挪的是画的位置，账号信息不跟着重排
             SidebarSettingsButton()
+                .offset(x: tuck > 0 ? (metrics.column - Metrics.paneHeaderButton) / 2 - tuck : 0)
         }
-        // 设置按钮贴着侧栏右边缘，底边与旁边窗口的底边对齐
+        // 设置按钮贴着侧栏右边缘；宽屏侧栏里底边的对齐见 WorkspaceSidebar
         .padding(.top, 10)
     }
 
@@ -295,7 +288,7 @@ struct SidebarSettingsButton: View {
     }
 }
 
-/// 列表上方的栏名；项目一栏右侧是添加项目的入口，按钮浮在标题上，不撑高这一行，各栏的列表起点一致。
+/// 列表上方的栏名；项目一栏右侧是添加项目的入口，按钮浮在标题上，不撑高这一行，各栏的列表起点一致。侧栏收起时栏名留在图标列正中。
 struct SidebarListHeader: View {
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
@@ -306,6 +299,7 @@ struct SidebarListHeader: View {
                 .font(Theme.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
+                .sidebarRailCentered(leading: metrics.itemInset)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .overlay(alignment: .trailing) {
                     if model.sidebarSection == .workspaces {
@@ -316,6 +310,7 @@ struct SidebarListHeader: View {
                         .disabled(model.availableWorkers.isEmpty)
                         .help("添加项目")
                         .accessibilityLabel("添加项目")
+                        .sidebarExpandedOnly()
                     }
                 }
                 // 加号与项目行末尾的按钮右对齐
@@ -343,10 +338,11 @@ struct SidebarLogoBar<Buttons: View>: View {
         let tiled = presentation == .tiled
         return VStack(spacing: Metrics.sidebarRuleGap) {
             HStack(alignment: tiled ? .bottom : .center, spacing: Metrics.paneButtonGap) {
-                LineEntry(hovering: hovering)
+                LineEntry(hovering: hovering, leading: metrics.itemInset - 2)
                 controlPanel
                     .padding(.leading, tiled && searchPresented ? Metrics.padding : 0)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                    .sidebarExpandedOnly()
             }
             .padding(.leading, metrics.itemInset - 2)
             .frame(height: Metrics.paneHeaderButton)
@@ -357,7 +353,7 @@ struct SidebarLogoBar<Buttons: View>: View {
             .onHover { inside in
                 withAnimation(.easeOut(duration: 0.15)) { hovering = inside }
             }
-            Rectangle().fill(Theme.rule).frame(height: 1)
+            Rectangle().fill(Theme.rule).frame(height: 1).sidebarFullWidth()
         }
     }
 
@@ -370,12 +366,17 @@ struct SidebarLogoBar<Buttons: View>: View {
 }
 
 /// 侧栏顶部的标志就是 Line 的入口（docs/Line与工作区流转.md）：点一下进 Line 的工作区，旁边是 Line 的头像和收件箱里等你的数目；
-/// 还没启用 Line 时点开是在哪台工作机上启用。
+/// 还没启用 Line 时点开是在哪台工作机上启用。侧栏收起时字标挪到图标列正中。
 private struct LineEntry: View {
     var hovering: Bool
+    /// 字标在侧栏里的起点。
+    var leading: CGFloat
     @Environment(AppModel.self) private var model
+    @Environment(\.sidebarTuck) private var tuck
+    @Environment(\.sidebarMetrics) private var metrics
     @State private var choosing = false
     @State private var failure: String?
+    @State private var wordmarkWidth: CGFloat = 0
 
     private var waitingCount: Int { model.lineInboxSnapshot?.waiting.count ?? 0 }
     private var selected: Bool { model.lineArea.map { model.current?.id == $0.id } ?? false }
@@ -386,6 +387,7 @@ private struct LineEntry: View {
         } label: {
             HStack(alignment: .center, spacing: 6) {
                 KiteWordmark(hovering: hovering)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { wordmarkWidth = $0 }
                 if waitingCount > 0 {
                     Text("\(waitingCount)")
                         .font(Theme.status.weight(.bold).monospacedDigit())
@@ -394,6 +396,7 @@ private struct LineEntry: View {
                         .frame(minWidth: 18, minHeight: 18)
                         .background(Theme.warning, in: Capsule())
                         .accessibilityLabel("收件箱里 \(waitingCount) 项等你")
+                        .sidebarExpandedOnly()
                 }
             }
             .padding(.horizontal, 6).padding(.vertical, 2)
@@ -402,6 +405,7 @@ private struct LineEntry: View {
         }
         .buttonStyle(.pointingPlain)
         .padding(.leading, -6)
+        .offset(x: tuck > 0 ? (metrics.column - wordmarkWidth) / 2 - leading : 0)
         .help(model.lineArea == nil ? "启用个人 agent Line" : "Line 的工作区：收件箱与 Line 的对话")
         // Line 的工作区不列在项目一栏，流转与强制接管从这里的菜单进。
         .contextMenu {

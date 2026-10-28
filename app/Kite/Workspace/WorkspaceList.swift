@@ -13,6 +13,7 @@ struct WorkspaceRow<Interaction: View>: View {
     @Environment(\.sidebarProjectTint) private var tint
     @Environment(\.sidebarHighlight) private var highlight
     @Environment(\.sidebarMetrics) private var metrics
+    @Environment(\.sidebarTuck) private var tuck
     @Environment(\.toast) private var toast
     @State private var renaming = false
     /// 标题实际的宽度，「+x」按它贴在标题右边。
@@ -131,8 +132,16 @@ struct WorkspaceRow<Interaction: View>: View {
                     }
                 }
             }
+        } target: {
+            // 收起时只剩树干上的圆点，点它切过去、拖出去分离；不进改名。按住 ⌃⌘ 时编号盖在圆点上
+            interaction({})
+                .overlay {
+                    if let hint {
+                        ShortcutNumber(number: hint).background(Theme.background, in: Circle()).allowsHitTesting(false)
+                    }
+                }
         }
-        .help("\(workspace.remote.machine.name) · \(workspace.remote.workspace.cwd)")
+        .help(tuck > 0 ? workspace.title : "\(workspace.remote.machine.name) · \(workspace.remote.workspace.cwd)")
     }
 
     /// 标题右边的子工作区开关：收起时是「+x」，x 连同没展开的下层一起算；展开着时是「−」。
@@ -315,6 +324,7 @@ struct WorkspaceList<Row: View>: View {
         }
         .padding(.top, presentation == .compact ? 12 : 0)
         .padding(.bottom, 12)
+        .modifier(SidebarExpansionScope())
     }
 }
 
@@ -325,7 +335,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
     @Environment(AppModel.self) private var model
     @Environment(\.sidebarMetrics) private var metrics
     @Environment(\.toast) private var toast
-    @State private var isExpanded = true
+    @Environment(\.sidebarExpansion) private var expansion
     /// 确认删除时的说明，点「删除项目…」时才算。
     @State private var deletion: String?
 
@@ -339,6 +349,7 @@ private struct WorkspaceProjectSection<Row: View>: View {
         let checkouts = group.checkouts
         let current = model.current?.id
         let selected = model.selectedProjectID == group.id || group.workspaces.contains { $0.id == current }
+        let isExpanded = expansion.binding(group.id, selected: selected)
         SidebarStickySection(headerHeight: metrics.rowHeight) {
             SidebarListRow(selected: selected) { foreground in
                 // 点项目进项目页，展开收起用行尾的箭头
@@ -367,10 +378,10 @@ private struct WorkspaceProjectSection<Row: View>: View {
                 .help("创建工作区")
                 .accessibilityLabel("在\(group.title ?? "项目")中创建工作区")
                 .modifier(SidebarRevealedControl())
-                SidebarDisclosureButton(title: group.title ?? "项目", noun: "项目", isExpanded: $isExpanded, foreground: foreground)
+                SidebarDisclosureButton(title: group.title ?? "项目", noun: "项目", isExpanded: isExpanded, foreground: foreground)
             }
         } content: {
-            if isExpanded {
+            if isExpanded.wrappedValue {
                 SidebarSubgroups(linked: checkouts.count > 1) {
                     ForEach(checkouts) { checkout in
                         let workspaces = checkout.workspaces
@@ -388,13 +399,15 @@ private struct WorkspaceProjectSection<Row: View>: View {
                             }
                         } content: {
                             SidebarTreeRows(items: workspaces, selectedIndex: selectedIndex,
-                                            hasCheckout: checkouts.count > 1, tint: tint, row: row)
+                                            hasCheckout: checkouts.count > 1, tint: tint,
+                                            dimmed: { model.detached.contains($0.id) }, row: row)
                         }
                         .zIndex(checkoutSelected ? 1 : 0)
                     }
                 }
             }
         }
+        .sidebarRailGroup()
         .environment(\.sidebarProjectTint, tint)
         .environment(\.sidebarHighlight, highlight)
         .alert("删除项目", isPresented: Binding { deletion != nil } set: { if !$0 { deletion = nil } }, presenting: deletion) { _ in

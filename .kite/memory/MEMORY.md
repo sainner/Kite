@@ -52,6 +52,7 @@
 - [预览的指认](todo-preview-pointing.md) — 网页、模拟器、App 窗口已实现待手测；模拟器界面结构格式待核对；React 19 已按 source map 给行号
 - [预览插件收尾](todo-preview-plugin.md) — 目标模型与浏览并进文件、能开外网待手测；旧工具名要清；Xcode 批准待跑；DeviceHub 裁不出；插件授预览待定
 - [窗口动画剩余开销](todo-window-motion-remaining.md) — 测量基线与改后数据、侧栏拖宽的两处原因、缩小首帧剩下的岛更新、无效改法；iPad 拖缝到 120Hz 前后、iPhone 数据；侧栏收起展开；真发送开头掉帧；10-25 新停靠栏下的一轮与看不见的头像停住
+- [侧栏收起状态收尾](todo-sidebar-rail.md) — 10-28 改成同一组件的过渡：iPad 没看、收起时圆点点击拖动没测、Line 角标去留待定
 - [去中心化改造收尾](todo-decentralized-rollout.md) — 租约续约等 CloudKit、登出重启关机预告待实测、本机受管通道已上线、Mac mini 收不到同步待人处理
 - [本机访问边界](todo-local-access-boundary.md) — 本机接口与 kite-net 代理不设认证、/network 暴露端点，待定收紧；排查装的系统版 Tailscale 要退
 - [上架前的版本做法](todo-store-release.md) — kited 兼容在用的旧版 App、先 App 后 kited、公共下载点、Mac App 签名后自更新

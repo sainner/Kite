@@ -5,6 +5,8 @@ struct MainWindow: View {
     var availableWidth: CGFloat = 1272
     @Environment(AppModel.self) private var model
     @Environment(\.displayScale) private var displayScale
+    /// 侧栏字号的缩放，同 SidebarScaledMetrics：收起的宽是侧栏的图标列，跟着一起缩放。
+    @ScaledMetric(relativeTo: .headline) private var sidebarScale: CGFloat = 100
     @State private var resizingFrom: CGFloat?
 
     var body: some View {
@@ -22,7 +24,8 @@ struct MainWindow: View {
     private var content: some View {
         HStack(spacing: 0) {
             WorkspaceSidebar()
-                .modifier(SidebarLiveWidth(drag: model.sidebarDrag, width: sidebarWidth, slot: sidebarSlot))
+                .modifier(SidebarLiveWidth(drag: model.sidebarDrag, width: expandedSidebarWidth,
+                                           column: model.sidebarCollapsed ? sidebarColumn : nil, slot: sidebarSlot))
                 .allowsHitTesting(resizingFrom == nil)
             LayoutDragArea(cursor: .columnResize) { drag in
                 let from = resizingFrom ?? sidebarWidth
@@ -97,14 +100,14 @@ struct MainWindow: View {
     }
 
     private var sidebarWidth: CGFloat {
-        if model.sidebarCollapsed {
-            #if os(macOS)
-            // 图标栏只放一列圆点，四个模块；标题栏在红绿灯下方，不必让开它的宽度
-            return 4 * DotMetrics.module
-            #else
-            return Metrics.dragBubble
-            #endif
-        }
+        model.sidebarCollapsed ? sidebarColumn + 2 * SidebarMetrics.railMargin : expandedSidebarWidth
+    }
+
+    /// 收起的侧栏露出的图标列，两侧另留 railMargin。
+    private var sidebarColumn: CGFloat { SidebarMetrics().scaled(by: sidebarScale / 100).column }
+
+    /// 展开时的宽；收起时侧栏仍按它排。
+    private var expandedSidebarWidth: CGFloat {
         let remaining = availableWidth - 2 * Metrics.sidebarInset - Metrics.padding - Metrics.gap - Metrics.dockWidth - Metrics.minPane
         return min(model.sidebarWidth, max(Metrics.sidebarMin, remaining))
     }
@@ -148,16 +151,28 @@ struct MainWindow: View {
     }
 }
 
-/// 侧栏按 width 画，在排版上占 slot。iPad 拖侧栏改宽时（SidebarDrag）slot 是最窄的宽，侧栏按实时的宽画、伸进内容区底下，
-/// 台面把排窗口的那块让到它右边。实时的宽只在这里读，每步只有侧栏这一棵重算。
+/// 侧栏按 width 排，露出整个 width，收着时只露出图标列 column、两侧各多留 railMargin，在排版上占 slot。
+/// 收起、展开不改排法，只是右边缘收到图标列、盖住其余部分（见 WorkspaceSidebar），名字不会跟着边缘逐帧重排。iPad 拖侧栏改宽时（SidebarDrag）slot 是最窄的宽，
+/// 侧栏按实时的宽画、伸进内容区底下，台面把排窗口的那块让到它右边。实时的宽只在这里读，每步只有侧栏这一棵重算。
 private struct SidebarLiveWidth: ViewModifier {
     let drag: SidebarDrag
     let width: CGFloat
+    let column: CGFloat?
     let slot: CGFloat
 
     func body(content: Content) -> some View {
+        let width = drag.width ?? width
+        let margin = SidebarMetrics.railMargin
         content
-            .frame(width: drag.width ?? width, alignment: .leading)
+            .frame(width: width, alignment: .leading)
+            .environment(\.sidebarTuck, column.map { max(width - $0, 0) } ?? 0)
+            // 收着时图标列挪到露出部分的正中
+            .offset(x: column == nil ? 0 : margin)
+            .frame(width: column.map { $0 + 2 * margin } ?? width, alignment: .leading)
+            // 裁掉露出的部分以外的；往外留一圈，贴着边的玻璃按钮不被裁
+            .padding(Metrics.sidebarInset)
+            .clipped()
+            .padding(-Metrics.sidebarInset)
             .frame(width: slot, alignment: .leading)
     }
 }

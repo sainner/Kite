@@ -1,18 +1,23 @@
 import SwiftUI
 
-/// 侧栏顶部保持硬边，下方还有内容时底部渐隐。
-private struct ScrollEdgeFade: ViewModifier {
+/// 侧栏的滚动区：顶部保持硬边，下方还有内容时底部渐隐；可见高告诉里面的列表（sidebarScrollHeight）。
+private struct SidebarScrollArea: ViewModifier {
     @State private var below = false
+    @State private var height: CGFloat = .infinity
     private static let length: CGFloat = 24
 
     func body(content: Content) -> some View {
         content
+            .environment(\.sidebarScrollHeight, height)
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.visibleRect.maxY < geometry.contentSize.height - 0.5
             } action: { _, hasMoreBelow in
                 withAnimation(.easeOut(duration: 0.15)) {
                     below = hasMoreBelow
                 }
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height } action: { _, height in
+                self.height = height
             }
             .mask {
                 VStack(spacing: 0) {
@@ -25,10 +30,12 @@ private struct ScrollEdgeFade: ViewModifier {
 }
 
 extension View {
-    func fadesScrollEdges() -> some View { modifier(ScrollEdgeFade()) }
+    func sidebarScrollArea() -> some View { modifier(SidebarScrollArea()) }
 }
 
-/// 宽屏侧边栏。展开时顶部是标志栏，下面是一级导航，再往下是当前一栏的内容，底部是用户栏；收起时只留一列图标。
+/// 宽屏侧边栏：顶部是标志栏，下面是一级导航，再往下是当前一栏的内容，底部是用户栏。
+/// 收起是同一个侧栏的一种状态：仍按展开的宽排，只露出图标列（MainWindow 的 SidebarLiveWidth）。名字和行尾操作淡掉、
+/// 被往里收的右边缘盖住，树状子项收成树干上的圆点；行的底色、分割线和设置按钮跟着右边缘收进来（sidebarTuck），字标挪到这一列正中。
 /// 工作区一栏里一行就是一个工作区和它的窗口组：点一下在内容区显示，拖到主窗口外面就分离成独立窗口。
 struct WorkspaceSidebar: View {
     @Environment(AppModel.self) private var model
@@ -39,38 +46,41 @@ struct WorkspaceSidebar: View {
 
     var body: some View {
         let current = model.current?.id
-        Group {
-            if model.sidebarCollapsed { rail(current) } else { expanded(current) }
-        }
-        .modifier(SidebarScaledMetrics())
-    }
-
-    private func expanded(_ current: String?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // 收起时只留字标，展开侧栏的按钮在第一个窗口的标题栏里（PaneHeaderBar）
             logoBar.padding(.bottom, Metrics.sidebarRuleGap)
             // 标志栏下面是一级导航，再下面是当前一栏的列表
             if model.sidebarSection != .settings {
                 SidebarNavigation()
                     .padding(.bottom, Metrics.sidebarRuleGap)
                 Rectangle().fill(Theme.rule).frame(height: 1)
+                    .sidebarFullWidth()
                     .padding(.bottom, Metrics.sidebarRuleGap)
             }
             SidebarListHeader()
             ScrollView(.vertical, showsIndicators: false) {
-                switch model.sidebarSection {
-                case .workspaces:
-                    WorkspaceList { workspace in
-                        WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id)) { rename in
-                            source(workspace, rename: rename)
+                Group {
+                    switch model.sidebarSection {
+                    case .workspaces:
+                        WorkspaceList { workspace in
+                            WorkspaceRow(workspace: workspace, current: current == workspace.id, detached: model.detached.contains(workspace.id)) { rename in
+                                source(workspace, rename: rename)
+                            }
                         }
+                    case .drive, .extensions, .settings:
+                        SectionPages()
                     }
-                case .drive, .extensions, .settings:
-                    SectionPages()
                 }
+                // 收起时行的底色往左多铺 railMargin（sidebarFullWidth）：滚动区连同渐隐往左让出这一段，不把它裁掉
+                .padding(.leading, SidebarMetrics.railMargin)
             }
-            .fadesScrollEdges()
+            .sidebarScrollArea()
+            .padding(.leading, -SidebarMetrics.railMargin)
+            // 同标志栏：底下再留卡片边距，设置按钮与旁边窗口里贴底的控件（输入区）底边对齐
             SidebarUserBar()
+                .padding(.bottom, Metrics.paneMargin)
         }
+        .modifier(SidebarScaledMetrics())
     }
 
     /// 顶部标志栏与卡片标题栏同高同位：卡片在内容区顶边留白之下再留卡片边距。避开上方的红绿灯按钮。
@@ -78,99 +88,6 @@ struct WorkspaceSidebar: View {
     private var logoBar: some View {
         SidebarLogoBar { sidebarToggle }
         .padding(.top, Metrics.padding + Metrics.paneMargin)
-    }
-
-    /// 收起时侧栏按钮移到第一个窗口的标题栏，见 PaneHeaderBar。列出当前一栏的图标：工作区按项目分组，组间隔一道短线；底部是设置按钮。
-    private func rail(_ current: String?) -> some View {
-        @Bindable var model = model
-        return VStack(spacing: Metrics.gap) {
-            if model.sidebarSection != .settings {
-                SidebarNavigation(iconsOnly: true)
-                Capsule().fill(Theme.rule).frame(width: 16, height: 2)
-                    .padding(.vertical, 4)
-            }
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 8) {
-                    switch model.sidebarSection {
-                    case .drive: deviceRail
-                    case .extensions: railPages(selection: $model.extensionPage)
-                    case .settings: railPages(selection: $model.settingsPage)
-                    case .workspaces: EmptyView()
-                    }
-                    ForEach(Array((model.sidebarSection == .workspaces ? model.workspaceGroups : []).enumerated()), id: \.element.id) { index, group in
-                        if index > 0 {
-                            Capsule().fill(Theme.rule).frame(width: 16, height: 2).padding(.vertical, 4)
-                        }
-                        ForEach(group.workspaces) { workspace in
-                            // 已经分离成独立窗口的画淡一点
-                            Circle().fill(workspace.tint).frame(width: 24, height: 24)
-                                .opacity(model.detached.contains(workspace.id) ? 0.35 : 1)
-                                // 按住 ⌃⌘ 时编号写在圆点里，用底色，「文字色」的圆点在深色下是白的
-                                .overlay {
-                                    if let number = model.workspaceHint(workspace) {
-                                        Text("\(number)").font(Theme.caption.weight(.semibold)).monospacedDigit().foregroundStyle(Theme.background)
-                                    }
-                                }
-                                .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
-                                .background(current == workspace.id ? Theme.selection : .clear, in: sidebarRowShape)
-                                .overlay { source(workspace) }
-                                .help(workspace.title)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .fadesScrollEdges()
-            // 设置的入口，底边与旁边窗口的底边对齐
-            SidebarSettingsButton()
-        }
-        .frame(maxWidth: .infinity)
-        // 只让开系统红绿灯按钮所在的区域。
-        #if os(macOS)
-        .padding(.top, chrome.top)
-        #else
-        .padding(.top, Metrics.padding)
-        #endif
-    }
-
-    private var deviceRail: some View {
-        VStack(spacing: 8) {
-            ForEach(model.accountWorkers) { connection in
-                let selected = model.drivePage == .accounts && model.accountWorker?.id == connection.id
-                Button {
-                    model.accountMachineID = connection.id
-                    model.drivePage = .accounts
-                } label: {
-                    Group {
-                        if let device = model.account.devices.first(where: { $0.id == connection.deviceID }) {
-                            DeviceStatusIcon(device: device, connection: connection)
-                        } else { TablerIcon(.desktop, selected: selected) }
-                    }
-                        .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
-                        .background(selected ? Theme.selection : .clear, in: sidebarRowShape)
-                }
-                .buttonStyle(SidebarButtonStyle(foreground: selected ? .accentColor : .secondary))
-                .help("\(connection.machine.name) · 账号")
-                .accessibilityLabel("\(connection.machine.name) · 账号")
-            }
-        }
-    }
-
-    /// 收起时工作区以外的栏只列各页图标，点一下切页。
-    private func railPages<Page: SidebarPage>(selection: Binding<Page>) -> some View {
-        ForEach(Page.allCases.filter(\.available)) { page in
-            Button { selection.wrappedValue = page } label: {
-                TablerIcon(page.icon, selected: selection.wrappedValue == page)
-                    .font(Theme.body)
-                    .modifier(SidebarIconTint(foreground: selection.wrappedValue == page ? Color.accentColor : Color.secondary))
-                    .opacity(0.65)
-                    .frame(width: max(36, Metrics.paneButton), height: max(36, Metrics.paneButton))
-                    .background(selection.wrappedValue == page ? Theme.selection : .clear, in: sidebarRowShape)
-                    .contentShape(sidebarRowShape)
-            }
-            .buttonStyle(SidebarButtonStyle())
-            .help(page.title)
-        }
     }
 
     private var sidebarToggle: some View {
@@ -183,7 +100,7 @@ struct WorkspaceSidebar: View {
         .help(title)
     }
 
-    /// rename 是双击进入改名，收起时那一列圆点不给。
+    /// rename 是双击进入改名，收起时树干上的圆点不给（WorkspaceRow 的 target）。
     private func source(_ workspace: WorkArea, rename: (() -> Void)? = nil) -> some View {
         #if os(macOS)
         WorkspaceDragSource(tint: workspace.tint) {

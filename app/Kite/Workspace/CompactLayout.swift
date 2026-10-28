@@ -164,7 +164,7 @@ struct CompactSidebarColumn: View {
                     SectionPages(onSelect: collapse)
                 }
             }
-            .fadesScrollEdges()
+            .sidebarScrollArea()
             SidebarUserBar()
         }
         .padding(.horizontal, Metrics.sidebarInset)
