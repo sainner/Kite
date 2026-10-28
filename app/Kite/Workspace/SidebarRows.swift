@@ -280,8 +280,10 @@ struct SidebarDisclosureButton: View {
 }
 
 /// 各栏的一级列表行共用字重、尺寸与反馈；操作按钮由各自的内容提供。
+/// expanded 是行尾箭头管的树状子项：侧栏收起时箭头淡掉，点这一行除了照常进去，还展开子项，树干上才有圆点可点。
 struct SidebarListRow<Content: View>: View {
     let selected: Bool
+    var expanded: Binding<Bool>?
     @ViewBuilder var content: (_ foreground: Color) -> Content
     @Environment(\.sidebarProjectTint) private var tint
     @Environment(\.sidebarHighlight) private var highlight
@@ -310,6 +312,8 @@ struct SidebarListRow<Content: View>: View {
         }
         .opacity(isEnabled ? 1 : 0.45)
         .onHover { hovered = $0 }
+        // 和行里的按钮同时认，按钮照常响应
+        .simultaneousGesture(TapGesture().onEnded { expanded?.wrappedValue = true }, isEnabled: tuck > 0 && expanded != nil)
     }
 }
 

@@ -351,8 +351,8 @@ private struct WorkspaceProjectSection<Row: View>: View {
         let selected = model.selectedProjectID == group.id || group.workspaces.contains { $0.id == current }
         let isExpanded = expansion.binding(group.id, selected: selected)
         SidebarStickySection(headerHeight: metrics.rowHeight) {
-            SidebarListRow(selected: selected) { foreground in
-                // 点项目进项目页，展开收起用行尾的箭头
+            SidebarListRow(selected: selected, expanded: isExpanded) { foreground in
+                // 点项目进项目页，展开收起用行尾的箭头；侧栏收起时没有箭头，点项目顺带展开
                 Button {
                     model.selectProject(group.id)
                     onSelect()

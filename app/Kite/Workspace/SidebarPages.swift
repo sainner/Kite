@@ -223,7 +223,7 @@ private struct LibrarySection<ID: Hashable>: View {
         let expanded = expansion.binding(page, selected: selected)
         let current = selected ? current : nil
         SidebarStickySection(headerHeight: metrics.rowHeight) {
-            SidebarListRow(selected: selected) { foreground in
+            SidebarListRow(selected: selected, expanded: expanded) { foreground in
                 Button { open(nil) } label: {
                     SidebarListLabel(title: page.title, icon: page.icon, selected: selected)
                 }
@@ -495,18 +495,19 @@ private struct DeviceSidebar: View {
                 let isExpanded = connection == nil ? .constant(false) : expansion.binding(device.id, selected: selected)
                 SidebarStickySection(headerHeight: metrics.rowHeight) {
                     SidebarListRow(selected: selected) { foreground in
-                        DeviceStatusIcon(device: device, connection: connection)
-                            .frame(width: metrics.labelExtent)
-                        if connection != nil {
-                            Button { isExpanded.wrappedValue.toggle() } label: {
-                                SidebarListLabel(title: device.name, selected: selected).padding(.leading, 8)
-                            }
-                            .buttonStyle(SidebarButtonStyle(foreground: foreground))
-                        } else {
-                            SidebarListLabel(title: device.name, selected: selected).padding(.leading, 8)
+                        let label = HStack(spacing: 8) {
+                            DeviceStatusIcon(device: device, connection: connection)
+                                .frame(width: metrics.labelExtent)
+                            SidebarListLabel(title: device.name, selected: selected)
                         }
+                        .contentShape(metrics.rowShape)
                         if connection != nil {
+                            // 连图标在内整行展开、收起，侧栏收起时只露出图标也点得开
+                            Button { isExpanded.wrappedValue.toggle() } label: { label }
+                                .buttonStyle(SidebarButtonStyle(foreground: foreground))
                             SidebarDisclosureButton(title: device.name, noun: "设备", isExpanded: isExpanded, foreground: foreground)
+                        } else {
+                            label
                         }
                     }
                 } content: {
