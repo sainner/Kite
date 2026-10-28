@@ -54,7 +54,7 @@ final class WorkThread: Identifiable {
     private var visiblePositions: [Int: Int] = [:]
     private var streamingChanges: Set<Int> = []
     private var streamingRefresh: Task<Void, Never>?
-    /// 主对话里 agent 的话收到的字不当场全给，按节奏放，见 StreamPacer；pacing 是放字的循环，放完就停。
+    /// 主对话里 agent 的话收到的字不当场全给，按节奏放，见 StreamPacer；pacing 是放字的循环，放完或都在等新字时停。
     private var pacer = StreamPacer()
     private var pacing: Task<Void, Never>?
     private var positions: [String: Int] = [:]
@@ -282,6 +282,8 @@ final class WorkThread: Identifiable {
                 } else {
                     recordsChanged = true
                 }
+                // 正在放的话写完了：放字循环在等新字时停着，叫醒它把剩下的放完、换回原文
+                if let shown = pacer.shown(index) { pace(index, shown: shown) }
             } else {
                 recordsChanged = true
             }
@@ -368,14 +370,14 @@ final class WorkThread: Identifiable {
         }
     }
 
-    /// 放一次字：放了字和放完了的话换成新的样子。都放完了返回 false。
+    /// 放一次字：放了字和放完了的话换成新的样子。都放完了、或都在等新字时返回 false，循环停下，来了新字（pace）再起。
     private func stepPacing(_ elapsed: Double) -> Bool {
         let moved = pacer.advance(elapsed) { index in
             guard remoteRecords.indices.contains(index), let text = remoteRecords[index].block.text else { return nil }
             return (text, remoteRecords[index].generation)
         }
         replaceRecords(moved, shape: paced)
-        return !pacer.isEmpty
+        return pacer.needsTicks
     }
 
     /// 不再放慢：停掉循环。接着整份重排的（换了快照）用它，不用一条条换。
@@ -608,7 +610,7 @@ final class WorkThread: Identifiable {
             do {
                 let response = try await client.request("/threads/\(id)/rewind", method: "POST",
                     body: RewindBody(input: message.id, conversation: true, files: true, preview: true), as: RewindResponse.self)
-                rewindRequest = RewindRequest(message: message, files: response.files)
+                rewindRequest = RewindRequest(message: message, files: response.files, unavailable: response.unavailable)
                 error = nil
             } catch { self.error = error.localizedDescription }
         }
@@ -619,7 +621,10 @@ final class WorkThread: Identifiable {
         guard let client else { return }
         Task {
             do {
-                try await client.post("/threads/\(id)/rewind", body: RewindBody(input: request.message.id, conversation: conversation, files: files))
+                // 回退文件时带上确认框里说的去向：之后又有了改动，工作机不按旧的确认动手
+                let expect = files ? request.files.map { RewindBody.Expect(snapshot: $0.snapshot, through: $0.through) } : nil
+                try await client.post("/threads/\(id)/rewind",
+                                      body: RewindBody(input: request.message.id, conversation: conversation, files: files, expect: expect))
                 if conversation { restoreDraft([request.message]) }
                 error = nil
             } catch { self.error = error.localizedDescription }

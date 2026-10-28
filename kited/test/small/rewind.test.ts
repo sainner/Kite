@@ -3,12 +3,13 @@
  * 显示投影整份重建、压缩按范围保留或作废，下一回合接在留下的历史后面。
  */
 import { afterEach, expect, test } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RewindResult } from '../../src/kite.ts';
 import type { ContextItem, Json, ModelItem, ModelRequest } from '../../src/harness/types.ts';
 import type { DisplayRecord, History } from '../../src/transcript/protocol.ts';
-import { folderWorkspace, type Kited, mark, openAgent, startKited, waitIdle } from '../harness.ts';
+import { folderWorkspace, type Kited, listSnapshots, mark, openAgent, startKited, waitIdle } from '../harness.ts';
 import { item, ManualModel } from '../harness-loop.ts';
 import { connectSse } from '../sse.ts';
 import { git, gitOk, newDir, read } from '../util.ts';
@@ -31,11 +32,13 @@ const summaries = (history: ContextItem[]) => history.flatMap((entry) => entry.t
 
 // 几部分的配合：runner 在 journal 上回退并作废覆盖回退点的压缩、kite 用回退掉的工具调用 id 在快照链上找还原点、
 // 显示投影整份重建并经线程流推出、下一回合的上下文按回退后的 journal 组装；单看每一部分都确认不了合起来对不对。
-test('回退到第二轮：预览不动任何东西；回退后文件回到第二轮处理前、对话与显示去掉第二轮起的内容，回退点之前的压缩保留、覆盖回退点的压缩作废，第四轮接在第一轮的摘要之后', async () => {
+// 预览与确认之间人在浏览里保存了文件：浏览保存打的快照、确认时重新读的快照链、HTTP 的 409 与线程控制要配合着在恢复文件和
+// 回退对话之前拦下，免得撤掉确认框里没说的改动。
+test('回退到第二轮：预览不动任何东西；预览后人又在浏览里改了文件时，拿预览的核对值确认返回 409、文件与对话都不动，重新预览报出这次改动，带新核对值确认后文件回到第二轮处理前（人改的一并撤掉）、对话与显示去掉第二轮起的内容，回退点之前的压缩保留、覆盖回退点的压缩作废，第四轮接在第一轮的摘要之后', async () => {
   const model = new ManualModel();
   kited = startKited(() => model);
   const kk = kited;
-  const workspace = await folderWorkspace(kk, newDir(kk.root, 'project', { 'a.txt': '原始\n' }));
+  const workspace = await folderWorkspace(kk, newDir(kk.root, 'project', { 'a.txt': '原始\n', 'c.txt': '人写的\n' }));
   const id = await openAgent(kk.call, workspace.workspace.id);
   const thread = (await kk.call('GET', `/threads/${id}`)).body as { workspace: { cwd: string }; checkout: { path: string } };
   const cwd = thread.workspace.cwd;
@@ -91,20 +94,49 @@ test('回退到第二轮：预览不动任何东西；回退后文件回到第�
   // 预览：给出还原点，其他代理为空，文件、显示和模型调用都不动。
   const preview = await kk.call('POST', `/threads/${id}/rewind`, { input: 'r2', conversation: true, files: true, preview: true });
   expect(preview.status).toBe(200);
-  const target = (preview.body as RewindResult).files;
-  expect(target?.others).toEqual([]);
-  expect(git(thread.checkout.path, 'show', `${target!.snapshot}:a.txt`)).toBe('第一轮');
-  expect(gitOk(thread.checkout.path, 'cat-file', '-e', `${target!.snapshot}:b.txt`)).toBe(false);
+  const target = (preview.body as RewindResult).files!;
+  expect(target.others).toEqual([]);
+  expect(target.changes).toEqual([]);
+  expect(git(thread.checkout.path, 'show', `${target.snapshot}:a.txt`)).toBe('第一轮');
+  expect(gitOk(thread.checkout.path, 'cat-file', '-e', `${target.snapshot}:b.txt`)).toBe(false);
   expect(read(join(cwd, 'a.txt'))).toBe('第二轮\n');
   expect(read(join(cwd, 'b.txt'))).toBe('第二轮新建\n');
   expect((await history()).records).toEqual(before.records);
 
+  // 预览之后人在浏览里保存了 c.txt：快照链上多了一枚不属于哪个代理的「编辑 c.txt」。
+  const workspaceId = workspace.workspace.id;
+  const browser = await kk.call('POST', `/workspaces/${workspaceId}/instances`, { id: randomUUID(), definitionId: 'kite.files' });
+  expect(browser.status).toBe(200);
+  const operation = (name: string, body: object) => kk.call('POST', `/workspaces/${workspaceId}/operations/${name}`,
+    { instanceId: browser.body.id, path: 'c.txt', ...body });
+  const opened = await operation('files.read', {});
+  expect((await operation('files.write', { text: '人改过\n', baseVersion: opened.body.version })).status).toBe(200);
+
+  // 拿预览给的核对值确认：409，文件与对话都不动。
+  const stale = await kk.call('POST', `/threads/${id}/rewind`, { input: 'r2', conversation: true, files: true,
+    expect: { snapshot: target.snapshot, through: target.through } });
+  expect(stale.status).toBe(409);
+  expect(read(join(cwd, 'a.txt'))).toBe('第二轮\n');
+  expect(read(join(cwd, 'b.txt'))).toBe('第二轮新建\n');
+  expect(read(join(cwd, 'c.txt'))).toBe('人改过\n');
+  expect((await history()).records).toEqual(before.records);
+
+  // 重新预览：还原点不变，最新一枚换成人改的那枚，说明里报出这次改动。
+  const again = await kk.call('POST', `/threads/${id}/rewind`, { input: 'r2', conversation: true, files: true, preview: true });
+  expect(again.status).toBe(200);
+  const confirmed = (again.body as RewindResult).files!;
+  expect(confirmed).toEqual({ snapshot: target.snapshot, through: (await listSnapshots(kk, workspaceId))[0]!.commit,
+    others: [], changes: ['编辑 c.txt'] });
+  expect(confirmed.through).not.toBe(target.through);
+
   const streamed = stream.events.values.length;
-  const rewound = await kk.call('POST', `/threads/${id}/rewind`, { input: 'r2', conversation: true, files: true });
+  const rewound = await kk.call('POST', `/threads/${id}/rewind`, { input: 'r2', conversation: true, files: true,
+    expect: { snapshot: confirmed.snapshot, through: confirmed.through } });
   expect(rewound.status).toBe(200);
-  expect((rewound.body as RewindResult).files).toEqual({ snapshot: target!.snapshot, others: [] });
+  expect((rewound.body as RewindResult).files).toEqual(confirmed);
   expect(read(join(cwd, 'a.txt'))).toBe('第一轮\n');
   expect(existsSync(join(cwd, 'b.txt'))).toBe(false);
+  expect(read(join(cwd, 'c.txt'))).toBe('人写的\n');
 
   // 显示：第一轮与它的压缩块留着，第二轮起的消息、回复和工具记录都没了；线程流整份替换。
   const replaced = await stream.events.wait((event) => stream.events.values.indexOf(event) >= streamed && event.type === 'thread.history');

@@ -63,7 +63,7 @@
 - [消息附件收尾](todo-attachments.md) — 输入框那一行待验收、Mac 点开方式待定、真机待测；中途带图交给 Claude 没测
 - [快速模式验收](todo-fast-mode.md) — 真实请求能成功、提速没确认，界面待验收；Codex 用量没按快速模式折算待定
 - [重连只补变化](todo-reconnect-sync.md) — 线程流按 Last-Event-ID 增量已实现、待真实组网量改后；改前基线与量法；落盘缓存、目录瘦身待定
-- [对话回退验收](todo-rewind.md) — 回退到一条人发消息之前已实现、协议 27；两端界面待验收，跨后端回退没有自动测试
+- [对话回退验收](todo-rewind.md) — 回退到一条人发消息之前已实现、协议 28；两端界面待验收，跨后端回退没有自动测试
 - [会话快捷操作](todo-session-shortcuts.md) — 压缩全部、清空上下文、Esc 停止、上键撤回已提交未验收；压缩全部要新工作机，iPhone 过渡没看
 - [工作区现况收尾](todo-workspace-instances.md) — 提示词带名单、变化走通知，已提交待真实会话验收；名单每变一次多存一份提示词快照，涨明显再改
 - [流式正文收尾](todo-streaming-polish.md) — 放字上限改后 Mac 待再看、iPhone 没装；中间残影是推断，蒙版位置没核对

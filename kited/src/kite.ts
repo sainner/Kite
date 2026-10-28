@@ -24,7 +24,7 @@ import { replicaDigest, replicaFiles, replicaManifest, replicaSources, ReplicaSt
 import { normalizeRemote, remoteHost } from './remote-url.ts';
 import { gitTry, isDirty, revParse } from './workspace/git.ts';
 import { fetchBranch, lsRemote, pushBranch, tracking } from './workspace/remote.ts';
-import { openRuntime, pendingWhileIdle, type Runtime, type RuntimeOptions } from './runtime.ts';
+import { idleOpenDue, openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, rewindTarget, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
 import { childChanged, commitParent, mergeChild, mergeParent } from './workspace/children.ts';
 import { compactTemplate } from './harness/compaction.ts';
@@ -143,8 +143,15 @@ export type MergeResult = { status: 'merged' | 'unchanged' } | { status: 'confli
 const MERGE_ATTEMPTS = 3;
 /** initiator 是发起合回的代理；threadId 与 afterResolution 是处理冲突的回合正常结束后宿主接着合；check 是操作层的授权复核。 */
 type MergeOptions = { initiator?: string; threadId?: string; afterResolution?: boolean; check?: () => void };
-/** files 是文件回到的那枚快照，others 是之后改过文件、改动会一起撤掉的其他代理。 */
-export interface RewindResult { files?: { snapshot: string; others: Array<{ id: string; title: string }> } }
+/**
+ * 回退的去向，见 Kite.rewind。files.snapshot 是文件回到的那枚快照，through 是眼下最新的一枚（确认时据此核对预览之后没有新改动）；
+ * others 是之后改过文件、改动会一起撤掉的其他代理，changes 是之后不属于哪个代理的改动（人改的文件、同步主线、合回子工作区等）的说明。
+ * unavailable 是只核对时文件回退不了的原因，这时只能回退对话。
+ */
+export interface RewindResult {
+  files?: { snapshot: string; through: string; others: Array<{ id: string; title: string }>; changes: string[] };
+  unavailable?: string;
+}
 
 /** continue 见 Kite.restoreWorkspace。 */
 type TransferOptions = { operationId?: string; timeoutMs?: number; continue?: Array<{ threadId: string; inputs: Input[] }> };
@@ -1649,13 +1656,18 @@ export class Kite {
     return this.openInterrupted(this.openThreads().filter((t) => existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER))).map((t) => t.id));
   }
   /**
-   * kited 启动时打开空闲着也要打开的会话（见 pendingWhileIdle），如定着空闲压缩的 Claude 会话。和 continueInterrupted 打开同一个的
-   * 由 runner 合成一次打开。
+   * kited 启动时给空闲着也要到点打开的会话定时（见 idleOpenDue），如定着空闲压缩的 Claude 会话：到点才打开，不在启动时把会话
+   * 整个读进来。到点前已经打开的、和 continueInterrupted 打开同一个的，由 runner 合成一次打开。
    */
-  openPendingIdle(): void {
+  scheduleIdleOpens(): void {
     for (const t of this.openThreads()) {
-      if (!pendingWhileIdle(this.home, t)) continue;
-      void this.runner(this.context(t.id)).catch((error: Error) => console.error(`[打开会话] ${t.id}：${error.message}`));
+      const due = idleOpenDue(this.home, t);
+      if (due === undefined) continue;
+      setTimeout(() => {
+        // 到点时会话或工作区已经关了的不开
+        if (this.stopping || !this.openThreads().some((thread) => thread.id === t.id)) return;
+        void this.runner(this.context(t.id)).catch((error: Error) => console.error(`[打开会话] ${t.id}：${error.message}`));
+      }, Math.max(0, due - Date.now())).unref();
     }
   }
   /** 开着、所在工作区也开着的会话：kited 启动时从这里面挑要打开的。 */
@@ -1722,6 +1734,7 @@ export class Kite {
         fileChanges: this.contextTemplates.get(fileChangesContextDefinition.id, fileChangesContextDefinition.scene).definition,
       }),
       compactionFiles: ({ from, to }) => changesBetween(workspace.cwd, workspaceId, from, to),
+      serialize: (task) => this.controlThread(id, task),
       secretFiles: () => this.secretFiles(t.project.id),
       requestSecret: (request) => this.requestSecret(id, request),
       withdrawSecret: (ask) => this.asks.withdraw(id, ask, 'secret'),
@@ -1998,28 +2011,42 @@ export class Kite {
    * 回退到一条输入之前。conversation：代理不再记得这条及之后的对话；files：整个工作区的文件回到代理处理这条之前，
    * 也就是作废的工具调用最早改出的那枚快照的前一枚，之后其他线程的改动一起撤掉（都能从「回退前自动保存」找回）。
    * 先核对，再恢复文件，最后回退对话：对话没回退成时文件已经恢复，可以单独重试对话。preview 只核对，报出文件回到哪一枚、
-   * 会被一起撤掉改动的其他代理。作废的调用没改过文件时不动文件，结果里没有 files。
+   * 会被一起撤掉的改动；文件回退不了时报出原因，不算失败，还能只回退对话。作废的调用没改过文件时不动文件，结果里没有 files。
+   * 确认回退文件时 expect 是预览给人看的 files（没有就是预览说不用动文件），和现在算出来的对不上就什么都不动、报 409，
+   * 免得撤掉确认框里没说的改动。
    */
-  rewind(id: string, inputId: string, options: { conversation: boolean; files: boolean; preview?: boolean }): Promise<RewindResult> {
+  rewind(id: string, inputId: string, options: { conversation: boolean; files: boolean; preview?: boolean;
+    expect?: { snapshot: string; through: string } }): Promise<RewindResult> {
     return this.controlThread(id, async () => {
       const t = this.openThread(id);
       const r = await this.runner(t);
       // 只核对时不要求其他线程空闲：确认框要能弹出来，只回退对话也用不着它们停下。
       if (options.files && !options.preview) await this.assertIdle(t.workspaceId);
       // 只回退对话时不必先核对一遍：真回退自己也校验，Claude 线程每核对一次都要把会话整份导入一遍。
+      // 回退点可能很早，快照链要整条读，不按列表的上限截断
       const [plan, snapshots] = await Promise.all([options.files || options.preview ? r.rewind(inputId, true) : undefined,
-        options.files ? this.snapshots(t.workspaceId) : undefined])
+        options.files ? list(this.workspace(t.workspaceId).checkout.path, t.workspaceId, Infinity) : undefined])
         .catch((error: Error) => { throw error instanceof KiteError ? error : new KiteError(error.message, 409); });
       let files: RewindResult['files'];
+      let unavailable: string | undefined;
       if (plan && snapshots) {
-        const point = rewindTarget(snapshots, plan.calls);
+        let point: ReturnType<typeof rewindTarget>;
+        try { point = rewindTarget(snapshots, plan.calls); }
+        catch (error) {
+          if (!options.preview) throw error;
+          unavailable = (error as Error).message;
+        }
         if (point) {
           const others = [...new Set(point.undone.flatMap((snapshot) => snapshot.threadId && snapshot.threadId !== id ? [snapshot.threadId] : []))];
-          files = { snapshot: point.target.commit,
-            others: others.map((other) => ({ id: other, title: this.store.instance(other)?.title ?? '已删除的代理' })) };
+          const changes = [...new Set(point.undone.flatMap((snapshot) => snapshot.threadId ? [] : [snapshot.label]))];
+          files = { snapshot: point.target.commit, through: point.undone[0]!.commit,
+            others: others.map((other) => ({ id: other, title: this.store.instance(other)?.title ?? '已删除的代理' })), changes };
         }
       }
       if (!options.preview) {
+        if (options.files && (files?.snapshot !== options.expect?.snapshot || files?.through !== options.expect?.through)) {
+          throw new KiteError('确认回退之前工作区的文件又有了改动，请重新确认', 409);
+        }
         if (files) await this.restoreSnapshot(t.workspaceId, files.snapshot);
         if (options.conversation) {
           try { await r.rewind(inputId); }
@@ -2028,7 +2055,7 @@ export class Kite {
           await this.transcripts.reset(this.context(id));
         }
       }
-      return files ? { files } : {};
+      return { ...files ? { files } : {}, ...unavailable ? { unavailable } : {} };
     });
   }
   /**

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import type { RewindResult } from '../../src/kite.ts';
 import type { History } from '../../src/transcript/protocol.ts';
 import { api, claudeModel, folderWorkspace, type Kited, mark, openAgent, startKited, waitIdle } from '../harness.ts';
-import { newDir, read } from '../util.ts';
+import { newDir, read, writeFiles } from '../util.ts';
 
 setDefaultTimeout(3_000);
 let k: Kited | undefined;
@@ -33,9 +33,11 @@ const REWOUND_TO_START = '之前的对话已全部回退，从下一条消息重
  * last-prompt 指向停在用户消息上的链（回退到第一条消息后，分界后只有 Kite 放的一条回退说明）时照样按它接续，
  * 并自己补一条不落盘的助手回复，再接下一条消息；last-prompt 直接停在 compact_boundary 上则不被采用，会退回原叶子带出全部旧历史。
  * 还依赖 Kite 的 PostToolBatch 钩子给快照记下的 tool_use id 与 Claude 原生记录里的调用 id 相同，导入 journal 后才能按 id 找到还原点。
+ * Kite 在回合开头经 UserPromptSubmit 钩子送基础上下文更新，CLI 把钩子的附加上下文放成这条用户消息之后的一条 system 消息。
  * 配合：常驻进程退出与重启、原生会话导入 journal、journal 上的回退、快照还原、会话重组与显示投影接续，单看各部分都确认不了。
+ * 真实出过的 bug：回退掉一个送过基础上下文更新的回合后，宿主仍记着更新已送过，之后不再发，代理一直用旧的上下文。
  */
-test('Claude 线程回退到第二轮后文件回到原内容，第四轮只接续第一轮且显示只有第一、四轮；再回退到第一条消息，第五轮的请求里只有回退说明与第五轮', async () => {
+test('Claude 线程回退到第二轮后文件回到原内容，第四轮只接续第一轮且显示只有第一、四轮；再回退到第一条消息（回退掉了第四轮送的项目规则更新），第五轮的请求里只有回退说明、第五轮和按现在的项目规则重发的基础上下文', async () => {
   k = startKited();
   const kk = k;
   const workspace = await folderWorkspace(kk, newDir(kk.root, 'project', { 'a.txt': '原始内容\n' }));
@@ -55,8 +57,16 @@ test('Claude 线程回退到第二轮后文件回到原内容，第四轮只接�
     await waitIdle(kk, id, since);
     return api.log.slice(start).filter((l) => l.main);
   };
+  /** 回退对话；连文件一起回退时先预览，再带预览给的核对值确认。 */
   const rewind = async (input: string, files: boolean) => {
-    const result = await kk.call('POST', `/threads/${id}/rewind`, { input, conversation: true, files });
+    let checked: { snapshot: string; through: string } | undefined;
+    if (files) {
+      const preview = await kk.call('POST', `/threads/${id}/rewind`, { input, conversation: true, files, preview: true });
+      expect(preview.status).toBe(200);
+      const target = (preview.body as RewindResult).files;
+      checked = target && { snapshot: target.snapshot, through: target.through };
+    }
+    const result = await kk.call('POST', `/threads/${id}/rewind`, { input, conversation: true, files, ...checked ? { expect: checked } : {} });
     expect(result.status).toBe(200);
     return result.body as RewindResult;
   };
@@ -73,8 +83,12 @@ test('Claude 线程回退到第二轮后文件回到原内容，第四轮只接�
   expect(read(join(cwd, 'a.txt'))).toBe('原始内容\n');
 
   // 第四轮从重组后的会话恢复：第一轮的输入、读文件调用与结果在，第二三轮的正文和改文件调用不在。
+  // 第四轮之前人改了项目规则，第四轮开头送了一次带新规则的基础上下文更新。
+  const rule = tag('第四轮前改的项目规则');
+  writeFiles(cwd, { 'AGENTS.md': rule });
   const fourth = (await round('r4', marks.r4))[0]!;
   const sent = json(fourth.body.messages);
+  expect(sent).toContain(rule);
   expect(sent).toContain(marks.r1);
   expect(sent).toContain(`"tool_use_id":"${readCall}"`);
   expect(sent).toContain(marks.r4);
@@ -89,13 +103,15 @@ test('Claude 线程回退到第二轮后文件回到原内容，第四轮只接�
   for (const gone of [marks.r2, marks.r3, patchCall]) expect(blocks).not.toContain(gone);
 
   // 再回退到第一条消息、只回退对话：分界后只有 Kite 的回退说明，CLI 补一条助手回复，再接第五轮；旧内容一概不在。
+  // 送过新规则的第四轮回退掉了，第五轮开头要按现在的规则再送一次基础上下文。
   expect((await rewind('r1', false)).files).toBeUndefined();
   const fifth = (await round('r5', marks.r5))[0]!;
   const messages = fifth.body.messages as Array<{ role: string; content: unknown }>;
   const only = json(messages);
   for (const gone of [marks.r1, marks.r4, readCall]) expect(only).not.toContain(gone);
-  expect(messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+  expect(json(messages.slice(3))).toContain(rule);
+  expect(messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'system']);
   expect(json(messages[0]!.content)).toContain(REWOUND_TO_START);
-  expect(texts(messages.at(-1)!.content)).toEqual([marks.r5]);
+  expect(texts(messages[2]!.content)).toEqual([marks.r5]);
   expect((await history()).records.flatMap(({ block }) => block.type === 'human' ? [block.id] : [])).toEqual(['r5']);
 });

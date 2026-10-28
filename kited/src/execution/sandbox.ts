@@ -66,7 +66,8 @@ function dependencyCaches(env: NodeJS.ProcessEnv): string[] {
   const home = env.HOME;
   if (!home || !isAbsolute(home)) return [];
   return [join(home, '.npm', '_cacache'), join(home, '.cache', 'prisma')].filter((path) => {
-    try { mkdirSync(path, { recursive: true }); } catch { /* 链接指向的盘没挂上等：照样放行，由工具自己报错 */ }
+    // 建不出来的（链接指向的盘没挂上等）不放行，工具自己报错：放行的会是链接本身，沙箱里的代码能删掉它换成真目录
+    try { mkdirSync(path, { recursive: true }); } catch { return false; }
     return exactPath(path) && !globCharacters.test(canonicalPath(path));
   });
 }
@@ -177,7 +178,8 @@ function ancestorDirectories(roots: string[]): string[] {
 
 /**
  * 放行路径原样写法里经过的符号链接本身。上游只放行解析后的真实位置，拒绝区域里的链接连元数据都不给，经链接的路径打不开，
- * 例如 ~/.npm/_cacache 指向别的盘时 npm 报 EPERM。链接按上级目录的真实位置写，宿主保护目录里的不放行。
+ * 例如 ~/.npm/_cacache 指向别的盘时 npm 报 EPERM；命令的 cwd 也算，数据目录的 worktrees 是链接时子工作区经它的路径同样打不开。
+ * 链接按上级目录的真实位置写，宿主保护目录里的不放行。
  */
 function linkEntries(values: string[], denyRead: string[]): string[] {
   const found = new Set<string>();
@@ -219,7 +221,7 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
         // 解析 localhost 时 mDNSResponder 连不上，系统退回读 /etc/hosts，也读不到，vite、vitest 一启动就失败。
         // 确切路径会被上游解析成真实目标，只能写成只匹配链接本身的 glob。
         allowRead: [...allowRead, ...(process.platform === 'darwin'
-          ? ['/et[c]', ...ancestorDirectories(allowRead), ...linkEntries([...policy.read, ...policy.write], denyRead)] : [])],
+          ? ['/et[c]', ...ancestorDirectories(allowRead), ...linkEntries([...policy.read, ...policy.write, options.cwd], denyRead)] : [])],
         allowWrite: paths([...policy.write, scratch]),
         // 上游有少量默认可写目录；本入口只开放策略声明和本次执行的临时目录。
         denyWrite: paths([control, '/tmp/claude', '/private/tmp/claude',

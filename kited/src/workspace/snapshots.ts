@@ -260,10 +260,11 @@ export async function chainBase(cwd: string, workspaceId: string): Promise<strin
   return r.code === 0 ? r.stdout.trim() || null : undefined;
 }
 
-/** 会话的快照链，新的在前，最多 1000 枚。沿第一父节点走，遇到不属于本会话的提交就停。 */
-export async function list(cwd: string, workspaceId: string): Promise<Snapshot[]> {
+/** 会话的快照链，新的在前，最多 limit 枚（Infinity 不限）。沿第一父节点走，遇到不属于本会话的提交就停。 */
+export async function list(cwd: string, workspaceId: string, limit = 1000): Promise<Snapshot[]> {
   // 还没有快照时引用不存在，log 失败
-  const r = await gitTry(cwd, ['log', '--first-parent', '-n1000', `--format=${snapshotFormat}%x1e`, snapshotRef(workspaceId)]);
+  const r = await gitTry(cwd, ['log', '--first-parent', ...Number.isFinite(limit) ? [`-n${limit}`] : [],
+    `--format=${snapshotFormat}%x1e`, snapshotRef(workspaceId)]);
   if (r.code !== 0) return [];
   const snaps: Snapshot[] = [];
   for (const rec of r.stdout.split('\x1e')) {

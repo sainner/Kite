@@ -60,7 +60,7 @@ export function startDaemon(opts: DaemonOptions): Daemon {
   kite.startAccountData();
   // 上次被 kited 退出打断的会话接着做；Line 的 monitor 读汇总时等它们都打开（见 Kite.summary）。
   void kite.continueInterrupted();
-  kite.openPendingIdle();
+  kite.scheduleIdleOpens();
   kite.monitor.start();
   kite.monitors.reconcile();
   return {

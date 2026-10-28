@@ -399,7 +399,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | POST | `/threads/:id/waiting/:waiting` | 回应线程在等的审批 `{decision}`，或没回应的提问 `{answers}`、密钥请求 `{secret: {values, scope?}}`（按请求的顺序逐项给值，没填的为 `null`），提问与密钥请求也可以 `{decision: "deny"}`；请求处理后结果作为一条输入交给代理，可带 `reason`；密钥请求不接受 `X-Kite-Source`，填的值只存进凭据；带 `X-Kite-Source` 时是 Line 代处理，提问的结果写明由 Line 代答及理由。已回应、作废或收回返回 409 与当前的 `waiting`。约定见 [工具审批与提问](工具审批与提问.md) |
 | POST | `/threads/:id/compactions` | 手动压缩上下文 `{id, from, through}`，起止为输入 id；校验通过即返回，结果经显示事件送达 |
 | DELETE | `/threads/:id/compactions/:compaction` | 撤销最外层的一次压缩 |
-| POST | `/threads/:id/rewind` | 回退到一条人发消息之前 `{input, conversation, files, preview?}`，`input` 是消息 id，`conversation`、`files` 至少一个为真；返回 `{files?: {snapshot, others}}`，`snapshot` 是文件回到的快照，`others` 是之后改过文件、改动会一起撤掉的其他代理 `{id, title}`，那段没改过文件时没有 `files`。`preview` 只核对、不改动，也不要求其他线程空闲；回退文件要求工作区的线程全部空闲，否则 409。核对不过时什么都不动；文件已恢复而对话没回退时 409，说明里写明，可单独重试对话 |
+| POST | `/threads/:id/rewind` | 回退到一条人发消息之前 `{input, conversation, files, preview?, expect?}`，`input` 是消息 id，`conversation`、`files` 至少一个为真；返回 `{files?: {snapshot, through, others, changes}, unavailable?}`，`snapshot` 是文件回到的快照，`through` 是眼下最新的快照，`others` 是之后改过文件、改动会一起撤掉的其他代理 `{id, title}`，`changes` 是之后不属于哪个代理、也会一起撤掉的改动的说明（人改的文件、同步主线、合回子工作区等），那段没改过文件时没有 `files`。`preview` 只核对、不改动，也不要求其他线程空闲；文件回退不了时（找不到那之前的快照）返回 `unavailable` 说明原因，仍可只回退对话。确认回退文件时 `expect` 带预览返回的 `{snapshot, through}`（预览没有 `files` 时不带），和这时算出的不同就什么都不动、409，要重新预览确认；回退文件要求工作区的线程全部空闲，否则 409。核对不过时什么都不动；文件已恢复而对话没回退时 409，说明里写明，可单独重试对话 |
 | POST | `/instances/:id/archive` | 归档独立存续的实例（agent 或 Bun 插件），保留所属工作区；agent 连同同一工作区里它开出的各层子代理 |
 | GET | `/workspaces/:id/snapshots` | 工作区快照，新的在前 |
 | POST | `/workspaces/:id/restore` | 恢复文件到快照 `{commit}` |

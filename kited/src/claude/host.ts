@@ -34,12 +34,16 @@ export function acquireClaudeLock(directory: string): () => void {
 const idleCompactionLive = (last: { at: number; tokens: number }) =>
   last.tokens >= IDLE_COMPACT_TOKENS && Date.now() - last.at <= IDLE_COMPACT_LATEST_MS;
 
-/** 会话记录里定着还没过最晚时刻的空闲压缩：kited 启动时要打开这个会话，它才接着计时，见 scheduleIdleCompaction。 */
-export function idleCompactionPending(directory: string): boolean {
+/**
+ * 会话记录里定着的空闲压缩什么时候到点（毫秒时刻）：kited 启动时到点再打开这个会话，它接着计时，见 scheduleIdleCompaction。
+ * 没有、过了最晚时刻，或会话停着等人继续（到时也不压）时为 undefined。
+ */
+export function idleCompactionDue(directory: string): number | undefined {
   try {
-    const last = readClaudeControl(directory).lastRequest;
-    return !!last && idleCompactionLive(last);
-  } catch { return false; }
+    const control = readClaudeControl(directory);
+    const last = control.lastRequest;
+    return last && idleCompactionLive(last) && !control.paused && !control.exited ? last.at + IDLE_COMPACT_AFTER_MS : undefined;
+  } catch { return undefined; }
 }
 
 export async function openClaudeHost(options: {
@@ -68,6 +72,8 @@ export async function openClaudeHost(options: {
     files(range: { from: number; to: number }): Promise<string | undefined>;
     /** 线程的公共变量，压缩时取一份。 */
     variables(): ContextValues;
+    /** 定时的空闲压缩排进线程的控制队列，和回退、手动压缩不并发；不给时直接做。 */
+    serialize?<T>(task: () => Promise<T>): Promise<T>;
   };
 }): Promise<Runtime> {
   const data = readClaudeControl(options.directory);
@@ -183,6 +189,7 @@ export async function openClaudeHost(options: {
     // 收尾期间到来的消息看到进程尚未清掉，不会抢先启动新进程。
     phase = wasStopping ? 'stopping' : 'idle'; driver = undefined;
     save();
+    if (phase === 'idle') scheduleIdleCompaction();
     options.events.emit({ type: 'runner', state: 'closed', ...(error ? { error } : {}) });
     if (!wasStopping && !closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
     // 被 kited 关闭停下的回合下次启动接着做，不算回合结束，不回报。
@@ -300,18 +307,23 @@ export async function openClaudeHost(options: {
     return accepted;
   };
   /**
-   * 空闲压缩：回合结束后一直空闲，赶在上次请求的缓存过期前在后台按自动压缩的规则压缩，人回来时上下文已经小了，不用等；
-   * 时机与门槛见 IDLE_COMPACT_AFTER_MS。之后又有请求、压缩或回退时，这次定时作废。
+   * 空闲压缩：回合结束（含停止、进程中途退出）后一直空闲，赶在上次请求的缓存过期前在后台按自动压缩的规则压缩，人回来时上下文
+   * 已经小了，不用等；时机与门槛见 IDLE_COMPACT_AFTER_MS。之后又有请求、压缩或回退时，这次定时作废。
    */
   const scheduleIdleCompaction = () => {
     clearTimeout(idleTimer); idleTimer = undefined;
+    const settings = options.compaction;
     const last = data.lastRequest;
-    if (!options.compaction || !last || !idleCompactionLive(last)) return;
-    idleTimer = setTimeout(() => {
-      idleTimer = undefined;
+    if (!settings || !last || !idleCompactionLive(last)) return;
+    // 排进控制队列后轮到时再看一遍：回退过的 lastRequest 已经清掉
+    const run = async () => {
       if (data.lastRequest !== last || !idleCompactionLive(last)) return;
       if (closing || data.paused || data.inputs.some((entry) => entry.status !== 'done' && entry.status !== 'cancelled')) return;
-      void compaction({ compact: { id: randomUUID(), automatic: true } }, true).catch(() => {});
+      await compaction({ compact: { id: randomUUID(), automatic: true } }, true);
+    };
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      void (settings.serialize ? settings.serialize(run) : run()).catch(() => {});
     }, Math.max(0, last.at + IDLE_COMPACT_AFTER_MS - Date.now()));
     idleTimer.unref();
   };
@@ -549,6 +561,7 @@ export async function openClaudeHost(options: {
         // 留下的等新输入或继续，不自动推进，连续崩溃到上限的暂停也留着；进程退出时的收尾会改掉 paused，在这里定。
         data.paused = data.exits >= EXIT_LIMIT || data.inputs.some((entry) => entry.status === 'queued');
         phase = 'idle'; data.outcome = { kind: 'interrupted' }; receipt.completed = true; save();
+        scheduleIdleCompaction();
         return receipt.returned;
       })().catch((error) => {
         phase = 'idle'; data.outcome = { kind: 'failed', message: `停止没有完成：${String(error)}` }; data.paused = true;
@@ -576,6 +589,8 @@ export async function openClaudeHost(options: {
         throw new KiteError(data.outcome.message, 409);
       }
       measured = undefined; data.lastRequest = undefined;
+      // 回退掉的回合里可能送过上下文更新，会话里留下的哪次送过记不清：下一回合按现在的整份再告诉一次
+      data.context = undefined; data.roster = undefined;
       data.outcome = undefined; data.paused = false; data.exited = false; data.exits = 0; interrupted = false;
       save(); publish();
       return result;

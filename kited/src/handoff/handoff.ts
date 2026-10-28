@@ -101,8 +101,10 @@ export async function syncToClaude(directory: string, cwd: string, nativeId: str
   control.importedInputs = [...new Set([...control.importedInputs, ...translated.inputIds])];
   control.through = Math.max(control.through, translated.notificationCursor);
   // 尚未启动过 Claude 时，系统提示会直接取当前正文，不需要另外告知更新。
-  // 代理在 harness 那边知道的工作区现况没带过来：下次请求不比对，按那时的名单接着记
-  if (control.initialContext !== undefined && translated.instructions !== undefined) { control.context = translated.instructions; control.roster = undefined; }
+  // 代理在 harness 那边知道的工作区现况没带过来：下次请求不比对，按那时的名单接着记。
+  // 回退过的：回退掉的请求里可能送过更新，留下的哪次送过记不清，清掉，下一回合按现在的整份再告诉一次
+  if (translated.rewound) { control.context = undefined; control.roster = undefined; }
+  else if (control.initialContext !== undefined && translated.instructions !== undefined) { control.context = translated.instructions; control.roster = undefined; }
   saveClaudeControl(directory, control);
 }
 
@@ -410,7 +412,10 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
       instructions = contexts.get(row.contextId);
     }
   }
-  if (reshaped) return { ...rebaseToClaude(records, { ...options, importId, through, after }), through, notificationCursor, instructions };
+  if (reshaped) {
+    return { ...rebaseToClaude(records, { ...options, importId, through, after }), through, notificationCursor, instructions,
+      rewound: tail.some((row) => row.type === 'context.rewound') };
+  }
   const entries: ClaudeEntry[] = [];
   const inputIds: string[] = [];
   let parent = options.parent;
@@ -490,5 +495,5 @@ export function harnessToClaude(records: readonly JournalRecord[], after: number
     }
   }
   flush();
-  return entries.length ? { entries, through, inputIds, notificationCursor, instructions } : undefined;
+  return entries.length ? { entries, through, inputIds, notificationCursor, instructions, rewound: false } : undefined;
 }

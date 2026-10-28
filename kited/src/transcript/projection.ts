@@ -329,6 +329,7 @@ export class TranscriptProjection {
         }
         this.lastOutcome = undefined;
         this.error = undefined;
+        this.waitingForResume = false;
         this.context = undefined;
         break;
       }

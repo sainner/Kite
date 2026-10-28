@@ -167,22 +167,28 @@ struct StopRequest: Encodable {
 
 struct StopResponse: Decodable { let returned: [RemoteInput] }
 
-/// 回退到一条输入之前；preview 只核对。
+/// 回退到一条输入之前；preview 只核对。确认回退文件时 expect 带预览给的去向，工作机对不上就不动手。
 struct RewindBody: Encodable {
+    struct Expect: Encodable { let snapshot: String; let through: String }
     let input: String
     let conversation: Bool
     let files: Bool
     var preview: Bool? = nil
+    var expect: Expect? = nil
 }
 
-/// 回退时文件的去向：回到哪一枚快照，之后改过文件、改动会一起撤掉的其他代理。代理在这条之后没改过文件时工作机不给。
+/// 回退时文件的去向：回到哪一枚快照、眼下最新的一枚，之后改过文件、改动会一起撤掉的其他代理，和之后不属于哪个代理的改动
+/// （人改的文件、同步主线等）的说明。代理在这条之后没改过文件时工作机不给。
 struct RewindFiles: Decodable, Equatable {
     struct Other: Decodable, Equatable { let id: String; let title: String }
     let snapshot: String
+    let through: String
     let others: [Other]
+    let changes: [String]
 }
 
-struct RewindResponse: Decodable { var files: RewindFiles? }
+/// unavailable 是文件回退不了的原因，这时只能回退对话。
+struct RewindResponse: Decodable { var files: RewindFiles?; var unavailable: String? }
 
 struct ThreadTitleSnapshot: Decodable {
     let title: String

@@ -727,7 +727,8 @@ export function serve(kite: Kite, listen: Listen) {
         return { ok: true };
       }) },
       '/threads/:id/rewind': { POST: bound(async (req) => {
-        const parsed = z.object({ input: z.string().min(1), conversation: z.boolean(), files: z.boolean(), preview: z.boolean().optional() }).strict()
+        const parsed = z.object({ input: z.string().min(1), conversation: z.boolean(), files: z.boolean(), preview: z.boolean().optional(),
+          expect: z.object({ snapshot: z.string(), through: z.string() }).strict().optional() }).strict()
           .refine((request) => request.conversation || request.files).safeParse(await body(req));
         if (!parsed.success) throw new KiteError('回退请求无效');
         const { input, ...options } = parsed.data;

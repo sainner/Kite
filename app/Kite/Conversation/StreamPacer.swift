@@ -5,11 +5,13 @@ import Foundation
 /// 写完以后照样放完，停下以后剩下的很快给出。中文按字放，英文一个词一起放；不劈开一个字（表情、组合字符）。
 /// 只管主对话里 agent 的话：思考那一行只说小标题，工具的参数和输出照收到的显示。
 struct StreamPacer {
-    /// 一段正在放的话：放出来多少（UTF-16 长度），这会儿每秒放几个字，不够一个字的零头。
+    /// 一段正在放的话：放出来多少（UTF-16 长度），这会儿每秒放几个字，不够一个字的零头；caughtUp 是放到了收到的末尾、还在生成，
+    /// 来新字或写完之前不用再走。
     private struct Lane {
         var shown: Int
         var speed: Double = 0
         var carry: Double = 0
+        var caughtUp = false
     }
 
     /// 生成中攒下的字约多少秒放完，屏幕上的字比收到的晚这么多。
@@ -32,12 +34,14 @@ struct StreamPacer {
 
     private var lanes: [Int: Lane] = [:]
 
-    var isEmpty: Bool { lanes.isEmpty }
     var indices: [Int] { Array(lanes.keys) }
 
-    /// 记录 index 收到了新字。还没在放的从眼下显示的长度 shown 起放。
+    /// 还有要走的：攒着没放完的，或写完了要收尾的。都放到了收到的末尾、在等新字时为 false。
+    var needsTicks: Bool { lanes.values.contains { !$0.caughtUp } }
+
+    /// 记录 index 收到了新字或换了样子（写完了）。还没在放的从眼下显示的长度 shown 起放，在放的接着走。
     mutating func received(_ index: Int, shown: Int) {
-        if lanes[index] == nil { lanes[index] = Lane(shown: shown) }
+        if lanes[index] == nil { lanes[index] = Lane(shown: shown) } else { lanes[index]?.caughtUp = false }
     }
 
     /// 这段话放到了哪；没在放的为 nil，照收到的显示。
@@ -61,6 +65,7 @@ struct StreamPacer {
             guard backlog > 0 else {
                 lane.speed = 0
                 lane.carry = 0
+                lane.caughtUp = true
                 if streaming {
                     lanes[index] = lane
                 } else {

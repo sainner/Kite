@@ -61,7 +61,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         observer.delegate = self
         scrollView.addGestureRecognizer(observer)
         // 操作栏开着时点对话里别的地方收起；和链接、按钮的点按同时生效，落在操作栏上不算
-        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
+        let tap = UITapGestureRecognizer(target: self, action: #selector(tapped(_:)))
         tap.cancelsTouchesInView = false
         tap.delegate = self
         scrollView.addGestureRecognizer(tap)
@@ -282,11 +282,12 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         return responder as? UIViewController
     }
 
-    @objc private func tapped() {
-        guard let context, context.selected != nil else { return }
-        // 按满长按的时长才松手的不算点别处：长按（正文、气泡、卡片上）开出来的操作栏，松手那一下不收起。
-        // 点按没有时长上限，又和行里的长按同时认，不拦的话一松手就收了
-        if CACurrentMediaTime() - touchDown >= PhoneTextInteraction.pressDuration { return }
+    @objc private func tapped(_ tap: UITapGestureRecognizer) {
+        guard let context, let selected = context.selected else { return }
+        // 长按（正文、气泡、卡片上）开出操作栏的那一下松手不算点别处：点按没有时长上限，又和行里的长按同时认，不拦的话一松手就收了。
+        // 只拦按满长按时长、落在开着操作栏的那一行上的；别处按得久的照样收起
+        if CACurrentMediaTime() - touchDown >= PhoneTextInteraction.pressDuration, let slot = arrangement.byID[selected],
+           (slot.frame.minY...slot.frame.maxY).contains(tap.location(in: document).y) { return }
         context.select(nil)
     }
 

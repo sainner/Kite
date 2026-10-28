@@ -7,7 +7,7 @@ import type { Candidate } from './account-data/directory.ts';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
 import type { RunnerState } from './claude/runner.ts';
-import { idleCompactionPending, openClaudeHost } from './claude/host.ts';
+import { idleCompactionDue, openClaudeHost } from './claude/host.ts';
 import { assembleContext, restoreContext } from './harness/context/assembler.ts';
 import { contextUpdateContext, instancesChangedContext, rosterOf } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
@@ -114,6 +114,8 @@ export interface RuntimeHost {
   compactionTemplates(): { compact: ContextDefinition; fileChanges: ContextDefinition };
   /** 两个时刻之间工作区的净文件变化。 */
   compactionFiles(range: { from: number; to: number }): Promise<string | undefined>;
+  /** 后台改会话历史的事（定时的空闲压缩）排进线程的控制队列，和回退、压缩这类控制操作不并发。 */
+  serialize<T>(task: () => Promise<T>): Promise<T>;
   /**
    * 所在项目的约束：工具规则、执行授权的基础与边界、禁用的 MCP 服务。每次请求和每次调用工具时读取，
    * 工具与 MCP 的收紧即时生效，执行授权的收紧对之后的命令生效。
@@ -148,9 +150,9 @@ function selectTools(current: ThreadContext, operations: RuntimeHost['operations
   return { agent, selection, permitted, plugins: selection.plugins };
 }
 
-/** 空闲着也要打开的会话：Claude 会话定着还没到时的空闲压缩，kited 启动后打开它才接着计时。 */
-export const pendingWhileIdle = (home: string, thread: Pick<ThreadContext, 'id' | 'runtime'>) =>
-  thread.runtime === 'claude' && idleCompactionPending(join(home, 'sessions', thread.id));
+/** 空闲着也要到点打开的会话，返回到点的时刻：Claude 会话定着还没到时的空闲压缩，kited 重启后到点打开它，由它接着压缩。 */
+export const idleOpenDue = (home: string, thread: Pick<ThreadContext, 'id' | 'runtime'>) =>
+  thread.runtime === 'claude' ? idleCompactionDue(join(home, 'sessions', thread.id)) : undefined;
 
 export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<Runtime> {
   const { home, events: on, options, operations } = host;
@@ -207,7 +209,7 @@ export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<
           through: updates.at(-1)?.sequence ?? afterNotification };
       }, events: on,
       compaction: { templates: () => host.compactionTemplates(), files: (range) => host.compactionFiles(range),
-        variables: () => variables(host.current()) },
+        variables: () => variables(host.current()), serialize: (task) => host.serialize(task) },
     });
   }
   const inputs = new Map<string, string>();

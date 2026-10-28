@@ -34,10 +34,11 @@ extension Animation {
     static let actionBar = Animation.snappy(duration: 0.25)
 }
 
-/// 要回退到的那条人发消息，和工作机核对出的文件去向（没有时代理在这之后没改过文件）。
+/// 要回退到的那条人发消息，和工作机核对出的文件去向（没有时代理在这之后没改过文件，或文件回退不了，原因在 unavailable）。
 struct RewindRequest {
     let message: Message
     let files: RewindFiles?
+    var unavailable: String?
 }
 
 /// 回退的确认：对话和文件一起、只回退对话、只回退文件放在同一个弹窗里；代理在这之后没改过文件时只有回退对话。
@@ -58,14 +59,23 @@ struct RewindConfirmation: ViewModifier {
                 }
                 Button("取消", role: .cancel) {}
             } message: { request in
-                Text(Self.explanation(request.files))
+                Text(Self.explanation(request))
             }
     }
 
-    private static func explanation(_ files: RewindFiles?) -> String {
+    private static func explanation(_ request: RewindRequest) -> String {
         let conversation = "回退对话：这条和之后的对话从会话里去掉，代理不再记得，这条的原文放回输入框。"
-        guard let files else { return conversation + "这条之后代理没有改过文件，文件不用动。" }
-        let others = files.others.isEmpty ? "" : "，\(files.others.map { "「\($0.title)」" }.joined(separator: "、"))在这之后对文件的改动也会一起撤掉"
+        guard let files = request.files else {
+            if let reason = request.unavailable { return conversation + "文件没法一起回退：\(reason)。" }
+            return conversation + "这条之后代理没有改过文件，文件不用动。"
+        }
+        var undone: [String] = []
+        if !files.others.isEmpty { undone.append("\(files.others.map { "「\($0.title)」" }.joined(separator: "、"))在这之后对文件的改动") }
+        if !files.changes.isEmpty {
+            let named = files.changes.prefix(3).map { "「\($0)」" }.joined(separator: "、")
+            undone.append("这之后的\(named)\(files.changes.count > 3 ? "等 \(files.changes.count) 处改动" : "")")
+        }
+        let others = undone.isEmpty ? "" : "，\(undone.joined(separator: "，以及"))也会一起撤掉"
         return conversation + "回退文件：整个工作区的文件回到代理处理这条之前\(others)；回退前的现状会自动存一份快照，可以找回。"
     }
 }
