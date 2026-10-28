@@ -72,7 +72,7 @@ struct DockFamily {
 
 /// 停靠栏的两组：布局组（本项目的布局文件夹）与实例组（代理在前、工具在后，各按创建先后，状态变化不挪位置），各项的排法见 DockBandItem。
 struct DockModel {
-    /// 本项目的布局（配方），见 ProjectLayout；停靠栏的布局组里一个布局一个文件夹。
+    /// 本项目的布局（配方），见 ProjectLayout；宽屏停靠栏的布局组里一个布局一个文件夹。
     var layouts: [ProjectLayout] = []
     var agents: [DockEntry] = []
     var tools: [DockEntry] = []
@@ -338,7 +338,7 @@ struct DockGeometry {
     /// familyLimit 是展开的家族格最长多长（见 WorkArea.dockFamilyLimit），没给时按停靠栏的长。
     init(model: DockModel, region: CGRect, expansion: [String] = [], distance: CGFloat = 0, familyOffset: CGFloat = 0, familyLimit: CGFloat? = nil) {
         numbered = model.topToBottom.prefix(9).map(\.id)
-        let bandItems = model.bandItems, visible = region.height
+        let bandItems = model.bandItems(.vertical), visible = region.height
         let limit = familyLimit ?? DockBandMetrics.familyLimit(visible: visible)
         let extents = bandItems.map { DockBandMetrics.extent($0, expansion: expansion, limit: limit) }
         let run = DockBandRun(extents: extents, gap: Metrics.gap)

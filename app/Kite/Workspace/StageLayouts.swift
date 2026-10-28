@@ -69,7 +69,7 @@ enum LayoutMember: Codable, Equatable {
     }
 }
 
-/// 成员的摆法：分栏树（方向、比例）与成员顺序，叶子是成员在 members 里的序号；iPhone 只用顺序。
+/// 成员的摆法：分栏树（方向、比例）与成员顺序，叶子是成员在 members 里的序号。
 indirect enum LayoutArrangement: Codable, Equatable {
     case member(Int)
     case split(axis: Axis, ratio: Double, first: LayoutArrangement, second: LayoutArrangement)
@@ -100,14 +100,6 @@ indirect enum LayoutArrangement: Codable, Equatable {
             try c.encode(ratio, forKey: .ratio)
             try c.encode(first, forKey: .first)
             try c.encode(second, forKey: .second)
-        }
-    }
-
-    /// 成员序号按出现的先后，iPhone 按它排。
-    var order: [Int] {
-        switch self {
-        case .member(let index): [index]
-        case .split(_, _, let first, let second): first.order + second.order
         }
     }
 

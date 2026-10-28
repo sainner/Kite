@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// 停靠栏的一项，从前到后：布局组（添加布局、本项目的各个布局文件夹）、分割线、实例组（各实例，代理在前、工具在后，添加实例在最后）。
+/// 横排（紧凑布局的底栏）没有布局组，添加实例换到添加布局的位置，见 DockModel.bandItems。
 enum DockBandItem: Identifiable {
     case addLayout
     case layout(ProjectLayout)
@@ -44,9 +45,12 @@ enum DockItemOutline {
 }
 
 extension DockModel {
-    /// 停靠栏从前到后的各项：竖排从上到下，横排从右到左。
-    var bandItems: [DockBandItem] {
-        [.addLayout] + layouts.map(DockBandItem.layout) + [.divider] + all.map(DockBandItem.entry) + [.addInstance]
+    /// 停靠栏从前到后的各项：竖排从上到下，横排从右到左。横排是紧凑布局的底栏，没有台面可存可摆，不列布局组，
+    /// 添加实例放在原来添加布局的位置。
+    func bandItems(_ axis: Axis) -> [DockBandItem] {
+        let entries = all.map(DockBandItem.entry)
+        guard axis == .vertical else { return [.addInstance, .divider] + entries }
+        return [.addLayout] + layouts.map(DockBandItem.layout) + [.divider] + entries + [.addInstance]
     }
 }
 
@@ -151,7 +155,7 @@ nonisolated struct DockStackCurve {
 }
 
 /// 停靠栏：一条带子，宽屏竖排在台面右边（StageDockRail），紧凑布局横排在底栏（CompactDockBar）。两端是这同一个组件，方向是参数：
-/// 从前到后依次是布局组、分割线、实例组（见 DockBandItem），竖排从上到下，横排从右到左（和原来的底栏一样倒着排）。
+/// 从前到后依次是布局组、分割线、实例组（见 DockBandItem；横排没有布局组），竖排从上到下，横排从右到左（和原来的底栏一样倒着排）。
 /// 格子都是圆的，间距固定。放不下时不折叠、不分页、不缩小头像：靠前端的照原来的间距，溢出的一头挤起来叠进末端（DockStackCurve），
 /// 叠得越密越透明、靠前的挡住后面的（DockStackFade），滚动翻看；前端滚出去的渐隐、画箭头。家族格原地展开，后面的让开、别的格子模糊淡出，展开时不挤。
 ///
@@ -185,7 +189,7 @@ struct DockBand: View {
 
     var body: some View {
         let dock = area.dockModel()
-        let items = dock.bandItems
+        let items = dock.bandItems(axis)
         let expansion = area.dockExpansion
         let dimmed = !expansion.isEmpty
         let vertical = axis == .vertical, margin = Self.margin

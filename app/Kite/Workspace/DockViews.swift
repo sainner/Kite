@@ -23,9 +23,10 @@ extension DockModel {
 }
 
 extension WorkArea {
-    /// 点开或收起家族格；depth 是它所在的层，外层在前。展开外层的那一刻定下它最长多长：到停靠栏看得见的末端为止（见 DockBandMetrics.familyLimit）。
-    func toggleDock(_ id: String, depth: Int) {
-        if depth == 0, dockExpansion.first != id { dockFamilyLimit = familyLimit(for: id) }
+    /// 点开或收起家族格；depth 是它所在的层，外层在前，axis 是停靠栏的方向。展开外层的那一刻定下它最长多长：到停靠栏看得见的末端为止
+    /// （见 DockBandMetrics.familyLimit）。
+    func toggleDock(_ id: String, depth: Int, axis: Axis) {
+        if depth == 0, dockExpansion.first != id { dockFamilyLimit = familyLimit(for: id, axis: axis) }
         withAnimation(.snappy) {
             if dockExpansion.count > depth, dockExpansion[depth] == id { dockExpansion = Array(dockExpansion.prefix(depth)) }
             else { dockExpansion = Array(dockExpansion.prefix(depth)) + [id] }
@@ -39,9 +40,9 @@ extension WorkArea {
     }
 
     /// 展开 id 那个家族格时它最长多长：按它收着时照原来的间距排开离前端多远、停靠栏这一刻滚到哪。
-    private func familyLimit(for id: String) -> CGFloat? {
+    private func familyLimit(for id: String, axis: Axis) -> CGFloat? {
         guard dockVisibleLength > 0 else { return nil }
-        let items = dockModel().bandItems
+        let items = dockModel().bandItems(axis)
         guard let index = items.firstIndex(where: { $0.id == id }) else { return nil }
         let run = DockBandRun(extents: items.map { DockBandMetrics.extent($0, expansion: [], limit: 0) }, gap: Metrics.gap)
         return DockBandMetrics.familyLimit(visible: dockVisibleLength, front: run.starts[index], distance: dockScrollDistance)
@@ -458,7 +459,7 @@ struct DockGroup: View, Animatable {
     private var foldedButtons: some View {
         let width = Metrics.dragBubble, inset = Self.inset(width), face = width - 2 * inset
         return ZStack(alignment: axis == .vertical ? .top : .trailing) {
-            Button { area.toggleDock(entry.id, depth: depth) } label: {
+            Button { area.toggleDock(entry.id, depth: depth, axis: axis) } label: {
                 Color.clear.contentShape(Rectangle())
             }
             .buttonStyle(.pointingPlain)
@@ -743,7 +744,7 @@ extension View {
     }
 }
 
-/// 紧凑布局的底栏：停靠栏横排（见 DockBand），列的是停靠栏模型里的全部实例与布局，一次看一个窗口，点了切换，当前窗口垫选中底、画向上的箭头。
+/// 紧凑布局的底栏：停靠栏横排（见 DockBand），列的是停靠栏模型里的全部实例（没有布局组），一次看一个窗口，点了切换，当前窗口垫选中底、画向上的箭头。
 struct CompactDockBar: View {
     @Binding var open: WorkspaceDrawer?
     @Environment(WorkArea.self) private var area
