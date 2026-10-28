@@ -1,5 +1,5 @@
 /** 工作机共用的沙箱启动适配；策略由宿主决定，每次执行使用独立的上游代理与配置。 */
-import { existsSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,7 +56,22 @@ export function secretEnvironment(credentials: Record<string, SecretValue>, dir:
 /** 上游把带这些字符的路径当成 glob 或无法表达；宿主授权的只能是确切路径。 */
 const globCharacters = /[*?\[\]{}\0\n\r]/;
 
-/** 首期工作区策略：工作树可写，系统工具链可读，网络需宿主另行授权。 */
+/**
+ * 依赖缓存可读写，各工作区共用一份（见 docs/Line与工作区流转.md 的环境分层）：npm 的包缓存，Prisma 的引擎缓存（它命中后要改文件时间，只读用不了）。
+ * 共用的代价：一个工作区里的代码能改写缓存，影响之后别的项目装依赖，包括在沙箱外。
+ * 给的是原样的路径，经过符号链接时沙箱另外放行链接本身（见 linkEntries）；沙箱里读不到 ~/.npmrc，环境也不带 npm_config_cache、XDG_CACHE_HOME，
+ * 这些工具只会用默认位置。上级目录（~/.npm、~/.cache）不可写，工具自己建不出缓存目录，这里先建好。
+ */
+function dependencyCaches(env: NodeJS.ProcessEnv): string[] {
+  const home = env.HOME;
+  if (!home || !isAbsolute(home)) return [];
+  return [join(home, '.npm', '_cacache'), join(home, '.cache', 'prisma')].filter((path) => {
+    try { mkdirSync(path, { recursive: true }); } catch { /* 链接指向的盘没挂上等：照样放行，由工具自己报错 */ }
+    return exactPath(path) && !globCharacters.test(canonicalPath(path));
+  });
+}
+
+/** 首期工作区策略：工作树与依赖缓存可写，系统工具链可读，网络需宿主另行授权。 */
 export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionPolicy {
   const system = process.platform === 'darwin'
     ? ['/bin', '/sbin', '/usr', '/System', '/Library/Developer', '/Library/Apple', '/Applications/Xcode.app', '/opt/homebrew', '/dev', '/private/etc', '/private/var/select']
@@ -66,8 +81,9 @@ export function workspacePolicy(cwd: string, env: NodeJS.ProcessEnv): ExecutionP
     .filter((path): path is string => !!path && isAbsolute(path) && existsSync(path));
   // 工具与 git 配置是顺带放行的，真实位置带通配符时上游写不出确切规则（见 paths()），略过，不让每条命令都起不来。
   const extras = [...tools, ...gitGlobalFiles(env)].map(canonicalPath).filter((path) => !globCharacters.test(path));
-  return { read: [...new Set([...[cwd, ...system.filter(existsSync)].map(canonicalPath), ...extras])],
-    write: [realpathSync(cwd)], network: [] };
+  const caches = dependencyCaches(env);
+  return { read: [...new Set([...[cwd, ...system.filter(existsSync)].map(canonicalPath), ...extras, ...caches])],
+    write: [realpathSync(cwd), ...caches], network: [] };
 }
 
 /** 按 HOME 记下全局配置的修改时间与读出的文件，配置没变就不再起 git。 */
@@ -132,24 +148,45 @@ function paths(values: string[]): string[] {
 }
 
 /**
+ * 只匹配路径本身的规则。确切路径上游按整棵子树放行，只能写成 glob，把一个字符写成字符类，上游转成整串匹配的正则。Seatbelt 的正则按字节匹配，
+ * 字符类里只能放单字节字符，中文、emoji 放进去就匹配不上；所以括住名字前的分隔符（/Users/x[/]项目）。顶层目录前只有根的 /，
+ * 括起来就不是绝对路径了，改括名字里最后一个 ASCII 字母或数字（/User[s]）；没有这样的字符返回 undefined，调用处略过。
+ */
+function literalGlob(path: string): string | undefined {
+  const parent = dirname(path);
+  if (parent !== '/') return `${parent}[/]${basename(path)}`;
+  const at = path.search(/[A-Za-z0-9][^A-Za-z0-9]*$/);
+  return at > 0 ? `${path.slice(0, at)}[${path[at]}]${path.slice(at + 1)}` : undefined;
+}
+
+/**
  * 放行路径的各级上级目录，每个只匹配目录本身。上游只给上级目录元数据，从 / 起逐级 openat 的程序（Python 的 dir_fd 遍历等）
  * 第一级就被拒；Seatbelt 分不开打开目录与列目录，放开后命令能列出这些目录里的名字，仍读不到其中的文件。
- * 确切路径上游按整棵子树放行，只能写成 glob，把一个字符写成字符类，上游转成整串匹配的正则。Seatbelt 的正则按字节匹配，
- * 字符类里只能放单字节字符，中文、emoji 放进去就匹配不上；所以括住名字前的分隔符（/Users/x[/]项目）。顶层目录前只有根的 /，
- * 括起来就不是绝对路径了，改括名字里最后一个 ASCII 字母或数字（/User[s]）；没有这样的字符就略过这一级：
- * macOS 的根目录在只读的系统卷上，顶层的名字由系统给出。paths() 已排除真实位置带通配符的路径。
+ * 略过的顶层目录在只读的系统卷上，名字由系统给出。paths() 已排除真实位置带通配符的路径。
  */
 function ancestorDirectories(roots: string[]): string[] {
   const found = new Set<string>();
   for (const root of roots) {
     for (let dir = dirname(root); dir !== '/'; dir = dirname(dir)) {
-      const parent = dirname(dir);
-      if (parent !== '/') {
-        found.add(`${parent}[/]${basename(dir)}`);
-        continue;
-      }
-      const at = dir.search(/[A-Za-z0-9][^A-Za-z0-9]*$/);
-      if (at > 0) found.add(`${dir.slice(0, at)}[${dir[at]}]${dir.slice(at + 1)}`);
+      const glob = literalGlob(dir);
+      if (glob) found.add(glob);
+    }
+  }
+  return [...found];
+}
+
+/**
+ * 放行路径原样写法里经过的符号链接本身。上游只放行解析后的真实位置，拒绝区域里的链接连元数据都不给，经链接的路径打不开，
+ * 例如 ~/.npm/_cacache 指向别的盘时 npm 报 EPERM。链接按上级目录的真实位置写，宿主保护目录里的不放行。
+ */
+function linkEntries(values: string[], denyRead: string[]): string[] {
+  const found = new Set<string>();
+  for (const value of values) {
+    for (let path = resolve(value); path !== '/'; path = dirname(path)) {
+      if (!lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink()) continue;
+      const link = join(canonicalPath(dirname(path)), basename(path));
+      const glob = globCharacters.test(link) || denyRead.some((root) => within(link, root)) ? undefined : literalGlob(link);
+      if (glob) found.add(glob);
     }
   }
   return [...found];
@@ -181,7 +218,8 @@ export function prepareSandbox(command: string, options: { cwd: string; env: Nod
         // macOS 的 /etc 是指向 /private/etc 的符号链接，拒绝区域里的链接上游连元数据都不给，经 /etc 的路径就打不开：
         // 解析 localhost 时 mDNSResponder 连不上，系统退回读 /etc/hosts，也读不到，vite、vitest 一启动就失败。
         // 确切路径会被上游解析成真实目标，只能写成只匹配链接本身的 glob。
-        allowRead: [...allowRead, ...(process.platform === 'darwin' ? ['/et[c]', ...ancestorDirectories(allowRead)] : [])],
+        allowRead: [...allowRead, ...(process.platform === 'darwin'
+          ? ['/et[c]', ...ancestorDirectories(allowRead), ...linkEntries([...policy.read, ...policy.write], denyRead)] : [])],
         allowWrite: paths([...policy.write, scratch]),
         // 上游有少量默认可写目录；本入口只开放策略声明和本次执行的临时目录。
         denyWrite: paths([control, '/tmp/claude', '/private/tmp/claude',

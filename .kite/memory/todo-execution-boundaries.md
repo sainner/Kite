@@ -1,6 +1,6 @@
 ---
 name: todo-execution-boundaries
-description: Linux、资源限制、沙箱外命令在 Linux 上的表现与独立终端授权的未决范围
+description: Linux、资源限制、沙箱外命令在 Linux 上的表现、独立终端授权的未决范围，Prisma 经沙箱代理下载被重置
 metadata:
   node_type: memory
   type: todo
@@ -16,6 +16,7 @@ metadata:
 - CPU、内存、请求速率限制及脱离进程组的后台任务，需要分别确认需求与生命周期。
 - 2026-10-16 已定并实现项目、角色、实例三层的执行授权（含沙箱外命令与审批模式上限），见 [角色与代理配置](../../docs/Agent与插件契约.md#32-角色与代理配置)。未验证的是：Linux 上 bubblewrap 的网络命名空间让沙箱里监听的端口在宿主上看不到，沙箱外命令在 Linux 的行为也没实机跑过；项目收紧对已在运行的命令不追溯，是否要停下旧命令没定。
 - 独立终端的授权编辑需确认接入方式。
+- 2026-10-28：沙箱里 Prisma（6.19.3，自带 node-fetch 与 https-proxy-agent）经沙箱代理下载引擎，两次都在传输中被重置（ECONNRESET）；同一代理下 curl、Node 自带 fetch（含并发）都正常，CONNECT 带 `Proxy-Connection: close` 也不是原因。现在靠可写的 `~/.cache/prisma` 命中缓存绕过，没有这份缓存的工作机上 crevo 的 setup 仍会失败。完成条件：找到原因并让下载走通，或确认是上游问题后报给上游。
 
 文件沙箱不等于资源配额，进程组停止也不能证明脱离组的任务结束。
 

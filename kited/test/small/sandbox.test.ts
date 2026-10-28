@@ -224,6 +224,43 @@ test('~/.gitconfig 指定位置的全局忽略、属性文件在沙箱里的 git
   expect(sections.credentials!.join('\n')).not.toContain('fake-token');
 }, 1000);
 
+/*
+ * 依赖上游 @anthropic-ai/sandbox-runtime 与 Seatbelt 对符号链接的处理：上游只放行链接解析后的真实位置，Seatbelt 在拒绝区域里
+ * 连链接本身的元数据都不给，经链接的路径照样 Operation not permitted；链接本身要不要另外放行，只有在沙箱里跑才知道。
+ * 挡住真实 bug：.kite/setup 里的 npm ci 读 ~/.npm/_cacache 下的文件报 EPERM（npm 误报成 cache 里有 root 的文件）。
+ * 一层是基础策略原来只放行工作树，整个 ~/.npm 读写不了；另一层是那台机器的 ~/.npm/_cacache 是指向外置盘的符号链接，
+ * 只放行真实位置时经 ~/.npm/_cacache/... 的 ls、touch 都被拒。链接目标放在 HOME 之外；放行的只该是缓存，
+ * 同在 ~/.npm 里的别的文件仍读不到。
+ */
+test('~/.npm/_cacache 是指向 HOME 之外的符号链接时，沙箱里经它建目录、写入、读出都成功且文件落在链接目标里，~/.npm 里缓存以外的文件仍读不到', async () => {
+  const root = temp('sandbox-npm-');
+  const home = newDir(root, 'home', { '.npm/other.txt': '缓存以外的假内容\n' });
+  const target = newDir(root, 'external-cache');
+  symlinkSync(target, join(home, '.npm', '_cacache'));
+  const cwd = newDir(root, 'workspace');
+  const selectedEnv: NodeJS.ProcessEnv = { ...env(cwd), HOME: home };
+  const entry = '"$HOME/.npm/_cacache/content-v2/sha512/ab/entry"';
+  const command = [
+    `echo "--- write"; { mkdir -p "$HOME/.npm/_cacache/content-v2/sha512/ab" && printf '缓存条目' > ${entry} && echo WRITTEN; } 2>&1`,
+    `echo "--- read"; cat ${entry} 2>&1; echo`,
+    'echo "--- other"; cat "$HOME/.npm/other.txt" 2>&1 || echo DENIED',
+  ].join('; ');
+  const result = await runCommand(command, 3000, new AbortController().signal,
+    { cwd, logDir: join(root, 'logs'), env: selectedEnv, policy: workspacePolicy(cwd, selectedEnv) });
+  expect(result).toMatchObject({ status: 'success' });
+  const sections: Record<string, string[]> = {};
+  let current: string[] | undefined;
+  for (const line of result.output.split('\n')) {
+    if (line.startsWith('--- ')) sections[line.slice(4)] = current = [];
+    else if (line.trim()) current?.push(line);
+  }
+  expect(sections.write).toEqual(['WRITTEN']);
+  expect(sections.read).toEqual(['缓存条目']);
+  expect(readFileSync(join(target, 'content-v2', 'sha512', 'ab', 'entry'), 'utf8')).toBe('缓存条目');
+  expect(sections.other).toContain('DENIED');
+  expect(sections.other!.join('\n')).not.toContain('缓存以外的假内容');
+}, 1000);
+
 // 同时启动两份上游代理/Seatbelt 配置，才能发现允许目录或目标端口在实例间串用。
 test('并行沙箱分别执行文件和本机端口授权，不能借用另一实例的许可', async () => {
   const root = temp('sandbox-parallel-');
