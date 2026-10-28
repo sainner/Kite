@@ -107,6 +107,7 @@ struct ThreadControlsModel {
         guard let answers = answering, let waiting = thread.waiting, answers.complete, !answers.busy else { return }
         let thread = thread, replies = answers.replies
         answers.run { try await thread.respond(waiting, .answers(replies)) }
+        restartVoice()
     }
 
     /// 回应卡片上的「交给 Line」：有 Line、这不是 Line 自己发起的请求时才有。
@@ -299,25 +300,43 @@ struct ThreadControlsModel {
         }
     }
 
-    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。
-    private func dictate(base: String, started: @escaping @MainActor () -> Void = {}, write: @escaping @MainActor (String) -> Void) {
+    /// 录着语音时发出了消息（或交了答案）：这段识别作废，迟到的字不再写回输入框；麦克风不停，接着往清空后的输入框里另起一段。
+    /// 在清空输入框之后调。
+    private func restartVoice() {
+        guard listening else { return }
+        let thread = thread
+        dictate(base: thread.draft, restart: true) { thread.draft = $0 }
+    }
+
+    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。restart 见 restartVoice。
+    private func dictate(base: String, restart: Bool = false, started: @escaping @MainActor () -> Void = {},
+                         write: @escaping @MainActor (String) -> Void) {
         let voice = model.voice
-        if listening {
+        if listening && !restart {
             voice.stop()
             return
         }
         let thread = thread, model = model, area = area, owner = voiceOwner, state = state
+        let update: @MainActor @Sendable (VoiceText) -> Void = { text in
+            switch text {
+            case .partial(let value), .final(let value): write(base + value)
+            case .failed(let message):
+                voice.stop(owner: owner)
+                state.failure = ("无法开始语音输入", message)
+            }
+        }
+        let client: KitedClient
+        do { client = try thread.client ?? model.activeClient(in: area) } catch {
+            if restart { voice.stop(owner: owner) }
+            state.failure = ("无法开始语音输入", error.localizedDescription)
+            return
+        }
+        let target = VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)
+        // 另起一段要当场作废旧的那段：之后到的字不能再写回刚清空的输入框
+        if restart { return voice.restart(owner: owner, target: target, update: update) }
         Task {
             do {
-                let client = try thread.client ?? model.activeClient(in: area)
-                try await voice.start(owner: owner, target: VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)) { text in
-                    switch text {
-                    case .partial(let value), .final(let value): write(base + value)
-                    case .failed(let message):
-                        voice.stop(owner: owner)
-                        state.failure = ("无法开始语音输入", message)
-                    }
-                }
+                try await voice.start(owner: owner, target: target, update: update)
                 started()
             } catch {
                 state.failure = ("无法开始语音输入", error.localizedDescription)
@@ -442,6 +461,7 @@ struct ThreadControlsModel {
         let fading = FadingText(text: sent, height: fieldHeight)
         state.fading = fading
         thread.draft = ""
+        restartVoice()
         let state = state
         DispatchQueue.main.asyncAfter(deadline: .now() + FadingText.duration) {
             if state.fading?.id == fading.id { state.fading = nil }

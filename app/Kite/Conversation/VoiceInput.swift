@@ -34,11 +34,16 @@ final class VoiceInput {
         }
     }
 
+    /// 一段识别的字还要不要交出去：录着的时候发出了消息（restart），旧的那段作废。
+    private final class Segment { var live = true }
+
     /// 正在录的控制区；授权弹窗和连工作机期间还是 nil。
     private(set) var owner: String?
     let level = AudioLevel()
     @ObservationIgnored private var engine: AVAudioEngine?
+    @ObservationIgnored private var sampleRate: Double = 0
     @ObservationIgnored private var stream: VoiceStream?
+    @ObservationIgnored private var segment: Segment?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     /// 每次开始或停止加一。授权弹窗和连工作机会让出主线程，这期间又停止或换了别处开始时，迟到的那次开始按它作废。
     @ObservationIgnored private var generation = 0
@@ -78,18 +83,57 @@ final class VoiceInput {
         try engine.start()
         // 先录起来，连工作机期间的声音攒在环形缓冲里，连上后一起推
         let (connection, socket) = try await target.client.voiceSocket(thread: target.thread)
-        let stream = try VoiceStream(session: connection, socket: socket, samples: samples, sampleRate: format.sampleRate, update: update)
+        let segment = Segment()
+        let stream = try VoiceStream(session: connection, socket: socket, samples: samples, sampleRate: format.sampleRate,
+                                     update: Self.guarded(update, by: segment))
         guard current == generation else {
             await stream.cancel()
             return
         }
         started = true
         self.engine = engine
+        sampleRate = format.sampleRate
         self.stream = stream
+        self.segment = segment
         self.owner = owner
         level.begin()
         observe(engine)
         await stream.begin()
+    }
+
+    /// 录着的时候发出了消息：这一段识别作废，迟到的字不再交出去，工作机那边取消、不定稿；麦克风不停，从这一刻的声音起另开一段，
+    /// 字交给 update，连不上工作机也经它报错。不是 owner 在录时什么也不做。
+    func restart(owner: String, target: VoiceTarget, update: @escaping @MainActor @Sendable (VoiceText) -> Void) {
+        guard owner == self.owner, engine != nil else { return }
+        self.segment?.live = false
+        if let stream { Task { await stream.cancel() } }
+        stream = nil
+        let current = generation
+        let samples = level.samples, sampleRate = sampleRate, position = samples.position
+        let segment = Segment()
+        self.segment = segment
+        let update = Self.guarded(update, by: segment)
+        Task {
+            do {
+                let (connection, socket) = try await target.client.voiceSocket(thread: target.thread)
+                let stream = try VoiceStream(session: connection, socket: socket, samples: samples, sampleRate: sampleRate,
+                                             from: position, update: update)
+                // 连工作机期间停了、或又发了一条
+                guard current == generation, segment.live else {
+                    await stream.cancel()
+                    return
+                }
+                self.stream = stream
+                await stream.begin()
+            } catch {
+                update(.failed(error.localizedDescription))
+            }
+        }
+    }
+
+    private static func guarded(_ update: @escaping @MainActor @Sendable (VoiceText) -> Void,
+                                by segment: Segment) -> @MainActor @Sendable (VoiceText) -> Void {
+        { text in if segment.live { update(text) } }
     }
 
     /// 停止录音，已录的声音交给工作机定稿；给出 owner 时只停它自己的。
@@ -164,13 +208,15 @@ private actor VoiceStream {
     private let source: AVAudioFormat
     private let target: AVAudioFormat
     private let converter: AVAudioConverter
-    private var position = 0
+    /// 下一次从环形缓冲的哪里读。
+    private var position: Int
     private var scratch = [Float](repeating: 0, count: SampleRing.capacity)
     private var pump: Task<Void, Never>?
     /// 定稿或出错之后不再报错，连接断开是正常收尾。
     private var settled = false
 
-    init(session: URLSession, socket: URLSessionWebSocketTask, samples: SampleRing, sampleRate: Double,
+    /// position 是从缓冲的哪里推起：开录时从头，发消息另起一段时从那一刻。
+    init(session: URLSession, socket: URLSessionWebSocketTask, samples: SampleRing, sampleRate: Double, from position: Int = 0,
          update: @escaping @MainActor @Sendable (VoiceText) -> Void) throws {
         guard let source = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false),
               let output = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true),
@@ -178,6 +224,7 @@ private actor VoiceStream {
         self.session = session
         self.socket = socket
         self.samples = samples
+        self.position = position
         self.update = update
         self.source = source
         self.target = output
@@ -276,6 +323,9 @@ nonisolated final class SampleRing: Sendable {
     /// 48 kHz 下约 5 秒，连工作机期间的声音也放得下。
     static let capacity = 1 << 18
     private let state = Mutex(State())
+
+    /// 一共写进来多少个：推流从这里接着读，就是从这一刻的声音起。
+    var position: Int { state.withLock { $0.written } }
 
     func reset() {
         state.withLock { state in
