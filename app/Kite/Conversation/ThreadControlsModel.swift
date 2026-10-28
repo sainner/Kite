@@ -15,6 +15,8 @@ import SwiftUI
     var failure: (title: String, message: String)?
     /// 只在这次输入的候选里保留键盘选中项；换会话或改了前缀后回到第一项。
     var skillSelection: (thread: ObjectIdentifier, text: String, name: String)?
+    /// 语音整理后换上去的字。Mac 输入框照它换的那一下记进撤销，⌘Z 回到定稿；换上去之前设，输入框换完就清掉。
+    @ObservationIgnored var undoableText: String?
 }
 
 /// 输入框让外面先接管的按键（两端原生输入框的 intercept，Mac 窄窗口的 onKeyPress）：没按修饰键、没在组字时的上下键和 Tab。
@@ -293,10 +295,10 @@ struct ThreadControlsModel {
     func toggleVoice(started: @escaping @MainActor () -> Void = {}) {
         if let answers = answering {
             let index = answers.step
-            dictate(base: answers.currentOther, started: started) { answers.setOther($0, at: index) }
+            dictate(base: answers.currentOther, started: started, read: { answers.other[index] ?? "" }) { answers.setOther($0, at: index) }
         } else {
             let thread = thread
-            dictate(base: thread.draft, started: started) { thread.draft = $0 }
+            dictate(base: thread.draft, started: started, read: { thread.draft }) { thread.draft = $0 }
         }
     }
 
@@ -305,12 +307,13 @@ struct ThreadControlsModel {
     private func restartVoice() {
         guard listening else { return }
         let thread = thread
-        dictate(base: thread.draft, restart: true) { thread.draft = $0 }
+        dictate(base: thread.draft, restart: true, read: { thread.draft }) { thread.draft = $0 }
     }
 
-    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。restart 见 restartVoice。
+    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。整理后的字到的时候，read 读到的还是定稿才换上，人改过就不动。
+    /// restart 见 restartVoice。
     private func dictate(base: String, restart: Bool = false, started: @escaping @MainActor () -> Void = {},
-                         write: @escaping @MainActor (String) -> Void) {
+                         read: @escaping @MainActor () -> String, write: @escaping @MainActor (String) -> Void) {
         let voice = model.voice
         if listening && !restart {
             voice.stop()
@@ -320,6 +323,10 @@ struct ThreadControlsModel {
         let update: @MainActor @Sendable (VoiceText) -> Void = { text in
             switch text {
             case .partial(let value), .final(let value): write(base + value)
+            case .tidied(let value, let raw):
+                guard read() == base + raw else { return }
+                state.undoableText = base + value
+                write(base + value)
             case .failed(let message):
                 voice.stop(owner: owner)
                 state.failure = ("无法开始语音输入", message)

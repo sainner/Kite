@@ -76,7 +76,7 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 
 ### 轻任务与会话标题
 
-轻任务即资源库里的辅助生成（会话标题、工作区名称与点阵签名），用于一次性文本生成，不提供工具、不创建线程、不写入主会话历史。模型与思考强度随各自的模板保存，在资源库里设置，只能选 [共享模型目录](../shared/agent-models.json) 里的 ChatGPT 型号，内置默认是最轻的一档与 `low`；统一使用工作机的 ChatGPT 授权，Claude 会话也由 Kite 生成标题，不依赖 Claude 登录。失败保留原题，不升级到主模型；日志不记录输入正文。环境变量 `KITE_LIGHT_TASKS=0` 关闭自动轻任务。
+轻任务即资源库里的辅助生成（会话标题、工作区名称与点阵签名），用于一次性文本生成，不提供工具、不创建线程、不写入主会话历史。模型与思考强度随各自的模板保存，在资源库里设置，可选 [共享模型目录](../shared/agent-models.json) 里由自研 harness 运行的型号：ChatGPT 用工作机的 ChatGPT 授权，DeepSeek 用 Kite 账号凭据里的 API Key。内置默认是 ChatGPT 最轻的一档与 `low`，语音整理默认 `deepseek-flash` 与 `low`；Claude 会话也由 Kite 生成标题，不依赖 Claude 登录。失败保留原题，不升级到主模型；日志不记录输入正文。环境变量 `KITE_LIGHT_TASKS=0` 关闭自动轻任务。
 
 首条消息接收后，以其文字作即时标题并开始生成，不等待主会话完成。自动模式只起一次名：生成成功后不再随新消息改名，之后要换标题由用户刷新或手动命名；生成失败时下一条消息再试。默认命名要求是：标题概括会话目前的主线工作，保留具体对象。
 
@@ -89,6 +89,8 @@ Claude 恢复依赖锁定版本 CLI 的原生记录格式。升级时须重新�
 语音识别也是辅助生成的一类：App 录音，经 `/voice` 把声音推给工作机，工作机连识别服务，识别结果不进入代理上下文。识别模型随「语音识别」模板保存，只能选识别模型目录里的型号，目前是千问 `qwen3-asr-flash-realtime`；凭据用工作机上的语音识别 Key（见 [凭据](#凭据)）。
 
 识别不按停顿分句，说完一次提交：边收声音边推中间结果，App 发出结束后给整段定稿。开录时按模板把这个会话最近的请求和回复（代码不略去，取到 6000 字）作为背景文本交给识别服务；新会话还没有实例时不带对话。定稿再做一次确定性整理，不用 LLM：夹在英文之间念出来的「点」「斜杠」「杠」「下划线」换成符号，英文词对得上背景文本里的标识符时按它的写法恢复。选型依据见 [语音识别选型](research/2026-10-12-语音识别选型.md)。
+
+定稿先给 App，再由轻任务按「语音整理」模板把口语整理成书面的话，只做减法：删去不承载意思的语气词和口头禅，重复的只留一次，改口只留最后的说法，补标点、分段；不换用词、不加内容，标识符照原样。模板只拿到定稿，不带对话；模型随模板保存，默认 `deepseek-flash`。识别时就润色的型号认不准标识符，比较见 [语音润色](research/2026-10-29-语音润色.md)。整理成了再推给 App，输入框在这期间没被改过才换上；轻任务关着、出错或输出明显比定稿长时只留定稿。
 
 | 接口 | 请求与结果 |
 |---|---|
@@ -366,7 +368,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | PUT | `/roles/:id/emblem` | 以 `{emblem}` 保存手改的点阵签名，返回带签名状态的角色；表达式不可用时 400 |
 | POST | `/roles/:id/emblem/generate` | `{force}`：为 `true` 时连手改的签名一起重新生成，否则只补缺失或过期的签名；立即返回 `{emblem?, emblemState, emblemError?}`，结果随 `kind` 为 `role` 的 `library.changed` 送达；未启用轻任务时 503 |
 | PUT | `/instances/:id/role` | 以 `{expectedRevision, roleId, roleRevision}` 为代理改选角色，换上角色的提示词、工具、默认模型与预算，协作授权随角色增减，执行授权与审批模式换成角色的；已有对话时返回 409 |
-| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别及各类通知模板（带默认内容的版本 `defaultRevision`）和场景变量，辅助生成的场景附可选的模型目录（`models`） |
+| GET | `/context-templates` | 列出标题、上下文压缩、点阵签名、语音识别与整理及各类通知模板（带默认内容的版本 `defaultRevision`）和场景变量，辅助生成的场景附可选的模型目录（`models`） |
 | PUT | `/context-templates/:id` | 以 `{expectedRevision, definition, model?}` 更新模板；模板由工作机提供，不能新建 |
 | POST | `/context-templates/:id/reset` | 以 `{expectedRevision}` 把模板恢复默认，等同于保存默认内容 |
 | GET | `/context-variables/:name`、`/workspaces/:id/…`、`/instances/:id/…` | 按工作机、工作区或代理取一个公共变量现在的值（项目层按工作区取），范围取不到变量所在的层时 400；项目规则与记忆索引另带逐级找到的文件，见 [上下文模板](harness-上下文组装.md#模板归属与生效) |
@@ -410,7 +412,7 @@ API 账号来自工作机上的 API 凭据（见 [凭据](#凭据)），每把 K
 | GET | `/events` | 目录 SSE：首帧 `catalog.snapshot`，随后检出、工作区和线程概要变更 |
 | GET | `/events?workspace=<id>` | 工作区 SSE：首帧 `workspace.model`，随后工作区操作与所属线程概要 |
 | GET | `/events?thread=<id>` | 线程 SSE：首帧 `thread.history`，随后线程显示与状态事件 |
-| GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），最后推 `{"type":"final","text"}` 或 `{"type":"error","message"}` 后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
+| GET | `/voice?thread=<id>` | 语音输入的 WebSocket，见 [语音识别](#语音识别)；`thread` 是正在输入的会话，新会话不带。App 推 16 kHz 单声道 s16le 的 PCM 二进制帧，说完发 `{"type":"finish"}`；工作机推 `{"type":"partial","text"}`（到目前为止的全文），然后推 `{"type":"final","text"}` 或 `{"type":"error","message"}`；定稿之后整理成了再推 `{"type":"tidied","text"}`，然后关闭。连上之后的错误（如没有凭据）都以 `error` 消息给出 |
 
 skill 文件的 `encoding` 省略时，`content` 是 UTF-8 文本；`encoding: "base64"` 时是原始字节的规范 base64（保留填充）。`SKILL.md` 不能用二进制编码，文件路径须在包内，最多 200 个文件，4 MiB 上限按解码后的字节计。旧文本包仍可读取；账号同步原样保存包，不支持该文件编码的旧工作机暂不物化，升级后再落盘。
 

@@ -1,0 +1,71 @@
+{
+  "contexts": {
+    "A": "语音输入先做 App 这边：麦克风键、录音，音量驱动点阵签名。\n\n好的。录音放在 VoiceInput，用 AVAudioEngine 的输入节点接一个 AVAudioSinkNode，响度算均方根后交给 DotStage 的 patternSound。按钮在 ThreadControls 的 actionButtons 里。\n\n已有对话的窗口在底部一带铺签名，空会话直接让整片签名跟着 v 动。\n\n明白，底部一带用 VoiceBand，高度是控制区的安全区再加三格。AudioLevel 的 attack 是 0.04，release 是 0.2。改完我跑 .kite/check。",
+    "B": "语音识别作为辅助生成的一类，凭据里单开一类，只分发给工作机。\n\n好。我会在 credential-service.ts 的 credentialFields 里加 speech 类型，provider 先支持 volcengine 和 dashscope，工作机通过 GET /api/credentials/speech 领取。\n\nApp 和 kited 之间加一条 WebSocket，音频流式推上去。\n\n可以，kited 用 Bun.serve 的 websocket 处理，App 用 URLSessionWebSocketTask，PCM 是 16 kHz 单声道。上下文用 thread.messages，近三天最多 20 轮。"
+  },
+  "samples": [
+    {
+      "context": "A",
+      "spoken": "嗯，那个，你帮我把 VoiceBand 的高度，呃，从三格改成，改成四格吧，然后，然后在 Mac 上重新打开预览看一下。",
+      "terms": [
+        "VoiceBand",
+        "Mac"
+      ]
+    },
+    {
+      "context": "A",
+      "spoken": "就是那个 AudioLevel 啊，它的 attack 设成零点零三，不对不对，零点零二，然后 release 就是说改成零点二五，回落再慢一点。",
+      "terms": [
+        "AudioLevel",
+        "attack",
+        "release"
+      ]
+    },
+    {
+      "context": "A",
+      "spoken": "呃我看了一下，那个点阵签名啊，就是 ThreadControls 里面那个 actionButtons，按下去以后，嗯，没反应，你帮我看看是不是 patternSound 没接上。",
+      "terms": [
+        "ThreadControls",
+        "actionButtons",
+        "patternSound"
+      ]
+    },
+    {
+      "context": "B",
+      "spoken": "嗯那个 credential-service 点 ts 里面，就是加 speech 类型的那个地方，provider 呢先只留 dashscope 吧，volcengine 先，先别加了。",
+      "terms": [
+        "credential-service.ts",
+        "speech",
+        "dashscope",
+        "volcengine"
+      ]
+    },
+    {
+      "context": "B",
+      "spoken": "然后 kited 那边用 Bun.serve 的 websocket，嗯，App 这边就用那个 URLSessionWebSocketTask，PCM 还是十六 k 单声道，对，就这样。",
+      "terms": [
+        "kited",
+        "Bun.serve",
+        "URLSessionWebSocketTask",
+        "PCM"
+      ]
+    },
+    {
+      "spoken": "你先别改代码啊，先跟我说一下，就是，现在这个 sidebar 收起来的时候为什么会卡，是动画的问题还是，还是那个布局每帧都在重算。",
+      "terms": [
+        "sidebar"
+      ]
+    },
+    {
+      "spoken": "好，嗯，这个先这样。然后还有一个事儿，就是那个提交说明啊，你写得太长了，就是我希望呢，第一行就说清楚改了什么，然后后面再写为什么，嗯，测试结果放最后，别，别每条都写那么多细节。",
+      "terms": []
+    },
+    {
+      "spoken": "嗯你能不能帮我查一下，就是 .kite/check 为什么老是挂在 preview.test.ts 那条上，呃，是不是机器负载太高了。",
+      "terms": [
+        ".kite/check",
+        "preview.test.ts"
+      ]
+    }
+  ]
+}

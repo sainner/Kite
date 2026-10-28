@@ -112,6 +112,15 @@ export const contextScenes = {
       { name: 'voice.messages', title: '近期对话', description: '最近的请求和回复，每段以「用户：」或「agent：」开头、空行分隔，代码不略去，从最近往前取到 6000 字；新会话还没有对话时为空。' },
     ],
   },
+  'thread.voice_tidy': {
+    title: '整理语音输入',
+    input: true,
+    // 同语音识别，新会话还没有线程。
+    layers: ['environment'],
+    variables: [
+      { name: 'tidy.text', title: '识别结果', description: '这次语音输入的定稿，念出来的符号和对得上的标识符已恢复原样；不会为空。' },
+    ],
+  },
   'template.emblem': {
     title: '生成点阵签名',
     input: true,

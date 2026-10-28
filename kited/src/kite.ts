@@ -79,13 +79,12 @@ import { WorkspaceNames, workspaceNameTemplate } from './workspace-names.ts';
 import { draftPullRequest, pullRequestTemplate } from './pull-requests.ts';
 import { commitMessageTemplate, draftCommit } from './commit-messages.ts';
 import { emblemTemplate, TemplateEmblems } from './template-emblems.ts';
-import { ChatGPTModel } from './harness/chatgpt.ts';
-import { readSubscriptionCredentials } from './harness/auth.ts';
+import { harnessModel } from './harness/adapters.ts';
 import { SubscriptionLogins } from './subscription-logins.ts';
 import { ModelAccounts, readModelAccounts } from './model-accounts.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { TokenCounter } from './token-counts.ts';
-import { VoiceSessions, voiceTemplate } from './voice/sessions.ts';
+import { VoiceSessions, voiceTemplate, voiceTidyTemplate } from './voice/sessions.ts';
 import { Terminals, terminalExitContextDefinition } from './terminal/terminals.ts';
 import { listApps } from './preview/app-windows.ts';
 import { Previews } from './preview/previews.ts';
@@ -351,7 +350,7 @@ export class Kite {
     this.contextTemplates = new ContextTemplates(store, [
       titleTemplate, workspaceNameTemplate, compactTemplate, emblemTemplate, pullRequestTemplate, commitMessageTemplate,
       agentConfigurationContextDefinition, contextUpdateContextDefinition, executionPermissionsContextDefinition, fileChangesContextDefinition,
-      pluginToolsContextDefinition, voiceTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
+      pluginToolsContextDefinition, voiceTemplate, voiceTidyTemplate, lineMonitorContextDefinition, monitorEventsContextDefinition, terminalExitContextDefinition,
       agentReportContextDefinition, agentWorkspaceContextDefinition, instancesChangedContextDefinition,
     ]);
     this.library = new LibrarySync({ data: this.accountData, registry: this.registry, store, roles: this.roles, templates: this.contextTemplates,
@@ -474,15 +473,16 @@ export class Kite {
       template: () => this.contextTemplates.get(voiceTemplate.id, voiceTemplate.scene),
       history: (id) => this.history(id),
       variables: () => environmentVariables(store.machine),
+      tidy: () => this.lightTasks && { tasks: this.lightTasks,
+        template: this.contextTemplates.get(voiceTidyTemplate.id, voiceTidyTemplate.scene) },
     });
     if (options.lightTasks !== false && process.env.KITE_LIGHT_TASKS !== '0') {
       const light = options.lightTasks;
       this.lightTasks = new LightTasks({
-        model: light?.model ?? (({ id, model }) => new ChatGPTModel({
-          model: model.model, reasoning: model.reasoning, threadId: id,
-          credentials: () => readSubscriptionCredentials(join(home, 'auth', 'chatgpt', 'auth.json')),
+        model: light?.model ?? (({ id, model }) => harnessModel(model, {
+          threadId: id, chatgptAuth: join(home, 'auth', 'chatgpt', 'auth.json'), apiKeys: () => this.credentials.apiKeys(),
           observeLimits: (headers) => this.modelAccounts.observeChatGPT(headers),
-        })),
+        }).model),
         timeoutMs: light?.timeoutMs,
         onResult: light?.onResult ?? (({ usage, ...result }) => console.info('[轻任务]', JSON.stringify({
           ...result, ...(usage ? { usage: { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens,

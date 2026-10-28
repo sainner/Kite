@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { revisionOf } from './account-data/store.ts';
 import { agentModelCatalog } from './agents/capabilities.ts';
 import { agentDefinitionSchema } from './agents/definition.ts';
-import { agentModels } from './agents/models.ts';
+import { agentModels, modelVendors } from './agents/models.ts';
 import { KiteError } from './errors.ts';
 import { contextDefinitionSchema } from './harness/context/assembler.ts';
 import { contextScenes, sceneVariables, type ContextScene } from './harness/context/scenes.ts';
@@ -22,11 +22,12 @@ const editableScenes: Partial<Record<ContextScene, 'notification' | 'compaction'
   'thread.instances_changed': 'notification', 'agent.report': 'notification', 'agent.workspace': 'notification',
   'thread.compact': 'compaction',
   'thread.title': 'generation', 'workspace.naming': 'generation', 'template.emblem': 'generation', 'thread.voice': 'generation',
-  'workspace.pull_request': 'generation', 'workspace.commit': 'generation',
+  'thread.voice_tidy': 'generation', 'workspace.pull_request': 'generation', 'workspace.commit': 'generation',
 };
 
 /**
- * 辅助生成场景可选的模型，连同模板窗口里用什么凭据调用的说明。一般用工作机的 ChatGPT 订阅，只能选其中的型号，内置模板默认用最轻的一档；
+ * 辅助生成场景可选的模型，连同模板窗口里用什么凭据调用的说明。可选自研 harness 运行的型号：ChatGPT 用工作机的订阅，DeepSeek 用账号凭据里的 Key；
+ * 内置模板默认用 ChatGPT 最轻的一档，语音整理默认用 DeepSeek（2026-10-29 用户定，对比见 docs/research/2026-10-29-语音润色.md）。
  * 语音识别另选识别模型（见 voice/），没有思考强度，也没有计数接口，背景文本按默认模型估。
  */
 interface SceneModels {
@@ -43,10 +44,13 @@ function sceneModels(scene: ContextScene): SceneModels {
       default: defaultSpeechModel };
   }
   const catalog = agentModelCatalog();
-  const models = catalog.models.filter((model) => agentModels.models.some((entry) => entry.id === model.id));
-  return { note: '使用工作机的 ChatGPT 订阅，不调用工具。', models, counts: true,
+  const harness = new Set<string>(modelVendors.filter((vendor) => vendor.runtime === 'harness').map((vendor) => vendor.id));
+  const models = catalog.models.filter((model) => harness.has(model.vendor));
+  const lightest = scene === 'thread.voice_tidy' ? agentModels.deepseek.find((model) => model.tier === 'flash')!
+    : agentModels.models.find((model) => model.tier === 'luna')!;
+  return { note: 'ChatGPT 型号用工作机的订阅，DeepSeek 用 Kite 账号凭据里的 API Key；不调用工具。', models, counts: true,
     vendors: catalog.vendors.filter((vendor) => models.some((model) => model.vendor === vendor.id)),
-    default: { model: agentModels.models.find((model) => model.tier === 'luna')!.id, reasoning: 'low' } };
+    default: { model: lightest.id, reasoning: 'low' } };
 }
 
 const templateSchema = z.object({ definition: contextDefinitionSchema, model: agentDefinitionSchema.shape.model.optional() }).strict();

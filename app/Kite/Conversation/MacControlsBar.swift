@@ -235,7 +235,9 @@ final class ControlsBarView: RepresentedRoot {
         field.placeholder = controls.placeholder
         // 读屏念的名字是占位文字，同 SwiftUI 的 TextField 以占位作标题
         if field.accessibilityLabel() != controls.placeholder { field.setAccessibilityLabel(controls.placeholder) }
-        field.setText(controls.fieldText)
+        let text = controls.fieldText
+        field.setText(text, undoable: controls.state.undoableText == text)
+        controls.state.undoableText = nil
         field.isEnabled = enabled
         let listening = controls.listening
         voice.label = .symbol(listening ? "mic.fill" : "mic")

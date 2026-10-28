@@ -1,7 +1,7 @@
 ## 当前取舍与资料入口
 
 - [分布式架构](decentralized-direction.md) — 不再自营服务器：Tailscale 身份、见证方可替换、设备间同步；实施顺序，第 1 步已做；设计待评审
-- [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由；DeepSeek 用账号 API Key
+- [自研 harness 与订阅授权](harness-direction.md) — 独立宿主、每台工作机授权和辅助模型的选型理由；DeepSeek 用账号 API Key，语音整理默认用它
 - [PDF 读取方案](pdf-read-direction.md) — Vision 与无备用解析器的明确取舍
 - [代码编辑选型](code-editor-direction.md) — TextKit 2 加 tree-sitter、生成段落时上色、折行；没选 CodeMirror 等的理由，验证记录入口
 - [视觉参考与范围](visual-style-direction.md) — 色板、角色点阵、项目色和字体范围
@@ -16,7 +16,7 @@
 - [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的 ORICO 外置盘，10-22 已接上；按工作机上的普通目录处理
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
 - [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用 ORICO；数据目录搬家后旧工作区 Git 指针要改真实路径
-- [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
+- [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、定稿后用 DeepSeek 整理（待验收）、术语词典、点阵表现、未选的识别候选
 - [Claude Code 的空闲压缩](claude-code-idle-compaction.md) — 它多在空闲约 55 分钟时压缩；两边积攒速度实测；Kite 已加空闲压缩，待真实会话验收
 
 ## 协作反馈

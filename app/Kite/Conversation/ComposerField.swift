@@ -84,12 +84,20 @@ final class ComposerField: NSTextField {
 
     /// 外面改了草稿。编辑中的字整段换掉、插入点到末尾，同现版；和现在一样就不动，组字不被打断。
     /// 换掉的字不进撤销，之前打字记下的撤销也清掉：它们按旧字的范围记，留着的话 ⌘Z 越界抛异常（2026-10-13 在单独的 NSTextView 上试过）。
-    func setText(_ value: String) {
+    /// undoable 时（语音整理换上去的字）照打字一样经字段编辑器换，记进撤销，⌘Z 换回原来的字；没在编辑时没有撤销。
+    func setText(_ value: String, undoable: Bool = false) {
         guard value != text else { return }
         if let editor = currentEditor() as? NSTextView {
-            editor.string = value
+            if undoable {
+                let range = NSRange(location: 0, length: (editor.string as NSString).length)
+                guard editor.shouldChangeText(in: range, replacementString: value) else { return }
+                editor.replaceCharacters(in: range, with: value)
+                editor.didChangeText()
+            } else {
+                editor.string = value
+                if let storage = editor.textStorage { editor.undoManager?.removeAllActions(withTarget: storage) }
+            }
             editor.setSelectedRange(NSRange(location: (value as NSString).length, length: 0))
-            if let storage = editor.textStorage { editor.undoManager?.removeAllActions(withTarget: storage) }
         } else {
             stringValue = value
         }

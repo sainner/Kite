@@ -5,10 +5,11 @@ import Synchronization
 import CoreAudio
 #endif
 
-/// 识别出来的字：中间结果和定稿都是到目前为止的全文，出错时给原因。
+/// 识别出来的字：中间结果和定稿都是到目前为止的全文，出错时给原因。定稿之后工作机可能再给一份整理成书面的字，带着它整理的那份定稿。
 enum VoiceText: Sendable {
     case partial(String)
     case final(String)
+    case tidied(String, from: String)
     case failed(String)
 }
 
@@ -193,7 +194,7 @@ final class VoiceInput {
     #endif
 }
 
-/// 一次录音到工作机的流：每 100 毫秒把新采样转成 16 kHz 单声道 s16le 推上去，收中间结果和定稿。协议见 kited 的 voice/sessions.ts。
+/// 一次录音到工作机的流：每 100 毫秒把新采样转成 16 kHz 单声道 s16le 推上去，收中间结果、定稿和整理后的字。协议见 kited 的 voice/sessions.ts。
 private actor VoiceStream {
     private struct Event: Decodable {
         let type: String
@@ -214,6 +215,8 @@ private actor VoiceStream {
     private var pump: Task<Void, Never>?
     /// 定稿或出错之后不再报错，连接断开是正常收尾。
     private var settled = false
+    /// 收到的定稿，整理后的字随它交出去。
+    private var finalText = ""
 
     /// position 是从缓冲的哪里推起：开录时从头，发消息另起一段时从那一刻。
     init(session: URLSession, socket: URLSessionWebSocketTask, samples: SampleRing, sampleRate: Double, from position: Int = 0,
@@ -287,8 +290,12 @@ private actor VoiceStream {
                 switch event.type {
                 case "partial": await update(.partial(event.text ?? ""))
                 case "final":
+                    // 接着等整理后的字，工作机整理完或不整理都会关掉连接
                     settled = true
-                    await update(.final(event.text ?? ""))
+                    finalText = event.text ?? ""
+                    await update(.final(finalText))
+                case "tidied":
+                    await update(.tidied(event.text ?? "", from: finalText))
                     close()
                     return
                 case "error":
