@@ -140,7 +140,7 @@ private struct BlockCardLongPress: ViewModifier {
         if let action {
             content
                 .contentShape(Rectangle())
-                .highPriorityGesture(LongPressGesture(minimumDuration: 0.4, maximumDistance: 8).onEnded { _ in action() })
+                .highPriorityGesture(LongPressGesture(minimumDuration: PhoneTextInteraction.pressDuration, maximumDistance: 8).onEnded { _ in action() })
         } else {
             content
         }

@@ -28,14 +28,14 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private var arrangedSize: CGSize = .zero
     /// 原生行的操作栏：托管的 SwiftUI 浮层，放在文档最上面，跟着行一起滚，见 placeActions。
     private var actions: (id: RowID, host: UIHostingController<AnyView>, above: Bool, side: HorizontalEdge)?
-    /// 操作栏是哪一刻打开的：长按开出来的那一下松手时，点按收起不算（见 tapped）。
-    private var actionsOpened: CFTimeInterval = 0
     private var heightTicker: FrameTicker?
     /// 所在窗口在不在屏上：紧凑布局横滑那一行的窗口都建着。不在屏上不补量、不接点状态栏回顶。
     private var presence: PanePresence?
     private let presenceTracking = ModelTracking()
-    /// 手指按下的时刻（还没松开时），见 TouchObserver。
-    private var touchDown: CFTimeInterval?
+    /// 手指按着没有，见 TouchObserver。
+    private var touching = false
+    /// 最近一次手指按下的时刻，松开后留着：点按的动作在 TouchObserver 报了松手以后才到，见 tapped。
+    private var touchDown: CFTimeInterval = 0
     /// 这次按下前跟不跟着最底下，和手指拖起来没有：轻点、长按（没进选字）松手后照旧跟，见 touched。
     private var touchFollowing = false
     private var touchDragged = false
@@ -76,9 +76,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     /// SwiftUI 那边每次更新都调：换上新的行和环境。presence 是所在窗口在不在屏上的盒子，建好就不再换。
     func update(_ rows: [TranscriptRow], context: TranscriptRowContext, presence: PanePresence?) {
-        let opened = context.selected != nil && self.context?.selected != context.selected
         self.context = context
-        if opened { actionsOpened = CACurrentMediaTime() }
         if self.presence !== presence {
             self.presence = presence
             presenceTracking.cancel()
@@ -280,8 +278,9 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
 
     @objc private func tapped() {
         guard let context, context.selected != nil else { return }
-        // 长按开出来的操作栏，松手那一下不算点别处
-        if let touchDown, actionsOpened >= touchDown { return }
+        // 按满长按的时长才松手的不算点别处：长按（正文、气泡、卡片上）开出来的操作栏，松手那一下不收起。
+        // 点按没有时长上限，又和行里的长按同时认，不拦的话一松手就收了
+        if CACurrentMediaTime() - touchDown >= PhoneTextInteraction.pressDuration { return }
         context.select(nil)
     }
 
@@ -375,15 +374,16 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     /// 按下前跟着最底下、手指没拖起来也没进选字（轻点、长按开操作栏）的，松手后照旧跟：按着的那会儿流式变长，底下没跟上不算翻上去了。
     private func touched(_ down: Bool) {
         if down {
+            touching = true
             touchDown = CACurrentMediaTime()
             touchFollowing = follow.following && !follow.userScrolling
             touchDragged = false
             follow.userBegan()
         } else {
-            touchDown = nil
+            touching = false
             // 拖动的结束和惯性由滚动视图的回调接；它们和这里谁先到不一定，等这一拍过去再看
             DispatchQueue.main.async { [weak self] in
-                guard let self, touchDown == nil, !scrollView.isDragging, !scrollView.isDecelerating else { return }
+                guard let self, !touching, !scrollView.isDragging, !scrollView.isDecelerating else { return }
                 userEnded(tapped: !touchDragged && touchFollowing && !Self.selecting(in: document))
             }
         }

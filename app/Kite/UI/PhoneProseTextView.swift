@@ -218,6 +218,8 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
     private var anchor: UITextPosition?
     private var selecting = false
     private static let slop: CGFloat = 8
+    /// 按多久算长按。对话列表按它认出长按后的松手，不当成点别处收起操作栏。
+    static let pressDuration: TimeInterval = 0.4
 
     init(text: UITextView, host: UIView) {
         self.text = text
@@ -225,7 +227,7 @@ final class PhoneProseTextView: UITextView, TextKitMeasuring {
         super.init()
         text.delegate = self
         press.addTarget(self, action: #selector(press(_:)))
-        press.minimumPressDuration = 0.4
+        press.minimumPressDuration = Self.pressDuration
         press.allowableMovement = 8
         press.delegate = self
         host.addGestureRecognizer(press)

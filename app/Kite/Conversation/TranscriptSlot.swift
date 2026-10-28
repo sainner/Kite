@@ -11,7 +11,7 @@ extension EnvironmentValues {
 struct TranscriptRowContext {
     /// 字体、外观、引用范围、打开链接、选中的行等，主对话的 SwiftUI 环境整份转交。
     var environment: EnvironmentValues
-    /// 点 agent 的话弹出操作栏：主对话里是。
+    /// 消息有操作栏（Mac 上点开，iPhone、iPad 上长按开）：主对话里是。
     var actionable: Bool
     /// 右键开关这一行的操作栏。
     var toggleActions: (RowID) -> Void
