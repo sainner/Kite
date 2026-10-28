@@ -61,12 +61,12 @@ const tag = (name: string) => `${name}-${randomUUID().slice(0, 8)}`;
 const closed = (r: Rec) => r.kind === 'state' && r.state === 'closed';
 
 /* 回归一个 bug：回合开始前（进程刚从 closed 启动、正在 resume）的打断曾被忽略，回合照常跑完。
- * 上游 CLI 的请求合并与 beta 路由、SDK 的流式块转换须实际运行：短 thinking 更新及签名应保留。
+ * 上游 CLI 的请求合并、SDK 的流式块转换须实际运行：thinking 块及签名应保留。
  */
-test('Claude 发送短思考更新配置并保留签名，支持生成中打断，续接前打断的消息不进入模型历史', async () => {
+test('Claude 保留思考签名，支持生成中打断，续接前打断的消息不进入模型历史', async () => {
   const finalPrompt = `收尾 ${tag('收尾')}`;
   const thinking = { type: 'thinking', thinking: '先核对并发调用的交接，再检查返回结果。', signature: 'test-thinking-signature' };
-  const sent: Array<{ thinking: unknown; beta: string | null }> = [];
+  let sent = 0;
   const received: unknown[] = [];
   const finalRequest = Promise.withResolvers<void>();
   let finalRequestAt = 0;
@@ -79,7 +79,7 @@ test('Claude 发送短思考更新配置并保留签名，支持生成中打断�
         const body = JSON.parse(text);
         const lastUser = body.messages.findLast((message: { role: string }) => message.role === 'user');
         if (body.stream && JSON.stringify(lastUser).includes(finalPrompt)) {
-          sent.push({ thinking: body.thinking, beta: req.headers.get('anthropic-beta') });
+          sent += 1;
           finalRequestAt = mark();
           finalRequest.resolve();
           const events = [
@@ -127,9 +127,7 @@ test('Claude 发送短思考更新配置并保留签名，支持生成中打断�
   runner.send({ text: finalPrompt, human: true });
   await finalRequest.promise;
   await wait(closed, finalRequestAt);
-  expect(sent).toHaveLength(1);
-  expect(sent[0]!.thinking).toEqual({ type: 'adaptive', display: 'updates' });
-  expect(sent[0]!.beta?.split(',').map((value) => value.trim())).toContain('thinking-display-updates-2026-08-18');
+  expect(sent).toBe(1);
   expect(received).toEqual([thinking]);
 
   // runner 从 closed 刚启动、回合还没开始就打断

@@ -19,9 +19,6 @@ export function claudeOptions(cwd: string): Options {
       CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
       // 2.1.280 的官方 mods 早期入口；升级时须重新抓取真实 CLI 请求核对。
       CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1',
-      // SDK 0.3.280 尚未暴露 updates；经 CLI 原生请求配置开启简短进度提示。
-      CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ thinking: { type: 'adaptive', display: 'updates' } }),
-      ANTHROPIC_BETAS: 'thinking-display-updates-2026-08-18',
       CLAUDE_CODE_TOTAL_TOKENS_REMINDER: 'off',
       CLAUDE_CODE_ENABLE_TOKEN_USAGE_ATTACHMENT: '0',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
@@ -47,6 +44,8 @@ export function claudeOptions(cwd: string): Options {
     // 内置工具只留按需加载插件工具的 ToolSearch（tools: [] 会连它一起关掉）；skills 关闭；MCP 只接受宿主显式注入的能力。
     tools: CLAUDE_BUILTIN_TOOLS,
     includePartialMessages: true,
+    // 思考不回文字，显式写明，不随 Claude Code 的默认变。updates 只在工具调用之间偶尔给几句进度，界面不显示，不用。
+    thinking: { type: 'adaptive', display: 'omitted' },
     skills: [],
     strictMcpConfig: true,
     plugins: [{ type: 'local', path: join(import.meta.dir, 'context-filter'), skipMcpDiscovery: true }],
