@@ -7,15 +7,23 @@ import AppKit
 typealias PlatformTextView = NSTextView
 #endif
 
-/// 对话正文文本视图（Mac 的 ProseTextView、iOS 的 PhoneProseTextView）共用的协调器：流式只补末尾的字、
+/// 对话正文文本视图（Mac 的 ProseTextView、iOS 的 PhoneProseTextView）共用的协调器：流式只补末尾的字、新字淡入、
 /// 附件变高后重排那一段、行内代码和引用的装饰片段。两端原生列表的行和 Mac 的表格卡片各持一个。
 /// 只碰 textStorage 和 textLayoutManager：读 layoutManager 会让视图退回 TextKit 1。
 class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
-    weak var view: PlatformTextView?
+    weak var view: PlatformTextView? {
+        didSet {
+            fade.view = view
+            if view == nil { fade.stop() }
+        }
+    }
     /// 附件变高、重排了那一段以后调：原生行借它重新量高（文本视图自己改尺寸时不调）。
     var resized: (() -> Void)?
     /// 文本视图里现在放的字。
     var shown: NSAttributedString?
+
+    /// 生成中新放出来的字淡入。
+    private let fade = StreamFade()
 
     /// 两端的 textStorage 只差可选性。
     private var storage: NSTextStorage? { view?.textStorage }
@@ -35,8 +43,26 @@ class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
 
     /// 放字：接着长的只补末尾，否则整段重设。外观变化时也换掉已经解析成 CGColor 的装饰；字没变、只换颜色时保留选区。
     /// refreshingAppearance 在整段重设前后各调一次（只换外观时先给真、换完给假），iOS 的交互借它不把这次重设当成取消选择。
-    func show(_ text: NSAttributedString, refreshingAppearance: (Bool) -> Void = { _ in }) {
-        guard shown != text, !appendTail(of: text), let view else { return }
+    /// fading：生成中，接着原来的字长出来的那截淡入；之前没放过字的（回复刚开头）整段淡入，已经写了一大段的（打开时正在生成）直接显示。
+    func show(_ text: NSAttributedString, fading: Bool = false, refreshingAppearance: (Bool) -> Void = { _ in }) {
+        guard shown != text else { return }
+        let old = shown
+        let appended = appendTail(of: text)
+        if !appended { replace(with: text, refreshingAppearance: refreshingAppearance) }
+        fade.clamp(to: text.length)
+        guard fading else { return }
+        if let old {
+            if appended || text.length > old.length && text.string.hasPrefix(old.string) {
+                fade.add(NSRange(location: old.length, length: text.length - old.length))
+            }
+        } else if text.length <= 400 {
+            fade.add(NSRange(location: 0, length: text.length))
+        }
+    }
+
+    /// 整段重设。
+    private func replace(with text: NSAttributedString, refreshingAppearance: (Bool) -> Void) {
+        guard let view else { return }
         let textChanged = shown?.string != text.string
         shown = text
         #if canImport(UIKit)

@@ -67,6 +67,10 @@ enum TranscriptPlacement: Equatable {
     private(set) var arrivals = 0
     /// 正在展开、收起的行：从哪个高起、弹簧走到哪了。
     private(set) var heightAnimations: [RowID: HeightAnimation] = [:]
+    /// 生成中的话上次按哪个宽量出多高，变了就缓过去，见 arrange。
+    private var growth: [RowID: (width: CGFloat, height: CGFloat)] = [:]
+    /// 生成中的话变高（多了一行）时怎么走。
+    static let growthMotion = RowMotion.curve(.easeOut, duration: 0.2)
     /// 空闲时补量屏幕外的行。
     private var measuring: Task<Void, Never>?
 
@@ -116,6 +120,7 @@ enum TranscriptPlacement: Equatable {
         for (id, slot) in byID where nextByID[id] !== slot {
             removed.append(slot)
             shapes[id] = nil
+            growth[id] = nil
         }
         slots = next
         byID = nextByID
@@ -180,6 +185,15 @@ enum TranscriptPlacement: Equatable {
             } else {
                 height = estimate
                 waiting = true
+            }
+            // 生成中的话量出来的高变了（多了一行）：从眼下的高缓过去，跟着最底下时整列滑上去，不一下跳一行。拖缝、换了宽不算
+            if slot.growsSmoothly, close, !resizing {
+                if let last = growth[slot.id], last.width == columnWidth, abs(last.height - height) > 0.5, old.height > 0 {
+                    heightAnimations[slot.id] = HeightAnimation(from: old.height, motion: Self.growthMotion)
+                }
+                growth[slot.id] = (columnWidth, height)
+            } else {
+                growth[slot.id] = nil
             }
             // 展开收起的动画中：从原来的高按弹簧走向新量的高
             if let animation = heightAnimations[slot.id] {

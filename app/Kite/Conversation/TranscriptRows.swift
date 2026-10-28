@@ -56,7 +56,10 @@ struct TranscriptRow: Identifiable {
         hasher.combine(id)
         hasher.combine(gap)
         switch content {
-        case .item(let item): item.kind.shape(into: &hasher)
+        case .item(let item):
+            item.kind.shape(into: &hasher)
+            // agent 的话写完时字数可能没变，生成中的样子（补齐的 Markdown、淡入）要换回原文
+            if case .text = item.kind { hasher.combine(item.generation == "streaming") }
         case .message(let message, let queued, let sender):
             hasher.combine(queued)
             hasher.combine(sender)

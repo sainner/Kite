@@ -86,7 +86,10 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         text.setAccessibilityCustomActions(context.actionable
             ? [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { context.toggleActions(id); return true }] : nil)
         environment = context.environment
-        body.show(source, environment: context.environment, font: context.environment.font ?? .body, color: .label)
+        // 生成中：半截的 Markdown 先按写完的样子显示，新放出来的字淡入
+        let streaming = item.generation == "streaming"
+        body.show(streaming ? StreamingMarkdown.settle(source) : source, environment: context.environment,
+                  font: context.environment.font ?? .body, color: .label, streaming: streaming)
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -127,8 +130,11 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         layout.pinShift(text)
     }
 
+    /// 流式变高的动画中（见 TranscriptArrangement 的 growth）行比字矮：文本视图照量出来的高摆，不跟着每帧改高，新的一行在淡入，压着下面一点不显眼。
     override func viewFrame(in column: CGRect) -> CGRect {
-        body.frame(in: column)
+        var column = column
+        if let measured, measured.width == column.width { column.size.height = max(column.height, measured.height) }
+        return body.frame(in: column)
     }
 
     /// 容器跟着摆好的视图的宽（视图两边各伸出 inlineCodePadding），拖缝中留在原来的宽的除外。
@@ -151,6 +157,8 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
     private var environment: EnvironmentValues?
     private var font: Font = .body
     private var color: NSColor = .label
+    /// 生成中：新放出来的字淡入。
+    private var streaming = false
     private(set) var topInset: CGFloat = 0
     /// 引用图标要加载的网址，变了才重新加载。
     private var urls: [URL] = []
@@ -167,10 +175,11 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         coordinator.resized = { [weak self] in self?.changed?() }
     }
 
-    /// 换上原文和环境：font 是正文的字号（对话里是正文，压缩摘要小一号），color 是正文的字色。
-    func show(_ source: String, environment: EnvironmentValues, font: Font, color: NSColor) {
+    /// 换上原文和环境：font 是正文的字号（对话里是正文，压缩摘要小一号），color 是正文的字色；streaming 是在生成中，新放出来的字淡入。
+    func show(_ source: String, environment: EnvironmentValues, font: Font, color: NSColor, streaming: Bool = false) {
         coordinator.openURL = environment.openURL
         self.source = source
+        self.streaming = streaming
         self.environment = environment
         self.font = font
         self.color = color
@@ -200,7 +209,7 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         hasBlocks = !content.blocks.isEmpty
         // 附件先换好内容再放字：放字时 TextKit 就会量附件的高
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(environment))
-        coordinator.show(content.text)
+        coordinator.show(content.text, fading: streaming)
     }
 
     /// 按这一段的宽整段排出来多高。

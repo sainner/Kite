@@ -147,6 +147,7 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
         let viewport = viewport
         follow.visibleChanged(viewport.visible.height)
         let layout = arrangement.arrange(viewport, follow: follow)
+        if !arrangement.heightAnimations.isEmpty { startHeightTicker() }
         let wasAdjusting = adjusting
         adjusting = true
         let size = CGSize(width: bounds.width, height: layout.documentHeight)
@@ -290,11 +291,15 @@ final class PhoneTranscriptView: UIView, UIScrollViewDelegate, UIGestureRecogniz
     private func animateHeight(of slot: TranscriptRowSlot, motion: RowMotion) {
         arrangement.animateHeight(of: slot, motion: motion)
         setNeedsArrange()
-        if heightTicker == nil {
-            let ticker = FrameTicker()
-            heightTicker = ticker
-            ticker.start(in: self) { [weak self] time in self?.heightStep(time) ?? false }
-        }
+        startHeightTicker()
+    }
+
+    /// 有行高动画就逐帧走：一行展开收起时，或排列里生成中的话变高时（见 TranscriptArrangement.arrange）。
+    private func startHeightTicker() {
+        guard heightTicker == nil else { return }
+        let ticker = FrameTicker()
+        heightTicker = ticker
+        ticker.start(in: self) { [weak self] time in self?.heightStep(time) ?? false }
     }
 
     /// 行高动画的一帧，都走完了返回 false。

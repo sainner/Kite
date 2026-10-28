@@ -53,6 +53,8 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     private let attachments = BlockAttachments()
     /// 这段话的原文，操作栏复制它。
     private(set) var source: String?
+    /// 生成中：新放出来的字淡入。
+    private var streaming = false
     private var context: TranscriptRowContext?
     private var topInset: CGFloat = 0
     /// 引用图标要加载的网址，变了才重新加载。
@@ -106,7 +108,9 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         super.update(row, context: context)
         guard case .item(let item) = row.content, case .text(let source) = item.kind else { return }
         self.context = context
-        self.source = source
+        // 生成中：半截的 Markdown 先按写完的样子显示，新放出来的字淡入
+        streaming = item.generation == "streaming"
+        self.source = streaming ? StreamingMarkdown.settle(source) : source
         // 原文、环境换了，要看的引用图标跟着换
         tracking.cancel()
         guard text != nil else { return }
@@ -153,7 +157,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         let longPress: @MainActor () -> Void = { context.select(id) }
         embedded.blockCardLongPress = context.actionable ? longPress : nil
         coordinator.update(content.blocks, environment: EmbeddedEnvironment(embedded))
-        coordinator.show(content.text) { interaction?.refreshingAppearance = $0 }
+        coordinator.show(content.text, fading: streaming) { interaction?.refreshingAppearance = $0 }
     }
 
     override func height(width: CGFloat) -> CGFloat {
@@ -222,9 +226,12 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     /// 视图宽固定（见 PhoneProseTextView.clipViewport），字排在容器的宽里：改宽时视图不变，只有容器变。
+    /// 流式变高的动画中（见 TranscriptArrangement 的 growth）行比字矮：文本视图照量出来的高摆，不跟着每帧改高，新的一行在淡入，压着下面一点不显眼。
     override func viewFrame(in column: CGRect) -> CGRect {
-        CGRect(x: column.minX - Metrics.inlineCodePadding, y: column.minY + topInset,
-               width: PhoneProseTextView.widest, height: column.height - topInset)
+        var height = column.height
+        if let measured, measured.width == column.width { height = max(height, measured.height) }
+        return CGRect(x: column.minX - Metrics.inlineCodePadding, y: column.minY + topInset,
+                      width: PhoneProseTextView.widest, height: height - topInset)
     }
 
     func didPlace() {}

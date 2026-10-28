@@ -122,6 +122,7 @@ final class TranscriptListView: NSScrollView {
         }
         if viewport.resizing { awaitResizeEnd() }
         let layout = arrangement.arrange(viewport, follow: follow)
+        if !arrangement.heightAnimations.isEmpty { startHeightTicker() }
         adjusting = true
         if document.frame.size != CGSize(width: width, height: layout.documentHeight) {
             document.setFrameSize(CGSize(width: width, height: layout.documentHeight))
@@ -240,11 +241,15 @@ final class TranscriptListView: NSScrollView {
     private func animateHeight(of slot: TranscriptRowSlot, motion: RowMotion) {
         arrangement.animateHeight(of: slot, motion: motion)
         needsLayout = true
-        if heightTicker == nil {
-            let ticker = FrameTicker()
-            heightTicker = ticker
-            ticker.start(in: self) { [weak self] time in self?.heightStep(time) ?? false }
-        }
+        startHeightTicker()
+    }
+
+    /// 有行高动画就逐帧走：一行展开收起时，或排列里生成中的话变高时（见 TranscriptArrangement.arrange）。
+    private func startHeightTicker() {
+        guard heightTicker == nil else { return }
+        let ticker = FrameTicker()
+        heightTicker = ticker
+        ticker.start(in: self) { [weak self] time in self?.heightStep(time) ?? false }
     }
 
     /// 行高动画的一帧，都走完了返回 false。

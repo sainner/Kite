@@ -54,6 +54,9 @@ final class WorkThread: Identifiable {
     private var visiblePositions: [Int: Int] = [:]
     private var streamingChanges: Set<Int> = []
     private var streamingRefresh: Task<Void, Never>?
+    /// 主对话里 agent 的话收到的字不当场全给，按节奏放，见 StreamPacer；pacing 是放字的循环，放完就停。
+    private var pacer = StreamPacer()
+    private var pacing: Task<Void, Never>?
     private var positions: [String: Int] = [:]
     /// 线程流最近处理过的事件的 cursor：重连时带上，工作机只补之后变过的记录；副本可能不全时清掉，下次整份重读。
     private var cursor: String?
@@ -221,7 +224,7 @@ final class WorkThread: Identifiable {
 
     func observe() async {
         guard let client else { return }
-        defer { if self.client == client { flushStreaming(); connected = false } }
+        defer { if self.client == client { flushStreaming(); finishPacing(); connected = false } }
         while !Task.isCancelled && self.client == client {
             do {
                 try await client.events(scope: .thread(id), after: cursor) { event in
@@ -233,6 +236,7 @@ final class WorkThread: Identifiable {
             } catch {
                 if Task.isCancelled || self.client != client { return }
                 flushStreaming()
+                finishPacing()
                 connected = false
                 self.error = "连接中断，正在重连：\(error.localizedDescription)"
             }
@@ -248,6 +252,8 @@ final class WorkThread: Identifiable {
         switch event.type {
         case "thread.history":
             guard event.version == 1 else { throw KitedError(message: "会话协议版本不兼容") }
+            // 换了快照（重连、回退）：正在放的话照收到的显示，下面整份重排
+            stopPacing()
             let history = event.records ?? []
             if let since = event.since {
                 // 只补了变化：按 id 换掉或追加在末尾，与整份快照一致（docs/会话显示协议.md 的 cursor）
@@ -272,7 +278,7 @@ final class WorkThread: Identifiable {
             if let index = upsert(record) {
                 // 压缩记录的变化（撤销）牵动整段收起，重新派生。
                 if record.block.type != "compacted", let visibleIndex = visiblePositions[index], let visible = record.record {
-                    transcript.replaceRecord(at: visibleIndex, with: visible)
+                    transcript.replaceRecord(at: visibleIndex, with: paced(index, visible))
                 } else {
                     recordsChanged = true
                 }
@@ -286,7 +292,12 @@ final class WorkThread: Identifiable {
             guard let delta = event.delta, let index = positions[delta.id] else {
                 throw KitedError(message: "流式记录缺失，重新同步")
             }
+            let shown = remoteRecords[index].block.text?.utf16.count ?? 0
             try remoteRecords[index].apply(delta)
+            if remoteRecords[index].block.type == "text", remoteRecords[index].parent == nil {
+                pace(index, shown: shown)
+                return
+            }
             streamingChanges.insert(index)
             if streamingRefresh == nil {
                 streamingRefresh = Task { [weak self] in
@@ -331,6 +342,66 @@ final class WorkThread: Identifiable {
         streamingChanges.removeAll(keepingCapacity: true)
     }
 
+    /// 主对话里 agent 的话收到了字（之前显示到 shown）：交给放字的循环，没在跑就起一个。
+    private func pace(_ index: Int, shown: Int) {
+        pacer.received(index, shown: shown)
+        guard pacing == nil else { return }
+        pacing = Task { [weak self] in
+            var last = ContinuousClock.now
+            while true {
+                do { try await Task.sleep(for: StreamPacer.tick) } catch { return }
+                guard let self else { return }
+                let now = ContinuousClock.now
+                let more = stepPacing((now - last) / .seconds(1))
+                last = now
+                if !more {
+                    pacing = nil
+                    return
+                }
+            }
+        }
+    }
+
+    /// 放一次字：放了字和放完了的话换成新的样子。都放完了返回 false。
+    private func stepPacing(_ elapsed: Double) -> Bool {
+        let moved = pacer.advance(elapsed) { index in
+            guard remoteRecords.indices.contains(index), let text = remoteRecords[index].block.text else { return nil }
+            return (text, remoteRecords[index].generation)
+        }
+        for index in moved {
+            guard let visibleIndex = visiblePositions[index], let record = remoteRecords[index].record else { continue }
+            transcript.replaceRecord(at: visibleIndex, with: paced(index, record))
+        }
+        return !pacer.isEmpty
+    }
+
+    /// 不再放慢：停掉循环。接着整份重排的（换了快照）用它，不用一条条换。
+    private func stopPacing() {
+        pacing?.cancel()
+        pacing = nil
+        pacer.reset()
+    }
+
+    /// 不再放慢，正在放的话剩下的字当场给出（断了连接，等重连的快照之前照收到的显示）。
+    private func finishPacing() {
+        let indices = pacer.indices
+        stopPacing()
+        for index in indices {
+            guard remoteRecords.indices.contains(index), let visibleIndex = visiblePositions[index],
+                  let record = remoteRecords[index].record else { continue }
+            transcript.replaceRecord(at: visibleIndex, with: record)
+        }
+    }
+
+    /// 正在放的话只给放出来的那截；放完之前一直算生成中，行照生成中的样子画（补齐半截的 Markdown、新字淡入）。
+    private func paced(_ index: Int, _ record: Record) -> Record {
+        guard let shown = pacer.shown(index), case .text(let text) = record.block else { return record }
+        var record = record
+        record.block = .text(StreamPacer.prefix(text, shown))
+        record.generation = "streaming"
+        return record
+    }
+
     private func render(recordsChanged: Bool = false) {
         let running = state?.busy == true && ["running", "stopping", "finishing"].contains(state?.phase ?? "")
         let compacting = running && state?.compacting == true
@@ -349,7 +420,7 @@ final class WorkThread: Identifiable {
                 guard var record = remote.record else { continue }
                 if record.parent == nil { record.folded = folds[index] }
                 visiblePositions[index] = records.count
-                records.append(record)
+                records.append(paced(index, record))
             }
             transcript = Transcript(root: transcript.root, records: records, running: running, compacting: compacting, pending: messages)
         } else {

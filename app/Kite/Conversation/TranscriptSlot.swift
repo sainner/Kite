@@ -46,6 +46,11 @@ extension TranscriptRowContext {
     /// 刚发出去、还在下面藏着的程度：1 在下面，0 到位，见 TranscriptListView 的发送。
     var rise: CGFloat = 0
 
+    /// 生成中的 agent 的话：变高时缓过去，见 TranscriptArrangement.arrange。
+    var growsSmoothly: Bool {
+        if case .item(let item) = row.content, case .text = item.kind { item.generation == "streaming" } else { false }
+    }
+
     init(row: TranscriptRow) {
         id = row.id
         self.row = row
