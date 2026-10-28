@@ -2,7 +2,6 @@
 import { existsSync, mkdirSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, relative, resolve } from 'node:path';
-import { applyDiff } from '@openai/agents-core/utils';
 import { z } from 'zod';
 import { WorkspaceFiles, readFileArgs, textVersion } from '../workspace/files.ts';
 import { within } from '../paths.ts';
@@ -12,6 +11,7 @@ import { PDF_PAGE_SPAN, PdfReader, fileKind, readImage } from '../workspace/docu
 import { FileDiffStore, type FileDiff } from '../workspace/file-diffs.ts';
 import { runCommand, type BackgroundCommand, type CommandOptions } from './command.ts';
 import { KnownFiles } from './known-files.ts';
+import { applyPatchDiff } from './patch-diff.ts';
 import { withReads } from './policy.ts';
 import { runCheck, type CheckHost } from '../check.ts';
 import { assertFileAccess, canonicalPath, commandEnvironment, workspacePolicy, type ExecutionPolicy } from './sandbox.ts';
@@ -62,11 +62,11 @@ export interface ShellBackground {
   adopt(command: BackgroundCommand, info: { command: string; turnId?: string; callId?: string }): string;
 }
 
-const patchDescription = `用补丁创建、修改或删除当前工作目录内的文本文件，可一次处理多个文件，每个文件只列一次。
+const patchDescription = `用补丁创建、修改或删除当前工作目录内的文本文件，可一次处理多个文件。同一文件可以列多项，按顺序叠加，后一项在前一项的结果上匹配。
 operations 中每项包含 type、path；create_file 和 update_file 还需 diff，delete_file 不带 diff。
 diff 使用无文件头的 V4A 格式，不含 *** Begin Patch、*** Update File 等包装，也不用行号或行数。
 创建：每行以 + 开头；例如 "+甲\\n+乙\\n+" 创建带末尾换行的两行文件，空 diff 创建空文件。目标必须不存在。
-修改：以 @@ 开始，空格开头是原文上下文，- 开头是删除行，+ 开头是新增行；例如 "@@\\n 甲\\n-乙\\n+丁\\n 丙"。
+修改：以 @@ 开始，空格开头是原文上下文，- 开头是删除行，+ 开头是新增行，上下文行和删除行照抄原文整行；例如 "@@\\n 甲\\n-乙\\n+丁\\n 丙"。
 提供足够上下文定位目标；必要时用 @@ 函数名等原文行作为定位锚点。
 读过或改过的文件不用每次改前先 read：原文对不上补丁会失败，不会改错位置；文件在你上次看到之后被别处改过，结果里会提示。
 结果中的 path:diffId 是这次已完成修改的历史引用，可直接在回复中使用；可写 path:diffId:10-20 定位修改后的文件行号，不需要区分旧侧和新侧。`;
@@ -161,8 +161,9 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
       // 同一工作区的线程并行时，整批的读、算、写在一个同步段里完成：同一进程里别的线程的 patch 插不进来，
       // 后到的按新内容匹配，改到同一处就明确失败。这里不能在读到写之间 await。
       const granted = policy();
-      const paths = new Set<string>();
-      const plan = operations.map((operation) => {
+      // 同一文件列多次时按顺序叠加，后一项在前一项的结果上应用；每个文件只写一次，历史差异里也只有一份。
+      const plan = new Map<string, { path: string; target: string; key: string; original: string | null; content: string | null; notice: string }>();
+      for (const operation of operations) {
         const { path, type } = operation;
         const target = files.resolve(path);
         const real = granted.secretFiles?.length ? canonicalPath(target) : undefined;
@@ -173,39 +174,40 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
         if (type !== 'create_file') assertFileAccess(target, 'read', granted);
         const present = existsSync(target);
         const key = present ? realpathSync(target) : target;
-        if (paths.has(key)) throw new Error(`同批补丁不能重复操作文件：${path}`);
-        paths.add(key);
-        if (type === 'create_file' && present) throw new Error(`新建目标已经存在：${path}`);
-        const original = type === 'create_file' ? '' : files.text(target);
-        // 没看过的不提示：补丁对得上，说明模型知道那段原文。
-        const last = known.get(key);
-        const notice = type !== 'create_file' && last !== undefined && last !== textVersion(original)
-          ? `提示：${path} 在你上次看到或修改之后已有其他变化；依赖周边内容时请重新 read。` : '';
-        let content: string | null = null;
-        if (type !== 'delete_file') {
-          // applyDiff 接收单文件正文；拒绝包装头，避免上游把它当终止符而忽略后续内容。
-          const lines = operation.diff.replace(/\r\n/g, '\n').split('\n');
-          if (lines.at(-1) === '') lines.pop();
-          if (lines.some((line, i) => line.startsWith('***') && (line !== '*** End of File' || i !== lines.length - 1))) {
-            throw new Error(`${path} 的 diff 必须是无文件头的 V4A 补丁`);
-          }
-          try { content = applyDiff(original, operation.diff, type === 'create_file' ? 'create' : 'default'); }
-          catch (error) { throw new Error(`${path} 的补丁无法应用，请 read 后重新生成：${error instanceof Error ? error.message : String(error)}`); }
-          if (content.includes('\0')) throw new Error(`补丁只支持文本文件：${path}`);
+        let change = plan.get(key);
+        if (type === 'create_file' && (change ? change.content !== null : present)) throw new Error(`新建目标已经存在：${path}`);
+        if (type !== 'create_file' && change?.content === null) throw new Error(`${path} 已在这批前面删除`);
+        if (!change) {
+          const original = type === 'create_file' ? null : files.text(target);
+          // 没看过的不提示：补丁对得上，说明模型知道那段原文。
+          const last = known.get(key);
+          const notice = original !== null && last !== undefined && last !== textVersion(original)
+            ? `提示：${path} 在你上次看到或修改之后已有其他变化；依赖周边内容时请重新 read。` : '';
+          change = { path: relative(root, target), target, key, original, content: original, notice };
+          plan.set(key, change);
         }
-        return { path: relative(root, target), type, target, key, original: type === 'create_file' ? null : original, content, notice };
-      });
+        if (type === 'delete_file') {
+          change.content = null;
+          continue;
+        }
+        let content: string;
+        try { content = applyPatchDiff(change.content ?? '', operation.diff, type === 'create_file'); }
+        catch (error) { throw new Error(`${path} 的补丁无法应用：${error instanceof Error ? error.message : String(error)}`); }
+        if (content.includes('\0')) throw new Error(`补丁只支持文本文件：${path}`);
+        change.content = content;
+      }
       const output: string[] = [];
       const diff: FileDiff = { id: `diff_${randomUUID()}`, files: [] };
       const reference = () => diff.files.length ? { id: diff.id, paths: diff.files.map((file) => file.path) } : undefined;
-      for (const change of plan) {
+      // 这批里新建又删掉的文件不落盘。
+      for (const change of [...plan.values()].filter((change) => change.original !== null || change.content !== null)) {
         try {
           if (change.content === null) {
             unlinkSync(change.target);
             known.delete(change.key);
           } else {
             mkdirSync(dirname(change.target), { recursive: true });
-            writeFileSync(change.target, change.content, { flag: change.type === 'create_file' ? 'wx' : 'w' });
+            writeFileSync(change.target, change.content, { flag: change.original === null ? 'wx' : 'w' });
             known.set(realpathSync(change.target), textVersion(change.content));
           }
           const completed = { path: change.path, before: change.original, after: change.content };
@@ -215,7 +217,7 @@ export function localTools(options: Omit<CommandOptions, 'policy' | 'credentials
           }
           diff.files.push(completed);
           output.push(`引用：${change.path}:${diff.id}`);
-          output.push(`已${change.type === 'create_file' ? '创建' : change.type === 'delete_file' ? '删除' : '修改'} ${change.path}`);
+          output.push(`已${change.original === null ? '创建' : change.content === null ? '删除' : '修改'} ${change.path}`);
           if (change.notice) output.push(change.notice);
         } catch (error) {
           output.push(`${change.path} 写入失败：${error instanceof Error ? error.message : String(error)}。已列出的修改不会自动回滚，请检查实际文件后继续。`);

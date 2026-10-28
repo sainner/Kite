@@ -358,6 +358,47 @@ test('文件补丁保留外部修改并提示版本变化，拒绝不匹配补�
   expect(readdirSync(outside)).toEqual(['secret.txt']);
 }, 1000);
 
+// 两个真实 bug（crevo 项目，模型是 Claude）：
+// 1. Claude 每改一处列一项 update_file，同批里同一文件出现两项时整批被拒，报「同批补丁不能重复操作文件」；
+// 2. 删除行只写了长行中间的一段，上游 @openai/agents-core 的 applyDiff 按整行匹配（只容忍首尾空白），
+//    报 Invalid Context 0，什么都没写。
+// 后备何时生效取决于上游 applyDiff 对片段与多处出现的实际表现（抛错还是误匹配），需实际运行。
+test('同批多项补丁按顺序叠加到同一文件，只写长行片段的补丁替换唯一出现处，片段出现多处时整批不写', async () => {
+  const root = h.root();
+  const cwd = join(root, 'work');
+  mkdirSync(cwd);
+  const tools = localTools({ cwd, logDir: join(root, 'logs'), env: ENV() });
+  const longLine = '        <div>{children}<div className={compact ? "hidden" : "h-[calc(var(--crevo-composer-h,122px)+54px)]"} aria-hidden="true" /></div>';
+  writeFileSync(join(cwd, 'layout.tsx'), ['export function Shell({ children, compact }) {', '  return (', longLine, '  );', '}', ''].join('\n'));
+
+  // 第二项的上下文是第一项改出来的那一行，只有按顺序叠加才对得上。
+  const stacked = await execute(tools, 'patch', { operations: [
+    { type: 'update_file', path: 'layout.tsx', diff: '@@\n-export function Shell({ children, compact }) {\n+export function Shell({ children, compact = false }) {\n   return (' },
+    { type: 'update_file', path: 'layout.tsx', diff: '@@\n export function Shell({ children, compact = false }) {\n-  return (\n+  return compact === undefined ? null : (' },
+  ] }, cwd);
+  expect(stacked.status).toBe('success');
+  expect(stacked.output.match(/引用：layout\.tsx:/g)).toHaveLength(1);
+  const afterStack = ['export function Shell({ children, compact = false }) {', '  return compact === undefined ? null : (', longLine, '  );', '}', ''].join('\n');
+  expect(readFileSync(join(cwd, 'layout.tsx'), 'utf8')).toBe(afterStack);
+
+  const fragment = await execute(tools, 'patch', { operations: [{ type: 'update_file', path: 'layout.tsx',
+    diff: '@@\n-"h-[calc(var(--crevo-composer-h,122px)+54px)]"\n+"h-[calc(var(--crevo-composer-h,122px)_+_54px)]"' }] }, cwd);
+  expect(fragment.status).toBe('success');
+  const afterFragment = afterStack.replace('"h-[calc(var(--crevo-composer-h,122px)+54px)]"', '"h-[calc(var(--crevo-composer-h,122px)_+_54px)]"');
+  expect(afterFragment).not.toBe(afterStack);
+  expect(readFileSync(join(cwd, 'layout.tsx'), 'utf8')).toBe(afterFragment);
+
+  // 同批里能对上的那项也不写。
+  const twice = '<span className="hidden">甲</span>\n<span className="hidden">乙</span>\n';
+  writeFileSync(join(cwd, 'twice.tsx'), twice);
+  await rejectedOperation(execute(tools, 'patch', { operations: [
+    { type: 'update_file', path: 'layout.tsx', diff: '@@\n   );\n-}\n+} // 不应写入' },
+    { type: 'update_file', path: 'twice.tsx', diff: '@@\n-className="hidden"\n+className="block"' },
+  ] }, cwd));
+  expect(readFileSync(join(cwd, 'twice.tsx'), 'utf8')).toBe(twice);
+  expect(readFileSync(join(cwd, 'layout.tsx'), 'utf8')).toBe(afterFragment);
+}, 1000);
+
 // Bun spawn 的环境快照和操作系统进程组行为须实际运行：取消要等忽略 TERM 的后代也停下。
 test('命令继承显式环境并输出完整日志，取消等待整组退出', async () => {
   const root = h.root();
