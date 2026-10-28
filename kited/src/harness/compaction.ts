@@ -26,6 +26,14 @@ const stateKinds = new Set(['context.updated', 'agent.configuration.changed', 'e
 const isState = (kind: string) => stateKinds.has(kind) || kind.startsWith('claude.');
 /** 估算用量达到窗口的这个比例时自动压缩。 */
 export const AUTO_COMPACT_RATIO = 0.85;
+/**
+ * Claude 线程的空闲压缩：主循环上一次请求开始后一直空闲到这时，实测输入不少于门槛就在后台压缩。Claude 订阅的提示缓存保留
+ * 1 小时，赶在过期前做，摘要请求还能读缓存；过了最晚时刻（如机器睡眠错过了）缓存多半已过期，不压。时机同 Claude Code
+ * 的预先压缩（2026-10-28 按本机记录实测在空闲约 55 分钟时）。
+ */
+export const IDLE_COMPACT_AFTER_MS = 55 * 60_000;
+export const IDLE_COMPACT_LATEST_MS = 58 * 60_000;
+export const IDLE_COMPACT_TOKENS = 200_000;
 /** 自动压缩原样保留的人发消息总量。 */
 const RETAINED_HUMAN_TOKENS = 20_000;
 const IMAGE_TOKENS = 1_000;

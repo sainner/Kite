@@ -7,7 +7,7 @@ import type { Candidate } from './account-data/directory.ts';
 import { KiteError } from './errors.ts';
 import type { RuntimeEvent } from './events.ts';
 import type { RunnerState } from './claude/runner.ts';
-import { openClaudeHost } from './claude/host.ts';
+import { idleCompactionPending, openClaudeHost } from './claude/host.ts';
 import { assembleContext, restoreContext } from './harness/context/assembler.ts';
 import { contextUpdateContext, instancesChangedContext, rosterOf } from './harness/context/notifications.ts';
 import type { PluginInstance, ThreadContext } from './model.ts';
@@ -147,6 +147,10 @@ function selectTools(current: ThreadContext, operations: RuntimeHost['operations
   const permitted = (name: string) => effective.has(name) && (!operationNames.has(name) || selection.allowed.has(name));
   return { agent, selection, permitted, plugins: selection.plugins };
 }
+
+/** 空闲着也要打开的会话：Claude 会话定着还没到时的空闲压缩，kited 启动后打开它才接着计时。 */
+export const pendingWhileIdle = (home: string, thread: Pick<ThreadContext, 'id' | 'runtime'>) =>
+  thread.runtime === 'claude' && idleCompactionPending(join(home, 'sessions', thread.id));
 
 export async function openRuntime(s: ThreadContext, host: RuntimeHost): Promise<Runtime> {
   const { home, events: on, options, operations } = host;

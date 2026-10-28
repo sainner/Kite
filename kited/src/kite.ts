@@ -24,7 +24,7 @@ import { replicaDigest, replicaFiles, replicaManifest, replicaSources, ReplicaSt
 import { normalizeRemote, remoteHost } from './remote-url.ts';
 import { gitTry, isDirty, revParse } from './workspace/git.ts';
 import { fetchBranch, lsRemote, pushBranch, tracking } from './workspace/remote.ts';
-import { openRuntime, type Runtime, type RuntimeOptions } from './runtime.ts';
+import { openRuntime, pendingWhileIdle, type Runtime, type RuntimeOptions } from './runtime.ts';
 import { capture, changesBetween, findSnapshot, list, restore, rewindTarget, snapshotRef, type Snapshot } from './workspace/snapshots.ts';
 import { childChanged, commitParent, mergeChild, mergeParent } from './workspace/children.ts';
 import { compactTemplate } from './harness/compaction.ts';
@@ -1648,6 +1648,14 @@ export class Kite {
   continueInterrupted(): Promise<void> {
     return this.openInterrupted(this.store.threads().filter((t) => t.status === 'open' && this.store.workspace(t.workspaceId)?.status === 'open'
       && existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER))).map((t) => t.id));
+  }
+  /** kited 启动时打开空闲着也要打开的会话（见 pendingWhileIdle），如定着空闲压缩的 Claude 会话；被打断的由 continueInterrupted 打开。 */
+  openPendingIdle(): void {
+    for (const t of this.store.threads()) {
+      if (t.status !== 'open' || this.store.workspace(t.workspaceId)?.status !== 'open'
+        || existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER)) || !pendingWhileIdle(this.home, t)) continue;
+      void this.runner(this.context(t.id)).catch((error: Error) => console.error(`[打开会话] ${t.id}：${error.message}`));
+    }
   }
   /** 强制接管来的工作区：副本里被打断的会话在这台工作机上接着做，告诉代理原工作机可能还在执行。 */
   continueTakenOver(ids: string[]): void {

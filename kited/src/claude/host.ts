@@ -21,13 +21,21 @@ import { EXIT_LIMIT, exitOutcome, HarnessRunner, interruptionNotice } from '../h
 import { lockDirectory, markRunning, withThreadJournal } from '../harness/thread-host.ts';
 import { importClaude, syncToClaude } from '../handoff/handoff.ts';
 import { ClaudeSummaryModel } from './summary.ts';
-import { AUTO_COMPACT_RATIO } from '../harness/compaction.ts';
+import { AUTO_COMPACT_RATIO, IDLE_COMPACT_AFTER_MS, IDLE_COMPACT_LATEST_MS, IDLE_COMPACT_TOKENS } from '../harness/compaction.ts';
 import type { AgentDefinition } from '../agents/definition.ts';
 import type { Runtime, RuntimeEvents } from '../runtime.ts';
 
 /** 宿主与跨后端翻译共用的会话锁；返回释放函数。 */
 export function acquireClaudeLock(directory: string): () => void {
   return lockDirectory(join(directory, 'claude-lock'), () => new KiteError('Claude 会话仍被另一个宿主占用', 409));
+}
+
+/** 会话记录里定着还没过最晚时刻的空闲压缩：kited 启动时要打开这个会话，它才接着计时，见 scheduleIdleCompaction。 */
+export function idleCompactionPending(directory: string): boolean {
+  try {
+    const last = readClaudeControl(directory).lastRequest;
+    return !!last && last.tokens >= IDLE_COMPACT_TOKENS && Date.now() - last.at <= IDLE_COMPACT_LATEST_MS;
+  } catch { return false; }
 }
 
 export async function openClaudeHost(options: {
@@ -84,6 +92,9 @@ export async function openClaudeHost(options: {
   let compactionAbort: AbortController | undefined;
   /** 本回合最近一次主循环模型请求的实测输入 token，收尾时与窗口比较判断要不要自动压缩；压缩后清除。 */
   let measured: number | undefined;
+  /** 主循环当前这次请求开始流式返回的时刻，缓存在这之前刚被读过、续了期。 */
+  let requestAt: number | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let currentModel = '';
   let windowQuery: AbortController | undefined;
   const publish = () => options.events.emit({ type: 'claude.control', state: claudeState(data, phase, !!compacting) });
@@ -201,6 +212,7 @@ export async function openClaudeHost(options: {
     if (!closing && !data.paused && options.compaction && window !== undefined && measured !== undefined && measured >= Math.floor(window * AUTO_COMPACT_RATIO)) {
       void compaction({ compact: { id: randomUUID(), automatic: true } }).catch(() => {});
     }
+    scheduleIdleCompaction();
     if (!closing && !data.paused && data.inputs.some((entry) => entry.status === 'queued')) pump();
     else options.events.idle(data.outcome);
   };
@@ -218,9 +230,9 @@ export async function openClaudeHost(options: {
   /**
    * Claude 线程的压缩与撤销：停下空闲的常驻进程，把 Claude 内容导入 journal，在 journal 上按 harness 的规则压缩或撤销，
    * 再按结果重组 Claude 会话，下一回合启动进程时从重组后的会话恢复。范围校验在返回前完成，摘要与重组在后台进行；
-   * 自动压缩失败时暂停会话，等待显式继续。
+   * 自动压缩失败时暂停会话，等待显式继续；空闲压缩没写下记录就失败的只报告错误，上下文照旧能用。
    */
-  const compaction = (action: { compact: CompactionRequest } | { revert: string }): Promise<void> => {
+  const compaction = (action: { compact: CompactionRequest } | { revert: string }, idle = false): Promise<void> => {
     requireStorage();
     const settings = options.compaction;
     if (!settings) return Promise.reject(new KiteError('这台工作机未开放 Claude 线程的压缩', 409));
@@ -265,14 +277,14 @@ export async function openClaudeHost(options: {
         if (errors.length) throw new Error(errors.join('\n'));
       });
       await rebuild(prepared.agent.model.model);
-      measured = undefined;
+      measured = undefined; data.lastRequest = undefined; save();
     })();
     compacting = job.catch((error: unknown) => {
       if (!checked) { validated(error); return; }
       if (abort.signal.aborted) return;
       const message = error instanceof Error ? error.message : String(error);
       // 记录已写入而会话未重组时，继续之前须先补做重组，暂停等待显式继续。
-      if (automatic || recorded) { data.outcome = { kind: 'failed', message: `上下文压缩未完成：${message}` }; data.paused = true; save(); }
+      if ((automatic && !idle) || recorded) { data.outcome = { kind: 'failed', message: `上下文压缩未完成：${message}` }; data.paused = true; save(); }
       options.events.emit({ type: 'error', message });
     }).finally(() => {
       compacting = undefined; compactionAbort = undefined; publish();
@@ -280,6 +292,22 @@ export async function openClaudeHost(options: {
     });
     publish();
     return accepted;
+  };
+  /**
+   * 空闲压缩：回合结束后一直空闲，赶在上次请求的缓存过期前在后台按自动压缩的规则压缩，人回来时上下文已经小了，不用等；
+   * 时机与门槛见 IDLE_COMPACT_AFTER_MS。之后又有请求、压缩或回退时，这次定时作废。
+   */
+  const scheduleIdleCompaction = () => {
+    clearTimeout(idleTimer); idleTimer = undefined;
+    const last = data.lastRequest;
+    if (!options.compaction || !last || last.tokens < IDLE_COMPACT_TOKENS) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      if (data.lastRequest !== last || Date.now() - last.at > IDLE_COMPACT_LATEST_MS) return;
+      if (closing || data.paused || data.inputs.some((entry) => entry.status !== 'done' && entry.status !== 'cancelled')) return;
+      void compaction({ compact: { id: randomUUID(), automatic: true } }, true).catch(() => {});
+    }, Math.max(0, last.at + IDLE_COMPACT_AFTER_MS - Date.now()));
+    idleTimer.unref();
   };
   /**
    * 进程随实例常驻，在实例归档、切换后端、手动停止或 kited 退出时结束。模型、思考强度和工具集合只在启动时
@@ -353,8 +381,11 @@ export async function openClaudeHost(options: {
       }) }),
     }, {
       message(message) {
+        if (message.type === 'stream_event' && message.parent_tool_use_id === null && message.event.type === 'message_start') requestAt = Date.now();
         if (message.type === 'assistant' && message.parent_tool_use_id === null) {
           measured = claudeInputTokens(message.message.usage);
+          // 随下一次保存落盘，kited 重启后空闲压缩照样按它定时。
+          if (measured !== undefined) data.lastRequest = { at: requestAt ?? Date.now(), tokens: measured };
         }
         if (message.type === 'result') terminal = message.is_error
           ? { kind: 'failed', message: 'errors' in message ? message.errors.join('\n') : 'Claude 执行失败' } : { kind: 'completed' };
@@ -439,6 +470,8 @@ export async function openClaudeHost(options: {
     try { save(); } catch { /* 写不进记录时 broken 已经为真。 */ }
   }
   publish();
+  // kited 重启前定下的空闲压缩接着算；被退出打断、等人继续的会话暂停着，到时不压。
+  scheduleIdleCompaction();
   return {
     get state() { return phase; }, get busy() { return phase !== 'idle' || !!compacting; }, get broken() { return storageFailed; },
     async send(input, skill) {
@@ -536,7 +569,7 @@ export async function openClaudeHost(options: {
         data.outcome = { kind: 'failed', message: `回退没有完成：${(error as Error).message}` }; data.paused = true; save(); publish();
         throw new KiteError(data.outcome.message, 409);
       }
-      measured = undefined;
+      measured = undefined; data.lastRequest = undefined;
       data.outcome = undefined; data.paused = false; data.exited = false; data.exits = 0; interrupted = false;
       save(); publish();
       return result;
@@ -563,7 +596,7 @@ export async function openClaudeHost(options: {
       interrupted = false; data.paused = false; save(); pump();
     },
     async shutdown() {
-      closing = true; controller.abort();
+      closing = true; controller.abort(); clearTimeout(idleTimer);
       windowQuery?.abort();
       compactionAbort?.abort();
       // 中途出错（写不进记录、Claude 没确认清空队列）也等进程与收尾结束、释放锁，否则线程在 kited 重启前一直打不开。

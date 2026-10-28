@@ -24,6 +24,8 @@ const schema = z.object({
   importedInputs: z.array(z.string()).default([]),
   /** CLI 上报的运行窗口，按配置模型保存：同一模型之后的请求（含回合中途）沿用，换模型时作废。 */
   contextWindow: z.object({ model: z.string().min(1), tokens: z.number().int().positive() }).optional(),
+  /** 主循环最近一次模型请求的开始时刻与实测输入 token，空闲压缩据此定时；压缩、撤销压缩或回退后清除。 */
+  lastRequest: z.object({ at: z.number(), tokens: z.number().int().nonnegative() }).optional(),
   outcome: z.discriminatedUnion('kind', [z.object({ kind: z.literal('completed') }), z.object({ kind: z.literal('interrupted') }),
     z.object({ kind: z.literal('failed'), message: z.string() })]).optional(),
   /** 回合被 kited 退出打断（关闭时停下，或打开时发现崩溃），还没接着做；下一回合开始或人停下时清除，见 openClaudeHost。 */

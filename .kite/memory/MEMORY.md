@@ -17,6 +17,7 @@
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
 - [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用 ORICO；数据目录搬家后旧工作区 Git 指针要改真实路径
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、术语词典与整理后做、点阵表现、未选的识别候选
+- [Claude Code 的空闲压缩](claude-code-idle-compaction.md) — 它多在空闲约 55 分钟时压缩；两边积攒速度实测；Kite 已加空闲压缩，待真实会话验收
 
 ## 协作反馈
 
