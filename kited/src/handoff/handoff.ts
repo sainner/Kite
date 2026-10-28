@@ -27,8 +27,8 @@ import type { RuntimeKind, ThreadContext } from '../model.ts';
 import { appendClaudeEntries, readClaudeEntries, type ClaudeEntry } from './claude-records.ts';
 
 const object = (value: unknown): Record<string, any> => value && typeof value === 'object' ? value as Record<string, any> : {};
-// 另有只写进记录、不发给模型的标记附件。
-const skippedAttachments = new Set<string>([...engineAttachmentTypes, 'batching_reminder_sent', 'thinking_stripped']);
+// 另有只写进记录、不发给模型的标记附件；thinking_drop 是 API 回报服务端丢弃 thinking 的诊断，不像 thinking_stripped 那样改变后续发出的块。
+const skippedAttachments = new Set<string>([...engineAttachmentTypes, 'batching_reminder_sent', 'thinking_stripped', 'thinking_drop']);
 const isThinking = (block: Record<string, unknown>) => block.type === 'thinking' || block.type === 'redacted_thinking';
 
 /**
