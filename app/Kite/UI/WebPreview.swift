@@ -36,7 +36,7 @@ enum WebSource: Equatable {
 }
 
 /// 网页类成果共用的视图，浏览里的静态 HTML、网页与预览的网页画面都用它。页面是不可信内容，与 App 隔离：
-/// 没有原生桥，网站数据与 App 的其他网页分开；下载一律拒绝。静态 HTML 和预览的主框架只停在自己的目标上，去别处的链接交给 openURL（工作区里在浏览里打开）；
+/// 没有原生桥，网站数据与 App 的其他网页分开；下载一律拒绝，上传只拿到用户在系统面板里选的文件。静态 HTML 和预览的主框架只停在自己的目标上，去别处的链接交给 openURL（工作区里在浏览里打开）；
 /// 浏览里的网页可以去任何网址，只是进不了工作机服务自己的地址（见 WebRoaming）。页面不经组网，拿不到组网身份。
 struct WebPreview: View {
     let source: WebSource
@@ -94,7 +94,12 @@ struct WebPreview: View {
         }
         // 浏览里新窗口打开的链接在同一个页面里打开
         let follow: @MainActor (URL) -> Void = { [browser] url in browser?.open(url) }
-        let page = WebPage(configuration: configuration, navigationDecider: WebNavigation(source: source, openURL: { openURL($0) }, follow: follow))
+        let navigation = WebNavigation(source: source, openURL: { openURL($0) }, follow: follow)
+        #if os(macOS)
+        let page = WebPage(configuration: configuration, navigationDecider: navigation, dialogPresenter: WebDialogs())
+        #else
+        let page = WebPage(configuration: configuration, navigationDecider: navigation)
+        #endif
         // Safari 的网页检查器连得上：iPhone、iPad 没有自带的检查器，接上 Mac 后从 Safari 的「开发」菜单里选设备名下的这个页面；
         // Mac 上在 Kite 里直接打开（见 WebBrowser.inspect）。检查器由用户打开，页面碰不到它，隔离不变。
         page.isInspectable = true
@@ -360,6 +365,21 @@ private struct WebNavigation: WebPage.NavigationDeciding {
         response.canShowMimeType ? .allow : .cancel
     }
 }
+
+#if os(macOS)
+/// 网页里的上传（<input type="file">）：Mac 上 WebPage 不给处理就当用户点了取消，点上传没反应，所以弹系统的打开面板。
+/// iOS、iPadOS 不接，WebKit 照 Safari 的样子自己弹。
+private struct WebDialogs: WebPage.DialogPresenting {
+    func handleFileInputPrompt(parameters: WKOpenPanelParameters, initiatedBy frame: WebPage.FrameInfo) async -> WebPage.FileInputPromptResult {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.canChooseDirectories = parameters.allowsDirectories
+        // 上传要用户点了才弹，这时网页所在的就是 key 窗口
+        let response = if let window = NSApp.keyWindow { await panel.beginSheetModal(for: window) } else { await panel.begin() }
+        return response == .OK ? .selected(panel.urls) : .cancel
+    }
+}
+#endif
 
 #if os(macOS)
 /// 开发者工具用的是 WebKit 的私有接口：开发者选项（右键菜单里的「检查元素」）和检查器（_inspector）。Mac 版用 Developer ID 发布、不经商店审核；
