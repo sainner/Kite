@@ -1,7 +1,5 @@
 import SwiftUI
 
-let sidebarRowShape = RoundedRectangle(cornerRadius: 8)
-
 /// 侧栏的行高、图标列与行首留白，以两端的尺寸为基准，由 SidebarScaledMetrics 按系统字号换算。
 struct SidebarMetrics {
     var rowHeight = InputMode.current.rowHeight
@@ -17,6 +15,8 @@ struct SidebarMetrics {
     var textInset: CGFloat { itemInset + 8 + labelExtent }
     /// 树干位置，与一级行的图标列中线对齐。
     var treeInset: CGFloat { itemInset + labelExtent / 2 }
+    /// 树枝那一块（SidebarTreeLink）的宽：从树干到文字起点再多 6，枝的末端从这里往回收 SidebarTreeBranch.endInset。
+    var branchWidth: CGFloat { textInset - treeInset + 6 }
     /// 子工作区比父工作区多缩进的一层。
     var childIndent: CGFloat { labelExtent / 2 + 4 }
     /// 小标题连同上方留白的高度。
@@ -99,7 +99,7 @@ struct SidebarButtonStyle: ButtonStyle {
                 .frame(width: size, height: size)
                 .foregroundStyle(hovered && isEnabled ? highlight : foreground)
                 .environment(\.sidebarButtonHovered, hovered && isEnabled)
-                .contentShape(sidebarRowShape)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
                 .opacity(!isEnabled ? 0.45 : configuration.isPressed ? 0.7 : 1)
                 .onHover { hovered = $0 }
                 .clickPointer()
@@ -128,14 +128,9 @@ struct SidebarIconTint: ViewModifier {
 struct SidebarRevealedControl: ViewModifier {
     var pinned = false
     @Environment(\.sidebarRowControlsShown) private var rowShown
-    @Environment(\.sidebarTuck) private var tuck
 
     func body(content: Content) -> some View {
-        let shown = (pinned || rowShown) && tuck == 0
-        return content
-            .opacity(shown ? 1 : 0)
-            .allowsHitTesting(shown)
-            .accessibilityHidden(!shown)
+        content.modifier(SidebarExpandedOnly(shown: pinned || rowShown))
     }
 }
 
@@ -201,12 +196,13 @@ extension Optional where Wrapped == SidebarExpansion {
     func binding(_ id: AnyHashable, selected: Bool) -> Binding<Bool> { self?.binding(id, selected: selected) ?? .constant(true) }
 }
 
-/// 只在展开的侧栏里有的部分（名字、数字、行尾操作）：侧栏收起时淡掉，同时让出点击与辅助功能。
+/// 只在展开的侧栏里有的部分（名字、数字、行尾操作）：侧栏收起时淡掉，同时让出点击与辅助功能。shown 是展开时露不露。
 struct SidebarExpandedOnly: ViewModifier {
+    var shown = true
     @Environment(\.sidebarTuck) private var tuck
 
     func body(content: Content) -> some View {
-        let shown = tuck == 0
+        let shown = self.shown && tuck == 0
         content
             .opacity(shown ? 1 : 0)
             .allowsHitTesting(shown)
@@ -347,12 +343,6 @@ struct SidebarTreeRow<Content: View, Target: View>: View {
                 }
             }
             .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-extension SidebarTreeRow where Target == EmptyView {
-    init(selected: Bool, @ViewBuilder content: @escaping () -> Content) {
-        self.init(selected: selected, content: content) { EmptyView() }
     }
 }
 
@@ -549,7 +539,7 @@ struct SidebarTreeRows<Item: Identifiable, Row: View>: View {
                                 checkoutSelected: selectedIndex != nil,
                                 selected: selected, dimmed: dimmed(item), color: tint.mix(with: Theme.background, by: 0.8),
                                 bead: tint.mix(with: Theme.background, by: 0.6))
-                    .frame(width: metrics.textInset - metrics.treeInset + 6)
+                    .frame(width: metrics.branchWidth)
                     .padding(.leading, metrics.treeInset)
                     .allowsHitTesting(false)
             }
@@ -609,7 +599,7 @@ private struct SidebarTreeLink: View {
     private var beadView: some View {
         let collapsed = tuck > 0
         let size: CGFloat = selected ? 8 : 6
-        let tip = metrics.textInset - metrics.treeInset + 6 - SidebarTreeBranch.endInset
+        let tip = metrics.branchWidth - SidebarTreeBranch.endInset
         return Circle().fill(selected ? highlight : bead)
             .frame(width: size, height: size)
             .scaleEffect(collapsed ? 1 : 0.2)

@@ -55,7 +55,7 @@ export interface Runtime {
   compact?(request: CompactionRequest): Promise<void>;
   revertCompaction?(id: string): Promise<void>;
   /** 见 ThreadRunner.rewind。 */
-  rewind?(inputId: string, dryRun?: boolean): Promise<{ calls: string[] }>;
+  rewind(inputId: string, dryRun?: boolean): Promise<{ calls: string[] }>;
 }
 
 

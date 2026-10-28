@@ -28,7 +28,7 @@ import AppKit
         let now = CACurrentMediaTime()
         fades.append((range, now))
         // 新字刚放进去，排好才量得出它在哪
-        if let layout = view.textLayoutManager, let textRange = Self.textRange(range, in: layout) {
+        if let layout = view.textLayoutManager, let textRange = layout.textRange(for: range) {
             layout.ensureLayout(for: textRange)
         }
         guard step(now) else { return }
@@ -125,8 +125,8 @@ import AppKit
     /// 这段字占的地方（视图坐标），一行一块，高是整行的高（盖住行内代码的底色）。新起的一行往左伸到头，
     /// 引用的竖线、列表的符号跟着这一行淡入。
     private func rects(of range: NSRange, in view: PlatformTextView, layout: NSTextLayoutManager, string: NSString) -> [CGRect] {
-        guard let textRange = Self.textRange(range, in: layout) else { return [] }
-        let origin = Self.containerOrigin(view)
+        guard let textRange = layout.textRange(for: range) else { return [] }
+        let origin = view.textContainerOrigin
         var rects: [CGRect] = []
         layout.enumerateTextSegments(in: textRange, type: .selection, options: [.rangeNotRequired]) { _, frame, _, _ in
             rects.append(frame.offsetBy(dx: origin.x, dy: origin.y))
@@ -150,18 +150,4 @@ import AppKit
 
     /// 文本视图的层：iOS 上总有，Mac 上是可选的。
     private static func layer(of view: PlatformTextView) -> CALayer? { view.layer }
-
-    private static func containerOrigin(_ view: PlatformTextView) -> CGPoint {
-        #if canImport(UIKit)
-        CGPoint(x: view.textContainerInset.left, y: view.textContainerInset.top)
-        #else
-        view.textContainerOrigin
-        #endif
-    }
-
-    private static func textRange(_ range: NSRange, in layout: NSTextLayoutManager) -> NSTextRange? {
-        guard let start = layout.location(layout.documentRange.location, offsetBy: range.location),
-              let end = layout.location(start, offsetBy: range.length) else { return nil }
-        return NSTextRange(location: start, end: end)
-    }
 }

@@ -30,11 +30,15 @@ export function acquireClaudeLock(directory: string): () => void {
   return lockDirectory(join(directory, 'claude-lock'), () => new KiteError('Claude 会话仍被另一个宿主占用', 409));
 }
 
+/** 上次请求定下的空闲压缩还作数：实测输入够门槛，也没过最晚时刻。 */
+const idleCompactionLive = (last: { at: number; tokens: number }) =>
+  last.tokens >= IDLE_COMPACT_TOKENS && Date.now() - last.at <= IDLE_COMPACT_LATEST_MS;
+
 /** 会话记录里定着还没过最晚时刻的空闲压缩：kited 启动时要打开这个会话，它才接着计时，见 scheduleIdleCompaction。 */
 export function idleCompactionPending(directory: string): boolean {
   try {
     const last = readClaudeControl(directory).lastRequest;
-    return !!last && last.tokens >= IDLE_COMPACT_TOKENS && Date.now() - last.at <= IDLE_COMPACT_LATEST_MS;
+    return !!last && idleCompactionLive(last);
   } catch { return false; }
 }
 
@@ -227,6 +231,8 @@ export async function openClaudeHost(options: {
   /** 按 journal 现在的上下文重组 Claude 会话，下一回合启动进程时从这里恢复；没有要交接的内容时不动会话。 */
   const rebuild = (model = options.prepare(data.through).agent.model.model) =>
     syncToClaude(options.directory, options.cwd, options.nativeId, model);
+  /** 压缩、回退这类改动历史的操作要会话空闲：没在关闭、压缩、停止，也没在执行回合。 */
+  const busy = () => closing || compacting || stopping || phase !== 'idle';
   /**
    * Claude 线程的压缩与撤销：停下空闲的常驻进程，把 Claude 内容导入 journal，在 journal 上按 harness 的规则压缩或撤销，
    * 再按结果重组 Claude 会话，下一回合启动进程时从重组后的会话恢复。范围校验在返回前完成，摘要与重组在后台进行；
@@ -236,7 +242,7 @@ export async function openClaudeHost(options: {
     requireStorage();
     const settings = options.compaction;
     if (!settings) return Promise.reject(new KiteError('这台工作机未开放 Claude 线程的压缩', 409));
-    if (closing || compacting || stopping || phase !== 'idle') return Promise.reject(new KiteError('会话正在执行，空闲后才能压缩', 409));
+    if (busy()) return Promise.reject(new KiteError('会话正在执行，空闲后才能压缩', 409));
     const automatic = 'compact' in action && !('from' in action.compact) && action.compact.automatic === true;
     const abort = new AbortController();
     let checked = false;
@@ -300,10 +306,10 @@ export async function openClaudeHost(options: {
   const scheduleIdleCompaction = () => {
     clearTimeout(idleTimer); idleTimer = undefined;
     const last = data.lastRequest;
-    if (!options.compaction || !last || last.tokens < IDLE_COMPACT_TOKENS) return;
+    if (!options.compaction || !last || !idleCompactionLive(last)) return;
     idleTimer = setTimeout(() => {
       idleTimer = undefined;
-      if (data.lastRequest !== last || Date.now() - last.at > IDLE_COMPACT_LATEST_MS) return;
+      if (data.lastRequest !== last || !idleCompactionLive(last)) return;
       if (closing || data.paused || data.inputs.some((entry) => entry.status !== 'done' && entry.status !== 'cancelled')) return;
       void compaction({ compact: { id: randomUUID(), automatic: true } }, true).catch(() => {});
     }, Math.max(0, last.at + IDLE_COMPACT_AFTER_MS - Date.now()));
@@ -555,7 +561,7 @@ export async function openClaudeHost(options: {
     /** 同压缩：把 Claude 内容导入 journal，在 journal 上回退，再按结果重组 Claude 会话，下一回合从重组后的会话恢复。 */
     async rewind(inputId, dryRun = false) {
       requireStorage();
-      if (closing || compacting || stopping || phase !== 'idle') throw new KiteError('会话正在执行，空闲后才能回退', 409);
+      if (busy()) throw new KiteError('会话正在执行，空闲后才能回退', 409);
       if (data.inputs.some((entry) => entry.status === 'queued' || entry.status === 'submitted')) throw new KiteError('还有没交给代理的消息，处理完再回退', 409);
       // 只核对时进程照样闲着；要重组会话就得先停下它。
       await importForReshape(!dryRun);

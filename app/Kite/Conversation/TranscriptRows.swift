@@ -24,6 +24,11 @@ struct TranscriptRow: Identifiable {
 
     var isMessage: Bool { content.isMessage }
 
+    /// 生成中的 agent 的话：照生成中的样子画（补齐半截的 Markdown、新字淡入），变高时缓过去（见 TranscriptArrangement.arrange）。
+    var streamingText: Bool {
+        if case .item(let item) = content, case .text = item.kind { item.generation == "streaming" } else { false }
+    }
+
     /// 一串记录排成的行，排队中的消息接在最后。
     static func rows(items: [Item], pending: [Queued]) -> [TranscriptRow] {
         var rows: [TranscriptRow] = []
@@ -59,7 +64,7 @@ struct TranscriptRow: Identifiable {
         case .item(let item):
             item.kind.shape(into: &hasher)
             // agent 的话写完时字数可能没变，生成中的样子（补齐的 Markdown、淡入）要换回原文
-            if case .text = item.kind { hasher.combine(item.generation == "streaming") }
+            hasher.combine(streamingText)
         case .message(let message, let queued, let sender):
             hasher.combine(queued)
             hasher.combine(sender)

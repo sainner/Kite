@@ -139,11 +139,10 @@ final class LineNumberGutter: PlatformView {
 
     override func draw(_ rect: CGRect) {
         guard let textView, let styler, let manager = textView.textLayoutManager else { return }
+        let inset = textView.textContainerOrigin
         #if canImport(UIKit)
-        let inset = CGPoint(x: textView.textContainerInset.left, y: textView.textContainerInset.top)
         let visible = textView.bounds
         #else
-        let inset = textView.textContainerOrigin
         let visible = textView.visibleRect
         #endif
         let attributes: [NSAttributedString.Key: Any] = [.font: font.monospacedDigits, .foregroundColor: PlatformColor.tertiaryLabel]

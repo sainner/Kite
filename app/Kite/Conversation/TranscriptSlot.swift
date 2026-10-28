@@ -46,11 +46,6 @@ extension TranscriptRowContext {
     /// 刚发出去、还在下面藏着的程度：1 在下面，0 到位，见 TranscriptListView 的发送。
     var rise: CGFloat = 0
 
-    /// 生成中的 agent 的话：变高时缓过去，见 TranscriptArrangement.arrange。
-    var growsSmoothly: Bool {
-        if case .item(let item) = row.content, case .text = item.kind { item.generation == "streaming" } else { false }
-    }
-
     init(row: TranscriptRow) {
         id = row.id
         self.row = row
@@ -80,6 +75,15 @@ extension TranscriptRowContext {
 
     /// 视图在文档里的 frame：column 是这一行在内容列里占的范围。
     func viewFrame(in column: CGRect) -> CGRect { column }
+
+    /// 正文的视图摆在多高的范围里：流式变高的动画中（见 TranscriptArrangement 的 growth）行比字矮，文本视图照量出来的高摆，
+    /// 不跟着每帧改高，新的一行在淡入，压着下面一点不显眼。
+    func textColumn(_ column: CGRect) -> CGRect {
+        guard let measured, measured.width == column.width else { return column }
+        var column = column
+        column.size.height = max(column.height, measured.height)
+        return column
+    }
 
     /// 视图摆好以后摆里面的东西：frame 是这一行这会儿的范围（展开收起的动画中和量的高不一样）。
     func layoutView(in frame: CGRect) {}

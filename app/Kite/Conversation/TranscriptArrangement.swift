@@ -187,7 +187,7 @@ enum TranscriptPlacement: Equatable {
                 waiting = true
             }
             // 生成中的话量出来的高变了（多了一行）：从眼下的高缓过去，跟着最底下时整列滑上去，不一下跳一行。拖缝、换了宽不算
-            if slot.growsSmoothly, close, !resizing {
+            if slot.row.streamingText, close, !resizing {
                 if let last = growth[slot.id], last.width == columnWidth, abs(last.height - height) > 0.5, old.height > 0 {
                     heightAnimations[slot.id] = HeightAnimation(from: old.height, motion: Self.growthMotion)
                 }

@@ -2,10 +2,24 @@ import SwiftUI
 #if canImport(UIKit)
 import UIKit
 typealias PlatformTextView = UITextView
+
+extension UITextView {
+    /// 文本容器在视图里的原点，同 NSTextView 的 textContainerOrigin。
+    var textContainerOrigin: CGPoint { CGPoint(x: textContainerInset.left, y: textContainerInset.top) }
+}
 #else
 import AppKit
 typealias PlatformTextView = NSTextView
 #endif
+
+extension NSTextLayoutManager {
+    /// 文本里 range 那一段（按 UTF-16 数）在 TextKit 2 里的范围。
+    func textRange(for range: NSRange) -> NSTextRange? {
+        guard let start = location(documentRange.location, offsetBy: range.location),
+              let end = location(start, offsetBy: range.length) else { return nil }
+        return NSTextRange(location: start, end: end)
+    }
+}
 
 /// 对话正文文本视图（Mac 的 ProseTextView、iOS 的 PhoneProseTextView）共用的协调器：流式只补末尾的字、新字淡入、
 /// 附件变高后重排那一段、行内代码和引用的装饰片段。两端原生列表的行和 Mac 的表格卡片各持一个。
@@ -105,9 +119,7 @@ class ProseTextCoordinator: NSObject, NSTextLayoutManagerDelegate {
         guard let view, let layout = view.textLayoutManager, let storage else { return }
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
             guard let attachment = value as? BlockAttachment, changed.contains(where: { $0 === attachment }),
-                  let start = layout.location(layout.documentRange.location, offsetBy: range.location),
-                  let end = layout.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end) else { return }
+                  let textRange = layout.textRange(for: range) else { return }
             layout.invalidateLayout(for: textRange)
         }
         #if canImport(UIKit)

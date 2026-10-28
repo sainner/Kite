@@ -1646,16 +1646,21 @@ export class Kite {
    * 交接中或已流转走的停在等待继续。都打开完（打不开的已记下）时返回。
    */
   continueInterrupted(): Promise<void> {
-    return this.openInterrupted(this.store.threads().filter((t) => t.status === 'open' && this.store.workspace(t.workspaceId)?.status === 'open'
-      && existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER))).map((t) => t.id));
+    return this.openInterrupted(this.openThreads().filter((t) => existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER))).map((t) => t.id));
   }
-  /** kited 启动时打开空闲着也要打开的会话（见 pendingWhileIdle），如定着空闲压缩的 Claude 会话；被打断的由 continueInterrupted 打开。 */
+  /**
+   * kited 启动时打开空闲着也要打开的会话（见 pendingWhileIdle），如定着空闲压缩的 Claude 会话。和 continueInterrupted 打开同一个的
+   * 由 runner 合成一次打开。
+   */
   openPendingIdle(): void {
-    for (const t of this.store.threads()) {
-      if (t.status !== 'open' || this.store.workspace(t.workspaceId)?.status !== 'open'
-        || existsSync(join(this.home, 'sessions', t.id, RUNNING_MARKER)) || !pendingWhileIdle(this.home, t)) continue;
+    for (const t of this.openThreads()) {
+      if (!pendingWhileIdle(this.home, t)) continue;
       void this.runner(this.context(t.id)).catch((error: Error) => console.error(`[打开会话] ${t.id}：${error.message}`));
     }
+  }
+  /** 开着、所在工作区也开着的会话：kited 启动时从这里面挑要打开的。 */
+  private openThreads() {
+    return this.store.threads().filter((t) => t.status === 'open' && this.store.workspace(t.workspaceId)?.status === 'open');
   }
   /** 强制接管来的工作区：副本里被打断的会话在这台工作机上接着做，告诉代理原工作机可能还在执行。 */
   continueTakenOver(ids: string[]): void {
@@ -1999,13 +2004,14 @@ export class Kite {
     return this.controlThread(id, async () => {
       const t = this.openThread(id);
       const r = await this.runner(t);
-      if (!r.rewind) throw new KiteError('这个后端暂不支持回退', 409);
       // 只核对时不要求其他线程空闲：确认框要能弹出来，只回退对话也用不着它们停下。
       if (options.files && !options.preview) await this.assertIdle(t.workspaceId);
-      const [plan, snapshots] = await Promise.all([r.rewind(inputId, true), options.files ? this.snapshots(t.workspaceId) : undefined])
+      // 只回退对话时不必先核对一遍：真回退自己也校验，Claude 线程每核对一次都要把会话整份导入一遍。
+      const [plan, snapshots] = await Promise.all([options.files || options.preview ? r.rewind(inputId, true) : undefined,
+        options.files ? this.snapshots(t.workspaceId) : undefined])
         .catch((error: Error) => { throw error instanceof KiteError ? error : new KiteError(error.message, 409); });
       let files: RewindResult['files'];
-      if (snapshots) {
+      if (plan && snapshots) {
         const point = rewindTarget(snapshots, plan.calls);
         if (point) {
           const others = [...new Set(point.undone.flatMap((snapshot) => snapshot.threadId && snapshot.threadId !== id ? [snapshot.threadId] : []))];

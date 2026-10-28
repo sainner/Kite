@@ -109,7 +109,7 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
         guard case .item(let item) = row.content, case .text(let source) = item.kind else { return }
         self.context = context
         // 生成中：半截的 Markdown 先按写完的样子显示，新放出来的字淡入
-        streaming = item.generation == "streaming"
+        streaming = row.streamingText
         self.source = streaming ? StreamingMarkdown.settle(source) : source
         // 原文、环境换了，要看的引用图标跟着换
         tracking.cancel()
@@ -226,12 +226,10 @@ final class PhoneProseRowSlot: TranscriptRowSlot, PhoneRowSlot {
     }
 
     /// 视图宽固定（见 PhoneProseTextView.clipViewport），字排在容器的宽里：改宽时视图不变，只有容器变。
-    /// 流式变高的动画中（见 TranscriptArrangement 的 growth）行比字矮：文本视图照量出来的高摆，不跟着每帧改高，新的一行在淡入，压着下面一点不显眼。
     override func viewFrame(in column: CGRect) -> CGRect {
-        var height = column.height
-        if let measured, measured.width == column.width { height = max(height, measured.height) }
+        let column = textColumn(column)
         return CGRect(x: column.minX - Metrics.inlineCodePadding, y: column.minY + topInset,
-                      width: PhoneProseTextView.widest, height: height - topInset)
+                      width: PhoneProseTextView.widest, height: column.height - topInset)
     }
 
     func didPlace() {}

@@ -87,7 +87,7 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
             ? [NSAccessibilityCustomAction(name: TranscriptSpeech.actions) { context.toggleActions(id); return true }] : nil)
         environment = context.environment
         // 生成中：半截的 Markdown 先按写完的样子显示，新放出来的字淡入
-        let streaming = item.generation == "streaming"
+        let streaming = row.streamingText
         body.show(streaming ? StreamingMarkdown.settle(source) : source, environment: context.environment,
                   font: context.environment.font ?? .body, color: .label, streaming: streaming)
     }
@@ -130,11 +130,8 @@ final class ProseRowSlot: TranscriptRowSlot, ActionBarProviding {
         layout.pinShift(text)
     }
 
-    /// 流式变高的动画中（见 TranscriptArrangement 的 growth）行比字矮：文本视图照量出来的高摆，不跟着每帧改高，新的一行在淡入，压着下面一点不显眼。
     override func viewFrame(in column: CGRect) -> CGRect {
-        var column = column
-        if let measured, measured.width == column.width { column.size.height = max(column.height, measured.height) }
-        return body.frame(in: column)
+        body.frame(in: textColumn(column))
     }
 
     /// 容器跟着摆好的视图的宽（视图两边各伸出 inlineCodePadding），拖缝中留在原来的宽的除外。

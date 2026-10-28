@@ -301,7 +301,7 @@ final class WorkThread: Identifiable {
             streamingChanges.insert(index)
             if streamingRefresh == nil {
                 streamingRefresh = Task { [weak self] in
-                    do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+                    do { try await Task.sleep(for: StreamPacer.tick) } catch { return }
                     self?.flushStreaming()
                 }
             }
@@ -335,11 +335,17 @@ final class WorkThread: Identifiable {
     private func flushStreaming() {
         streamingRefresh?.cancel()
         streamingRefresh = nil
-        for index in streamingChanges.sorted() {
-            guard let visibleIndex = visiblePositions[index], let record = remoteRecords[index].record else { continue }
-            transcript.replaceRecord(at: visibleIndex, with: record)
-        }
+        replaceRecords(streamingChanges.sorted())
         streamingChanges.removeAll(keepingCapacity: true)
+    }
+
+    /// 把这几条记录（remoteRecords 里的位置）的新样子换进显示的记录；shape 改换上去的样子（放字中只给放出来的那截）。
+    private func replaceRecords(_ indices: some Sequence<Int>, shape: (Int, Record) -> Record = { $1 }) {
+        for index in indices {
+            guard remoteRecords.indices.contains(index), let visibleIndex = visiblePositions[index],
+                  let record = remoteRecords[index].record else { continue }
+            transcript.replaceRecord(at: visibleIndex, with: shape(index, record))
+        }
     }
 
     /// 主对话里 agent 的话收到了字（之前显示到 shown）：交给放字的循环，没在跑就起一个。
@@ -368,10 +374,7 @@ final class WorkThread: Identifiable {
             guard remoteRecords.indices.contains(index), let text = remoteRecords[index].block.text else { return nil }
             return (text, remoteRecords[index].generation)
         }
-        for index in moved {
-            guard let visibleIndex = visiblePositions[index], let record = remoteRecords[index].record else { continue }
-            transcript.replaceRecord(at: visibleIndex, with: paced(index, record))
-        }
+        replaceRecords(moved, shape: paced)
         return !pacer.isEmpty
     }
 
@@ -386,11 +389,7 @@ final class WorkThread: Identifiable {
     private func finishPacing() {
         let indices = pacer.indices
         stopPacing()
-        for index in indices {
-            guard remoteRecords.indices.contains(index), let visibleIndex = visiblePositions[index],
-                  let record = remoteRecords[index].record else { continue }
-            transcript.replaceRecord(at: visibleIndex, with: record)
-        }
+        replaceRecords(indices)
     }
 
     /// 正在放的话只给放出来的那截；放完之前一直算生成中，行照生成中的样子画（补齐半截的 Markdown、新字淡入）。
