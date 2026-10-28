@@ -11,16 +11,31 @@ export async function readClaudeMessages(nativeId: string, cwd: string) {
   await importSessionToStore(nativeId, sessionStore, { dir: cwd, includeSubagents: false });
   const resumed = unrebase(entries);
   const originals = new Map(entries.filter((entry) => entry.uuid).map((entry) => [entry.uuid!, entry]));
-  return (await getSessionMessages(nativeId, { dir: cwd, sessionStore, includeSystemMessages: true })).flatMap((message) => {
+  const messages = await getSessionMessages(nativeId, { dir: cwd, sessionStore, includeSystemMessages: true });
+  const listed = new Set(messages.map((message) => message.uuid));
+  /** 从这条往回到上一条列出的消息之间接回的重组，按会话顺序。 */
+  const crossed = (uuid: string) => {
+    const found: Array<{ boundary: string; kite: { import: string; through: string } }> = [];
+    const seen = new Set<string>();
+    for (let at: string | undefined = uuid; at && !seen.has(at) && (at === uuid || !listed.has(at));) {
+      seen.add(at);
+      const rebase = resumed.get(at);
+      if (rebase?.kite) found.unshift({ boundary: rebase.boundary, kite: rebase.kite });
+      const parent: unknown = originals.get(at)?.parentUuid;
+      at = typeof parent === 'string' ? parent : undefined;
+    }
+    return found;
+  };
+  return messages.flatMap((message) => {
     const original = originals.get(message.uuid);
     const at = Date.parse(original?.timestamp ?? '');
     // 无时间的内部记录不冒充近期对话；宿主收到的用户输入另有可靠的接收时间。
     const shown = { ...message, at: Number.isFinite(at) ? at : 0, ...(original?.origin ? { origin: original.origin } : {}),
       // 跨后端导入的条目，显示时由来源后端的记录提供。
       ...(original?.kite ? { kite: original.kite as { import: string; through: string } } : {}) };
-    // 接回处补上重组带来的导入标记，后续 Claude 段仍排在对应的 harness 内容之后。
-    const rebase = resumed.get(message.uuid);
-    return rebase?.kite ? [{ ...shown, uuid: rebase.boundary, kite: rebase.kite }, shown] : [shown];
+    // 接回处补上重组带来的导入标记，后续 Claude 段仍排在对应的 harness 内容之后。接回的那条本身可能不列出
+    // （Claude Code 恢复会话时补的 isMeta「Continue from where you left off.」），标记挂到它之后列出的第一条上。
+    return [...crossed(message.uuid).map((rebase) => ({ ...shown, uuid: rebase.boundary, kite: rebase.kite })), shown];
   });
 }
 

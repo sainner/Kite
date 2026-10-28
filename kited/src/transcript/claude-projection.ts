@@ -17,6 +17,8 @@ interface ClaudeProjectionTarget {
 
 /** 「[Request interrupted by user]」及工具调用时的「…for tool use]」，SDK 判断合成消息也按这个前缀。 */
 const CLAUDE_INTERRUPT_MARKER = '[Request interrupted by user';
+/** CLI 恢复会话时补在 isMeta「Continue from where you left off.」后面的回复，model 为 <synthetic>，没有请求过模型。 */
+const isNoResponse = (message: Record<string, any>, text: string) => message.model === '<synthetic>' && text === 'No response requested.';
 
 const textParts = (value: unknown, separator = ''): string => Array.isArray(value)
   ? value.map((part) => object(part).text).filter((text) => typeof text === 'string').join(separator) : '';
@@ -116,7 +118,7 @@ export class ClaudeProjection {
           put(`input:${inputId}`, entry ? inputBlock(entry.input, entry.midTurn)
             : object(row.origin).kind === 'human' ? { type: 'human', id: inputId, text: block.text, midTurn: false }
             : { type: 'kite', text: block.text });
-        } else put(id, { type: 'text', text: block.text });
+        } else if (!isNoResponse(message, block.text)) put(id, { type: 'text', text: block.text });
       } else if (block.type === 'thinking' && typeof block.thinking === 'string') put(id, { type: 'thinking', text: block.thinking });
       else if (block.type === 'tool_use') {
         const { name } = block;

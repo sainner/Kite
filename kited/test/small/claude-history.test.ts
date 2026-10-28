@@ -1,5 +1,6 @@
 /**
- * Claude 的原生记录：重开时从原生历史恢复输入、时间与用量窗口；切换后端时思考块的删除收据在导入与同步之间保持有效。
+ * Claude 的原生记录：重开时从原生历史恢复输入、时间与用量窗口；切换后端时思考块的删除收据在导入与同步之间保持有效；
+ * 重组后 Claude Code 接着写的会话，显示历史仍按压缩前后分段。
  */
 import { afterEach, expect, setSystemTime, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +13,7 @@ import { appendClaudeEntries, readClaudeEntries, type ClaudeEntry } from '../../
 import { importClaude, syncToClaude } from '../../src/handoff/handoff.ts';
 import type { ContextItem, JournalEvent, JournalRecord } from '../../src/harness/types.ts';
 import type { ThreadContext } from '../../src/model.ts';
-import type { History } from '../../src/transcript/protocol.ts';
+import type { DisplayBlock, History } from '../../src/transcript/protocol.ts';
 import { api, call, claudeModel, type Kited, machine, openAgent, folderWorkspace, startKited } from '../harness.ts';
 import { ManualModel } from '../harness-loop.ts';
 import { newDir, useTemp } from '../util.ts';
@@ -138,12 +139,8 @@ const redacted = { type: 'redacted_thinking', data: 'thinking-redacted' };
 const later = { type: 'thinking', thinking: '后续一轮思考。', signature: 'thinking-later' };
 type Block = Record<string, string>;
 
-async function fixture() {
-  const root = temp();
-  const cwd = newDir(root, 'work');
-  const directory = newDir(root, 'journal');
-  const nativeId = randomUUID();
-  const firstMessageId = `msg_original_${randomUUID()}`;
+/** 线程目录（journal）与 Claude 原生会话上的写入工具：原生条目、手动压缩、导入与重组都走真实的 handoff 函数。 */
+function claudeSession(directory: string, cwd: string, nativeId: string) {
   const read = () => readClaudeEntries(cwd, nativeId);
   const appendNative = async (values: ClaudeEntry[]) => {
     let parent = read().findLast((entry) => entry.uuid)?.uuid ?? null;
@@ -176,6 +173,14 @@ async function fixture() {
   };
   const sync = () => syncToClaude(directory, cwd, nativeId, 'sonnet');
   const imported = () => importClaude(directory, cwd, nativeId);
+  return { read, appendNative, turn, appendJournal, compact, sync, imported };
+}
+
+async function fixture() {
+  const root = temp();
+  const { read, appendNative, turn, appendJournal, compact, sync, imported } =
+    claudeSession(newDir(root, 'journal'), newDir(root, 'work'), randomUUID());
+  const firstMessageId = `msg_original_${randomUUID()}`;
   const strip = (attachment: Record<string, unknown>) => appendNative([{ type: 'attachment', attachment: { type: 'thinking_stripped', ...attachment } }]);
   const active = () => {
     const entries = read();
@@ -234,4 +239,41 @@ test('all 和旧消息 ID 的删除收据跨重组有效，重组后新思考在
   await f.sync();
   expect(f.thoughts()).toEqual([]);
   expect(JSON.stringify(f.active())).toContain('第三轮新正文。');
+}, 1000);
+
+// ---- 重组之后 Claude Code 接着写的会话：重开 kited 读显示历史 ----
+
+// 真实回归：手动压缩后会话整体重组，Claude Code 从重组后的会话恢复时先补一条 isMeta 的「Continue from where you left off.」
+// （parent 是重组写入的最后一条）和一条 <synthetic> 的「No response requested.」。显示历史在「重组后接回的第一条原生条目」前
+// 插导入标记来分段，接回的偏偏是这条 isMeta，而上游 SDK 的 getSessionMessages 不列出 isMeta 条目，标记丢了：压缩后的对话与压缩前
+// 连成一段，压缩卡片排到新对话之后、收起范围也把压缩后人发的消息和回答收了进去。回退对话或重启 kited 重读历史时，压缩后发的消息就不见了。
+test('压缩并重组后 Claude Code 补了 isMeta 续接再来一轮，重开时压缩卡片排在新消息之前且不把它收起', async () => {
+  const { k, id, thread, directory } = await emptyThread();
+  const session = claudeSession(directory, thread.workspace.cwd, thread.nativeId);
+  await session.turn('第一轮', [{ type: 'text', text: '第一轮回答。' }]);
+  await session.turn('第二轮', [{ type: 'text', text: '第二轮回答。' }]);
+  session.imported();
+  session.compact('第二轮', 'compact-second');
+  await session.sync();
+  // Claude Code 恢复重组后的会话时自己补的两条，形状照真实会话文件
+  await session.appendNative([
+    { type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: 'Continue from where you left off.' }] } },
+    { type: 'assistant', message: { id: randomUUID(), role: 'assistant', model: '<synthetic>',
+      content: [{ type: 'text', text: 'No response requested.' }], stop_reason: 'stop_sequence', stop_sequence: '',
+      usage: { input_tokens: 0, output_tokens: 0 } } },
+  ]);
+  await session.turn('压缩后的第三轮', [{ type: 'text', text: '第三轮回答。' }]);
+
+  reopened = startDaemon({ home: k.home, port: 0, lightTasks: false });
+  const { records } = (await call(reopened.url, 'GET', `/threads/${id}/history`)).body as History;
+  const fresh = records.findIndex((record) => record.block.type === 'human' && record.block.text === '压缩后的第三轮');
+  const compacted = records.findIndex((record) => record.block.type === 'compacted');
+  expect(fresh).toBeGreaterThanOrEqual(0);
+  expect(compacted).toBeGreaterThanOrEqual(0);
+  expect(compacted).toBeLessThan(fresh);
+  // 收起范围止于这条新消息之前：它和之后的回答都不在摘要卡片里
+  const block = records[compacted]!.block as Extract<DisplayBlock, { type: 'compacted' }>;
+  const through = records.findIndex((record) => record.id === block.through);
+  expect(through).toBeGreaterThanOrEqual(0);
+  expect(through).toBeLessThan(fresh);
 }, 1000);
