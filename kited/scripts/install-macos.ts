@@ -46,7 +46,10 @@ function plist(c: Installation): string {
     PATH: [join(runtime, 'bin'), join(homedir(), '.local/bin'), join(homedir(), '.bun/bin'), '/opt/homebrew/bin', '/opt/homebrew/sbin',
       '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':'), KITE_HOME: c.home, KITE_PORT: String(c.port), KITE_INSTALL_ROOT: c.root,
     // 凭据的封装密钥放登录钥匙串，见 kited/src/account-data/key.ts。
-    KITE_KEYCHAIN: '1' };
+    KITE_KEYCHAIN: '1',
+    // Bun 默认把编译缓存放在用户的 ~/.bun 下，那里可能链到外置盘；launchd 拉起的进程读外置盘会停下等系统授权，
+    // 加载模块就一直卡着、服务起不来（2026-10-29 本机 ~/.bun/install/bun 链到 ORICO 时遇到）。服务用安装目录里自己的。
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: join(c.root, 'cache', 'transpiler') };
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>

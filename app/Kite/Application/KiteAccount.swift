@@ -360,7 +360,9 @@ enum LocalService {
         let process = Process()
         process.executableURL = resource.appending(path: "bin/bun")
         process.arguments = ["run", "--no-env-file", "--no-install", resource.appending(path: "kited/scripts/install-macos.ts").path, "install"]
-        process.environment = ProcessInfo.processInfo.environment
+        // 编译缓存不跟用户的 ~/.bun 走：它可能链到外置盘，App 拉起的进程读外置盘会停下等授权，安装就卡住；与服务用同一处，见 install-macos.ts。
+        process.environment = ProcessInfo.processInfo.environment.merging(["BUN_RUNTIME_TRANSPILER_CACHE_PATH": FileManager.default
+            .homeDirectoryForCurrentUser.appending(path: "Library/Application Support/Kite/cache/transpiler").path]) { $1 }
         let log = FileManager.default.temporaryDirectory.appending(path: "kite-install-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: log.path, contents: nil)
         let output = try FileHandle(forWritingTo: log)
