@@ -46,6 +46,8 @@ final class WorkThread: Identifiable {
     var compactionStart: String?
     /// 核对过、等确认的回退，见 RewindConfirmation。
     var rewindRequest: RewindRequest?
+    /// 快捷键要开始或结束语音输入：每按一次加一，窗口的输入区跟着切换，同麦克风按钮（见 VoiceShortcut）。
+    var voiceToggles = 0
     /// 调试模式：不为空时窗口的对话区换成原始记录，见 RawTranscript。
     var raw: RawTranscript?
     private(set) var client: KitedClient?

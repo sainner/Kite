@@ -132,7 +132,8 @@ final class ThreadWindowView: NSView {
     private struct State {
         var initial: Bool
         var empty: Bool
-        var listening: Bool
+        /// 录音时底部那一带，连同停下后沉下去的那一下。
+        var voiceBand: Bool
         var raw: Bool
         var headerHeight: CGFloat
     }
@@ -147,7 +148,7 @@ final class ThreadWindowView: NSView {
         laying = true
         defer { laying = false }
         let state = tracking.track({
-            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), raw: thread.raw != nil,
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, voiceBand: pane.voiceBandShown(model, stage: environment.dotStage), raw: thread.raw != nil,
                   headerHeight: headerHeight)
         }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
@@ -172,7 +173,7 @@ final class ThreadWindowView: NSView {
         if windowFrame.rect != window { windowFrame.rect = window }
 
         // 空会话的签名、录音时底部那一带：有它们时才铺满窗口
-        let backdropShown = (state.initial && !state.raw) || (state.listening && !state.empty)
+        let backdropShown = (state.initial && !state.raw) || (state.voiceBand && !state.empty)
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
 

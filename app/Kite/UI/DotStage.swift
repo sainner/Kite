@@ -76,12 +76,16 @@ final class DotStage {
     }
 
     /// 在 slot 上把 pattern 铺满 area（窗口坐标；给出 carrier 时是卡片坐标），nil 让图案收回。
-    /// 从无到有时由中心向外长出来，换图案时沿对角线逐格形变；quiet 是文字压在上面的范围，图案在那里收弱；rise 见 PatternSlot.rise。
+    /// 从无到有时由中心向外长出来（涨的图案从底边升起、收回时沉下去，见 PatternSlot.lift），换图案时沿对角线逐格形变；
+    /// quiet 是文字压在上面的范围，图案在那里收弱；rise 见 PatternSlot.rise。
     func showPattern(_ pattern: DotPattern?, in area: CGRect, quiet: [PatternQuiet] = [], rise: CGFloat? = nil, slot: String,
                      carrier: DotCarrier? = nil) {
         patternRequests[slot] = pattern.map { PatternRequest(pattern: $0, area: area, quiet: quiet, rise: rise, carrier: carrier) }
         placePattern(slot)
     }
+
+    /// slot 上还有图案，收回途中也算。
+    func showsPattern(_ slot: String) -> Bool { patterns[slot] != nil }
 
     /// 指针在图案上的位置（窗口坐标），离开时给 nil。
     func patternPointer(_ point: CGPoint?, slot: String) {
@@ -106,18 +110,19 @@ final class DotStage {
         let now = Date.now
         guard var current = patterns[slot] else {
             guard let request else { return }
-            patterns[slot] = PatternSlot(pattern: request.pattern, changed: now, start: now,
-                                         area: request.area, quiet: request.quiet, rise: request.rise, carrier: request.carrier)
+            patterns[slot] = PatternSlot(pattern: request.pattern, changed: now, start: now, area: request.area,
+                                         quiet: request.quiet, rise: request.rise, carrier: request.carrier, lift: PatternLift(at: now))
             return
         }
         if let request {
             var changed = current.area != request.area || current.quiet != request.quiet || current.rise != request.rise
                 || current.carrier !== request.carrier
             if current.leaving != nil {
-                // 收回途中又摆回来：重新长出来
+                // 收回途中又摆回来：重新长出来，涨的图案从沉到的高度接着升
                 current.previous = nil
                 current.changed = now
                 current.leaving = nil
+                current.lift = current.lift.turned(to: 1, at: now)
                 changed = true
             } else if current.pattern != request.pattern {
                 current.previous = current.pattern
@@ -133,6 +138,7 @@ final class DotStage {
             patterns[slot] = current
         } else if current.leaving == nil {
             current.leaving = now
+            current.lift = current.lift.turned(to: 0, at: now)
             patterns[slot] = current
             Task { [weak self] in
                 try? await Task.sleep(for: .seconds(PatternMotion.leaveDuration + 0.05))
@@ -168,6 +174,7 @@ final class DotStage {
                                    quiet: quiet, pointer: pointer,
                                    activity: live ? input.level(at: date) : 0, sound: live ? input.sound?.level(at: date) ?? 0 : 0,
                                    rise: slot.rise.map { Double($0 * (mapping?.scale ?? 1) / pitch) },
+                                   lift: slot.lift.value(at: date, live: live),
                                    grid: grid(key, columns: columns...lastColumn, rows: rows...lastRow, quiet: quiet, bottom: bottom))
         }
     }

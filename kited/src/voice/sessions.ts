@@ -1,7 +1,8 @@
 /**
  * App 与工作机之间的语音输入：一次录音一条 WebSocket。App 推 16 kHz 单声道 s16le 的 PCM，说完发 {"type":"finish"}；
  * 这里带着会话最近的对话连识别服务，推回 {"type":"partial","text"}，最后推 {"type":"final","text"} 或 {"type":"error","message"}；
- * 定稿之后再用轻任务把口语整理成书面的话，成了推 {"type":"tidied","text"}，没成就不推，然后关闭。
+ * 定稿之后再用轻任务把口语整理成书面的话，边生成边推 {"type":"tidying","text"}（到目前为止整理出的字），成了推 {"type":"tidied","text"}，
+ * 没成（或和定稿一样）就不推，然后关闭；App 收到过 tidying 又没等到 tidied 时退回定稿。
  * 识别与整理都是辅助生成：识别的模板给上下文的写法和识别模型，凭据用账号里的语音识别凭据；整理的模型随模板，默认 DeepSeek。
  */
 import type { ServerWebSocket } from 'bun';
@@ -166,7 +167,8 @@ class VoiceSession {
         { ...this.options.variables(), ...sceneValues<'thread.voice_tidy'>({ 'tidy.text': text }) }));
       // 只做减法，加上标点和分段也长不了多少，长出很多就是没照规则来
       const { text: tidied } = await tidy.tasks.generateText({ purpose: 'thread.voice_tidy', model: tidy.template.model!,
-        instructions, input: input!, signal: this.stopping.signal, maxOutputChars: Math.ceil(text.length * 1.5) + 100 });
+        instructions, input: input!, signal: this.stopping.signal, maxOutputChars: Math.ceil(text.length * 1.5) + 100,
+        onText: (soFar) => { if (!this.ended) this.send({ type: 'tidying', text: soFar.trimStart() }); } });
       return tidied;
     } catch {
       return;

@@ -17,6 +17,9 @@ struct WorkspaceContent: View {
             .environment(workspace)
             .environment(workspace.layout)
             .focusedSceneValue(workspace)
+            #if os(macOS)
+            .background(VoiceShortcut(area: workspace))
+            #endif
             .id(workspace.id)
     }
 }

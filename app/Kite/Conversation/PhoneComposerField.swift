@@ -34,6 +34,10 @@ final class ComposerField: UITextView, UITextViewDelegate {
     private var unwrapped: (text: String, font: UIFont, width: CGFloat, height: CGFloat)?
     /// 折行时上一次按宽量的。
     private var measured: (width: CGFloat, text: String, font: UIFont, height: CGFloat)?
+    /// 语音输入的那段字另换的样式，见 VoiceTextStyle。
+    private var voiceStyle: VoiceTextStyle?
+    /// 上一次给灰字上的颜色：当时的字，灰的那段。都一样就不重设。
+    private var voiceShown: (text: String, gray: NSRange)?
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), acceptsImages, UIPasteboard.general.hasImages { return true }
@@ -168,6 +172,30 @@ final class ComposerField: UITextView, UITextViewDelegate {
         let end = (value as NSString).length
         selectedRange = NSRange(location: end, length: 0)
         placeholderLabel.isHidden = !value.isEmpty
+    }
+
+    // MARK: - 语音输入的字
+
+    /// 语音输入的那段字另换样式（见 VoiceTextStyle），nil 回到正文的样子。外面每次改了字也再给一遍，按新字重画。
+    func setVoiceStyle(_ style: VoiceTextStyle?) {
+        voiceStyle = style
+        renderVoice()
+    }
+
+    /// 改字的颜色属性：外面给的字都不进撤销（见 setText），改属性也不经输入系统、不进撤销；改完把 typingAttributes 换回正文的，
+    /// 接着打的字不带灰。组字中不动，免得打断输入法。
+    private func renderVoice() {
+        let text = self.text ?? ""
+        let gray = voiceStyle?.gray.flatMap { NSMaxRange($0) <= (text as NSString).length ? $0 : nil }
+        if let shown = voiceShown, let gray, shown.text == text, shown.gray == gray { return }
+        guard voiceShown != nil || gray != nil, markedTextRange == nil else { return }
+        let storage = textStorage
+        storage.beginEditing()
+        storage.addAttribute(.foregroundColor, value: UIColor.label, range: NSRange(location: 0, length: storage.length))
+        if let gray { storage.addAttribute(.foregroundColor, value: UIColor.label.withAlphaComponent(VoiceTextStyle.dim), range: gray) }
+        storage.endEditing()
+        typingAttributes = attributes
+        voiceShown = gray.map { (text, $0) }
     }
 
     // MARK: - 量高

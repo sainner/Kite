@@ -16,7 +16,7 @@
 - [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的 ORICO 外置盘，10-22 已接上；按工作机上的普通目录处理
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
 - [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用 ORICO；数据目录搬家后旧工作区 Git 指针要改真实路径
-- [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、定稿后用 DeepSeek 整理（待验收）、术语词典、点阵表现、未选的识别候选
+- [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、右 Option、DeepSeek 流式整理与扫掠逐字替换（iOS 待做）、术语词典、点阵表现
 - [Claude Code 的空闲压缩](claude-code-idle-compaction.md) — 它多在空闲约 55 分钟时压缩；两边积攒速度实测；Kite 已加空闲压缩，待真实会话验收
 
 ## 协作反馈

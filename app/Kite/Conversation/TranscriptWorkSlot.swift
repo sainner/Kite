@@ -119,12 +119,14 @@ final class WorkHeaderView: NativeButton {
         get { chevron.turn }
         set { chevron.turn = newValue }
     }
-    /// 汇总（见 Work.headline），扫掠只画在它上面。
+    /// 汇总、没跑完的步数和箭头都在它里面：平时扫掠只画在汇总上，换了说的事那一遍扫过整行，步数、箭头也随扫掠换过去。
     private let activity = ToolActivityView()
     private let summary = LineLabel()
     private let unfinished = LineLabel()
     private let chevron = TurningChevron()
     private var font = NSFont.systemFont(ofSize: 11)
+    /// 汇总这一行显示着（或扫掠中等着换上）的字：汇总、没跑完的步数，和字体。
+    private var shown: (headline: String, unfinished: String, font: NSFont)?
 
     override var isFlipped: Bool { true }
 
@@ -139,25 +141,36 @@ final class WorkHeaderView: NativeButton {
         super.init(frame: .zero)
         addSubview(activity)
         activity.content.addSubview(summary)
-        addSubview(unfinished)
+        activity.content.addSubview(unfinished)
         for label in [summary, unfinished] { label.setAccessibilityElement(false) }
-        addSubview(chevron)
+        activity.content.addSubview(chevron)
         chevron.hideFromAccessibility()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// 汇总行：思考、正在做什么或汇总，这组还在做事（Work.active）时一直带像素扫掠，展开着也扫。
+    /// 汇总行：思考、正在做什么或汇总，这组还在做事（Work.active）时一直带像素扫掠，展开着也扫；扫掠中换说的事随扫掠换过去（见 ToolActivityView.change）。
     func show(_ work: Work, environment: EnvironmentValues) {
         speech = TranscriptSpeech.work(work)
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         let secondary = NSColor.secondaryLabelColor
         let unfinishedCount = work.count(.unfinished)
-        set(summary, work.headline, color: secondary)
         activity.presence = environment.panePresence
         activity.mode = work.active ? .sweeping : .none
-        activity.contentChanged()
-        set(unfinished, unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", color: secondary)
+        let headline = work.headline, steps = unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", font = font
+        let apply = { [weak self] in
+            guard let self else { return }
+            set(summary, headline, color: secondary)
+            set(unfinished, steps, color: secondary)
+            needsLayout = true
+        }
+        if let shown, shown.font == font, shown.headline != headline || shown.unfinished != steps {
+            activity.change(apply)
+        } else if shown?.headline != headline || shown?.unfinished != steps || shown?.font != font {
+            apply()
+            activity.contentChanged()
+        }
+        shown = (headline, steps, font)
         let configuration = NSImage.SymbolConfiguration(pointSize: font.pointSize, weight: .regular, scale: .small)
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
         chevron.contentTintColor = secondary
@@ -180,8 +193,8 @@ final class WorkHeaderView: NativeButton {
         let imageSize = chevron.image?.size ?? .zero
         let unfinishedWidth = unfinished.isHidden ? 0 : unfinished.textWidth + spacing
         let summaryWidth = min(summary.textWidth, max(bounds.width - unfinishedWidth - imageSize.width - spacing, 0))
+        // 几样都摆在扫掠的内容里，坐标同这一行
         var x: CGFloat = 0
-        activity.frame = CGRect(x: x, y: 0, width: summaryWidth, height: bounds.height)
         summary.frame = CGRect(x: 0, y: 0, width: summaryWidth, height: bounds.height)
         x += summaryWidth + spacing
         if !unfinished.isHidden {
@@ -189,6 +202,8 @@ final class WorkHeaderView: NativeButton {
             x += unfinishedWidth
         }
         chevron.place(CGRect(x: x, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height))
+        activity.frame = CGRect(x: 0, y: 0, width: min(x + imageSize.width, bounds.width), height: bounds.height)
+        activity.sweepWidth = summaryWidth
     }
 
     override func drawFocusRingMask() { bounds.fill() }
@@ -256,12 +271,19 @@ final class ThinkingRowView: NSView {
     func show(_ text: String, environment: EnvironmentValues) {
         let font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as NSFont
         activity.presence = environment.panePresence
-        // 思考流式刷新时说的字多半没变（有小标题时说小标题），没变就不重画扫掠的贴图
+        // 思考流式刷新时说的字多半没变（有小标题时说小标题），没变就不重画扫掠的贴图；换了小标题随扫掠换过去（见 ToolActivityView.change）
         guard shown?.text != text || shown?.font != font else { return }
+        let changing = shown != nil && shown?.font == font
         shown = (text, font)
-        label.set(text, font: font, color: .secondaryLabelColor)
-        activity.contentChanged()
-        needsLayout = true
+        let apply = { [weak self] in
+            guard let self else { return }
+            label.set(text, font: font, color: .secondaryLabelColor)
+            needsLayout = true
+        }
+        if changing { activity.change(apply) } else {
+            apply()
+            activity.contentChanged()
+        }
     }
 
     /// 一行字的高。

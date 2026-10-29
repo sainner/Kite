@@ -28,12 +28,15 @@ struct MacControlsBar: View {
     /// 玻璃仍用 SwiftUI 的 glassEffect，原生的只是玻璃里的内容。2026-10-13 对照过 NSGlassEffectView（带不带容器、可不可按压）：
     /// 它改宽时 AppKit 在里面另跑一张 SwiftUI 图，两窗拖缝每步比这样多约 1ms；玻璃里的字也被它另做一层处理，和现版逐像素对不上，
     /// 这样包着则只剩图标的抗锯齿差别。macOS 26 上按下也有玻璃反馈。
+    private var controls: ThreadControlsModel {
+        ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage, scope: dotScope,
+                            voiceOwner: voiceOwner, state: state, send: send)
+    }
+
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous)
         GlassEffectContainer(spacing: Metrics.paneButtonGap) {
-            ControlsBarHost(controls: ThreadControlsModel(thread: thread, model: model, area: area, instance: instance, stage: stage,
-                                                          scope: dotScope, voiceOwner: voiceOwner, state: state, send: send),
-                            enabled: isEnabled, colorScheme: colorScheme, link: link)
+            ControlsBarHost(controls: controls, enabled: isEnabled, colorScheme: colorScheme, link: link)
                 // 输入框有没有焦点照样记在窗口的 typing 上：原生输入框成为第一响应者时为真，窗口把它设成假时交出焦点（2026-10-13 实测）。
                 // 宽屏上只有标题栏的侧栏按钮用它先收起输入；点别处、Esc 都是 AppKit 的第一响应者照常处理
                 .focused(typing)
@@ -47,6 +50,7 @@ struct MacControlsBar: View {
         .padding(.bottom, Metrics.paneMargin)
         .frame(maxWidth: .infinity)
         .controlsFailureAlert(state)
+        .onChange(of: thread.voiceToggles) { if isEnabled { controls.toggleVoice() } }
     }
 }
 
@@ -87,6 +91,8 @@ private struct ControlsBarHost: NSViewRepresentable {
 /// 思考强度的托管视图、输入框更新时不让外面的 SwiftUI 重量这一块（见 RepresentedRoot），高变了由 contentChanged 报。
 final class ControlsBarView: RepresentedRoot {
     private let field = ComposerField()
+    /// 语音整理时盖在输入框上的扫掠。
+    private lazy var voiceSweep = VoiceSweepView(field: field)
     private let fadingView = FadingSnapshotView()
     private let effort = EffortIsland(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
@@ -145,6 +151,7 @@ final class ControlsBarView: RepresentedRoot {
         CursorProbe.install()
         #endif
         addSubview(field)
+        addSubview(voiceSweep)
         addSubview(fadingView)
         addSubview(effort)
         for button in [attach, voice, primary, previousButton, nextButton] { addSubview(button) }
@@ -236,8 +243,11 @@ final class ControlsBarView: RepresentedRoot {
         // 读屏念的名字是占位文字，同 SwiftUI 的 TextField 以占位作标题
         if field.accessibilityLabel() != controls.placeholder { field.setAccessibilityLabel(controls.placeholder) }
         let text = controls.fieldText
-        field.setText(text, undoable: controls.state.undoableText == text)
+        field.setText(text, undoFrom: controls.state.undoableText.flatMap { $0.text == text ? $0.from : nil })
         controls.state.undoableText = nil
+        let voiceStyle = controls.voiceStyle
+        field.setVoiceStyle(voiceStyle)
+        voiceSweep.update(voiceStyle)
         field.isEnabled = enabled
         let listening = controls.listening
         voice.label = .symbol(listening ? "mic.fill" : "mic")
@@ -472,6 +482,7 @@ final class ControlsBarView: RepresentedRoot {
         let top = plan.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset - ComposerField.fieldInset, y: top, width: fieldWidth + 2 * ComposerField.fieldInset,
                             height: field.drawHeight(width: fieldWidth + 2 * ComposerField.fieldInset, text: field.text)))
+        place(voiceSweep, field.frame)
         place(fadingView, CGRect(x: field.frame.minX, y: top, width: field.frame.width, height: plan.field))
 
         let row = ComposerLayout.row(width: width, plan: plan)

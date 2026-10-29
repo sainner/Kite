@@ -253,7 +253,8 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     private struct State {
         var initial: Bool
         var empty: Bool
-        var listening: Bool
+        /// 录音时底部那一带，连同停下后沉下去的那一下。
+        var voiceBand: Bool
         /// 调试模式：原始记录盖在对话上（见 PhoneTranscriptSurface），对话列表藏起来。
         var raw: Bool
         var headerHeight: CGFloat
@@ -276,7 +277,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
             return
         }
         let state = tracking.track({
-            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), raw: thread.raw != nil,
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, voiceBand: pane.voiceBandShown(model, stage: environment.dotStage), raw: thread.raw != nil,
                   headerHeight: headerHeight, controlsInset: header.inset)
         }) { [weak self] in self?.invalidate() }
         let width = bounds.width, height = bounds.height
@@ -300,7 +301,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
     /// 紧凑布局：对话铺满，上下让出外壳给的距离；标题栏后面的渐变、滚动软边从窗口顶边铺到标题栏底边。
     private func layoutCompact() {
         let state = tracking.track({
-            State(initial: thread.isInitial, empty: !thread.hasTranscript, listening: pane.listening(model), raw: thread.raw != nil,
+            State(initial: thread.isInitial, empty: !thread.hasTranscript, voiceBand: pane.voiceBandShown(model, stage: environment.dotStage), raw: thread.raw != nil,
                   headerHeight: 0, controlsInset: 0)
         }) { [weak self] in self?.invalidate() }
         let insets = compactInsets
@@ -316,7 +317,7 @@ final class PhoneThreadWindowView: UIView, UIGestureRecognizerDelegate {
         if metrics.header != placement { metrics.header = placement }
         let window = CGRect(origin: .zero, size: bounds.size)
         if windowFrame.rect != window { windowFrame.rect = window }
-        let backdropShown = (state.initial && !state.raw) || (state.listening && !state.empty)
+        let backdropShown = (state.initial && !state.raw) || (state.voiceBand && !state.empty)
         backdrop.isHidden = !backdropShown
         if backdropShown { place(backdrop, bounds) }
         list.isHidden = state.empty || state.raw

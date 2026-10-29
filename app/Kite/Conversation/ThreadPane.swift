@@ -109,6 +109,11 @@ private struct MacThreadTranscript: View {
 
     func listening(_ model: AppModel) -> Bool { model.voice.owner == patternSlot }
 
+    /// 底部那一带在不在：录着音，或停下后还在沉下去。原生外框按它决定铺不铺那一层，免得一停就把沉下去的那一下切掉。
+    func voiceBandShown(_ model: AppModel, stage: DotStage?) -> Bool {
+        listening(model) || stage?.showsPattern(voiceSlot) == true
+    }
+
     /// 这个代理的角色签名；角色列表还没读到或角色没有签名时用默认图案。
     func emblem(thread: WorkThread, model: AppModel, area: WorkArea, environment: EnvironmentValues) -> DotPattern? {
         let accent = DotColor(Color.accentColor.resolve(in: environment))

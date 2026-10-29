@@ -15,8 +15,38 @@ import SwiftUI
     var failure: (title: String, message: String)?
     /// 只在这次输入的候选里保留键盘选中项；换会话或改了前缀后回到第一项。
     var skillSelection: (thread: ObjectIdentifier, text: String, name: String)?
-    /// 语音整理后换上去的字。Mac 输入框照它换的那一下记进撤销，⌘Z 回到定稿；换上去之前设，输入框换完就清掉。
-    @ObservationIgnored var undoableText: String?
+    /// 语音整理完换上去的字和它整理的定稿。Mac 输入框照它换的那一下记进撤销，⌘Z 回到定稿（流式整理途中换过的字不进撤销）；
+    /// 换上去之前设，输入框换完就清掉。
+    @ObservationIgnored var undoableText: (text: String, from: String)?
+    /// 这次语音输入写进输入框的字，从开录到这段识别的最后一条（整理后的字、出错或收尾）为止，见 ThreadControlsModel.voiceStyle。
+    fileprivate(set) var voice: VoiceSegment?
+}
+
+/// 一次语音输入写进输入框的字：text 是输入框此刻该有的全文，识别的字从第 start 个 UTF-16 单元起（之前是开录时已有的字）。
+/// 整理途中 head 是整理出的字到哪了（同样按输入框里的 UTF-16 位置），前面是整理后的字，后面是定稿里还没对应上的那段。
+struct VoiceSegment {
+    let id = UUID()
+    let start: Int
+    var text: String
+    /// 定稿，整理没成时退回它。
+    var final: String?
+    var head: Int?
+
+    /// 整理到一半时的字：整理出的部分接上定稿里还没对应上的那段。整理只做减法，整理出的字（标点、空白除外）按顺序都能在定稿里找到，
+    /// 顺着定稿往后找，最远看 24 个字，找不到的（模型改了的）跳过；整理出的部分以标点、空白结尾时，接上的那段去掉开头的标点、空白。
+    static func merging(_ tidied: String, into final: String) -> String {
+        let source = Array(final)
+        var position = 0
+        for character in tidied where character.isLetter || character.isNumber {
+            let limit = min(source.count, position + 24)
+            if let found = source[position..<limit].firstIndex(of: character) { position = found + 1 }
+        }
+        var rest = source[position...]
+        if let last = tidied.last, !(last.isLetter || last.isNumber) {
+            rest = rest.drop { !($0.isLetter || $0.isNumber) }
+        }
+        return tidied + String(rest)
+    }
 }
 
 /// 输入框让外面先接管的按键（两端原生输入框的 intercept，Mac 窄窗口的 onKeyPress）：没按修饰键、没在组字时的上下键和 Tab。
@@ -115,6 +145,16 @@ struct ThreadControlsModel {
     /// 回应卡片上的「交给 Line」：有 Line、这不是 Line 自己发起的请求时才有。
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
+
+    /// 输入框里语音输入的那段字另换样式（见 VoiceTextStyle）：还在录时灰，说完了扫掠头从这段开头起跟着整理出的字走，
+    /// 整理完（或不整理、出错）回到正文的样子。输入框里的字被人改过就不再另显示。
+    var voiceStyle: VoiceTextStyle? {
+        guard let segment = state.voice, segment.text == fieldText else { return nil }
+        let length = (segment.text as NSString).length
+        guard segment.start < length else { return nil }
+        return VoiceTextStyle(range: NSRange(location: segment.start, length: length - segment.start),
+                              head: listening ? nil : min(segment.head ?? segment.start, length))
+    }
     /// 没写字，也没放附件。
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && thread.draftAttachments.isEmpty }
 
@@ -310,7 +350,8 @@ struct ThreadControlsModel {
         dictate(base: thread.draft, restart: true, read: { thread.draft }) { thread.draft = $0 }
     }
 
-    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。整理后的字到的时候，read 读到的还是定稿才换上，人改过就不动。
+    /// 开始或停下语音输入：识别出的字接在 base 后面交给 write。整理时整理出的字逐段换上去，read 读到的还是上次写的才换，人改过就不动；
+    /// 整理没成时退回定稿。
     /// restart 见 restartVoice。
     private func dictate(base: String, restart: Bool = false, started: @escaping @MainActor () -> Void = {},
                          read: @escaping @MainActor () -> String, write: @escaping @MainActor (String) -> Void) {
@@ -320,32 +361,58 @@ struct ThreadControlsModel {
             return
         }
         let thread = thread, model = model, area = area, owner = voiceOwner, state = state
-        let update: @MainActor @Sendable (VoiceText) -> Void = { text in
-            switch text {
-            case .partial(let value), .final(let value): write(base + value)
-            case .tidied(let value, let raw):
-                guard read() == base + raw else { return }
-                state.undoableText = base + value
-                write(base + value)
-            case .failed(let message):
-                voice.stop(owner: owner)
-                state.failure = ("无法开始语音输入", message)
-            }
-        }
         let client: KitedClient
         do { client = try thread.client ?? model.activeClient(in: area) } catch {
             if restart { voice.stop(owner: owner) }
             state.failure = ("无法开始语音输入", error.localizedDescription)
             return
         }
+        let segment = VoiceSegment(start: (base as NSString).length, text: base)
+        state.voice = segment
+        // 输入框还是这一段（没又开录、没发消息另起一段）时的记录；end 时这段结束
+        let current: @MainActor () -> VoiceSegment? = { state.voice?.id == segment.id ? state.voice : nil }
+        let end: @MainActor () -> Void = { if current() != nil { state.voice = nil } }
+        // 整理时写进输入框的字；人改过（读到的不是上次写的）就不再写
+        let replace: @MainActor (String, _ head: Int?) -> Void = { text, head in
+            guard let shown = current(), read() == shown.text else { return }
+            write(text)
+            state.voice?.text = text
+            state.voice?.head = head
+        }
+        let update: @MainActor @Sendable (VoiceText) -> Void = { text in
+            switch text {
+            case .partial(let value), .final(let value):
+                write(base + value)
+                guard current() != nil else { return }
+                state.voice?.text = base + value
+                if case .final = text { state.voice?.final = value }
+            case .tidying(let value):
+                guard let final = current()?.final else { return }
+                replace(base + VoiceSegment.merging(value, into: final), (base + value as NSString).length)
+            case .tidied(let value, let raw):
+                if let shown = current(), read() == shown.text {
+                    state.undoableText = (base + value, base + raw)
+                    write(base + value)
+                }
+                end()
+            case .failed(let message):
+                end()
+                voice.stop(owner: owner)
+                state.failure = ("无法开始语音输入", message)
+            case .ended:
+                // 整理过一半又没成：退回定稿
+                if let shown = current(), let final = shown.final, shown.head != nil { replace(base + final, nil) }
+                end()
+            }
+        }
         let target = VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)
         // 另起一段要当场作废旧的那段：之后到的字不能再写回刚清空的输入框
         if restart { return voice.restart(owner: owner, target: target, update: update) }
         Task {
             do {
-                try await voice.start(owner: owner, target: target, update: update)
-                started()
+                if try await voice.start(owner: owner, target: target, update: update) { started() } else { end() }
             } catch {
+                end()
                 state.failure = ("无法开始语音输入", error.localizedDescription)
             }
         }

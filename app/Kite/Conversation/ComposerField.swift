@@ -32,6 +32,13 @@ final class ComposerField: NSTextField {
     private var measured: (width: CGFloat, text: String, height: CGFloat)?
     /// 正好 8 行多高（没取整），跟宽度无关（每行一个字），字体变了才重量。
     private var full: CGFloat?
+    /// 语音输入的那段字另换的样式，见 VoiceTextStyle。
+    private var voiceStyle: VoiceTextStyle?
+    /// 上一次给灰字上的颜色：画在字段编辑器里（编辑中）还是单元格里，当时的字，灰的那段。都一样就不重设：
+    /// 换了字（哪怕范围一样）单元格的颜色已经随 stringValue 回到原样，要重上。
+    private var voiceShown: (editor: Bool, text: String, gray: NSRange)?
+    /// 按同样的配置另排的一份，量字的位置用，见 caret。
+    private var caretLayout: (text: String, width: CGFloat, storage: NSTextContentStorage, layout: NSTextLayoutManager)?
 
     init() {
         super.init(frame: .zero)
@@ -84,11 +91,19 @@ final class ComposerField: NSTextField {
 
     /// 外面改了草稿。编辑中的字整段换掉、插入点到末尾，同现版；和现在一样就不动，组字不被打断。
     /// 换掉的字不进撤销，之前打字记下的撤销也清掉：它们按旧字的范围记，留着的话 ⌘Z 越界抛异常（2026-10-13 在单独的 NSTextView 上试过）。
-    /// undoable 时（语音整理换上去的字）照打字一样经字段编辑器换，记进撤销，⌘Z 换回原来的字；没在编辑时没有撤销。
-    func setText(_ value: String, undoable: Bool = false) {
-        guard value != text else { return }
+    /// 给了 undoFrom 时（语音整理完换上去的字）照打字一样经字段编辑器换，记进撤销，⌘Z 换回 undoFrom（定稿）：
+    /// 流式整理途中已经换过几次，先不记撤销地换回 undoFrom 再换，同一次更新里看不出来。没在编辑时没有撤销。
+    func setText(_ value: String, undoFrom: String? = nil) {
+        if let undoFrom, let editor = currentEditor() as? NSTextView, value != undoFrom {
+            if editor.string != undoFrom {
+                editor.string = undoFrom
+                if let storage = editor.textStorage { editor.undoManager?.removeAllActions(withTarget: storage) }
+            }
+        } else if value == text {
+            return
+        }
         if let editor = currentEditor() as? NSTextView {
-            if undoable {
+            if undoFrom != nil {
                 let range = NSRange(location: 0, length: (editor.string as NSString).length)
                 guard editor.shouldChangeText(in: range, replacementString: value) else { return }
                 editor.replaceCharacters(in: range, with: value)
@@ -101,6 +116,115 @@ final class ComposerField: NSTextField {
         } else {
             stringValue = value
         }
+    }
+
+    // MARK: - 语音输入的字
+
+    /// 现在灰着的那段字，扫掠按它判断要不要重画输入框的图（VoiceSweepView）。
+    var voiceGray: NSRange? { voiceShown?.gray }
+
+    /// 语音输入的那段字另换样式（见 VoiceTextStyle），nil 回到正文的样子。外面每次改了字也再给一遍，按新字重画。
+    func setVoiceStyle(_ style: VoiceTextStyle?) {
+        voiceStyle = style
+        renderVoice()
+    }
+
+    /// 编辑中改字段编辑器的显示属性，不动字本身、不进撤销；没在编辑时改单元格的字（设回 stringValue 就回到单元格自己的颜色）。
+    private func renderVoice() {
+        let editor = currentEditor() as? NSTextView
+        let text = (editor?.string ?? stringValue) as NSString
+        let gray = voiceStyle?.gray.flatMap { NSMaxRange($0) <= text.length ? $0 : nil }
+        if let shown = voiceShown, let gray, shown.editor == (editor != nil), shown.text == text as String, shown.gray == gray { return }
+        if voiceShown == nil, gray == nil { return }
+        let color = (textColor ?? .controlTextColor).withAlphaComponent(VoiceTextStyle.dim)
+        if let editor, let layout = editor.textLayoutManager, let content = layout.textContentManager {
+            layout.removeRenderingAttribute(.foregroundColor, for: layout.documentRange)
+            if let gray, let start = content.location(content.documentRange.location, offsetBy: gray.location),
+               let end = content.location(start, offsetBy: gray.length), let range = NSTextRange(location: start, end: end) {
+                layout.addRenderingAttribute(.foregroundColor, value: color, for: range)
+            }
+            // 只改显示属性时字段编辑器不重画（2026-10-29 屏上截图核对过，重新排版也不画），把它和里面各层都标成要重画
+            func redraw(_ view: NSView) {
+                view.needsDisplay = true
+                view.subviews.forEach(redraw)
+            }
+            redraw(editor)
+        } else if let gray {
+            let string = NSMutableAttributedString(string: text as String)
+            // 单元格自己的字体、段落和颜色，同设 stringValue 时它给的
+            stringValue = text as String
+            if text.length > 0 { string.setAttributes(attributedStringValue.attributes(at: 0, effectiveRange: nil), range: NSRange(location: 0, length: text.length)) }
+            string.addAttribute(.foregroundColor, value: color, range: gray)
+            attributedStringValue = string
+        } else {
+            stringValue = text as String
+        }
+        voiceShown = gray.map { (editor != nil, text as String, $0) }
+    }
+
+    /// 单元格里上过色的字交给字段编辑器之前换回原样：编辑器照单元格的字起头，颜色会进编辑中的字、带到接着打的字上。编辑中改显示属性。
+    override func becomeFirstResponder() -> Bool {
+        if voiceShown?.editor == false { stringValue = stringValue }
+        voiceShown = nil
+        let became = super.becomeFirstResponder()
+        renderVoice()
+        return became
+    }
+
+    /// 编辑完字回到单元格里画，样式跟过去。
+    override func textDidEndEditing(_ notification: Notification) {
+        if let editor = currentEditor() as? NSTextView, let layout = editor.textLayoutManager {
+            layout.removeRenderingAttribute(.foregroundColor, for: layout.documentRange)
+        }
+        super.textDidEndEditing(notification)
+        voiceShown = nil
+        renderVoice()
+    }
+
+    /// 第 offset 个 UTF-16 单元前面那个位置（控件坐标）：x 是这个位置，y、高是它所在的那一行；在行尾时算上一行的末尾。
+    /// 按同样的配置另排一份（同字段编辑器：容器和控件一样宽，左右各留 fieldInset；2026-10-29 和字段编辑器逐点比过一致），
+    /// 编辑中、没在编辑时都对得上；超过 8 行在里面滚的不算滚动。
+    func caret(at offset: Int) -> CGRect? {
+        let text = self.text, width = bounds.width
+        if caretLayout?.text != text || caretLayout?.width != width {
+            let storage = NSTextContentStorage()
+            let layout = NSTextLayoutManager()
+            let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+            container.lineFragmentPadding = Self.fieldInset
+            layout.textContainer = container
+            storage.addTextLayoutManager(layout)
+            measure.stringValue = text
+            storage.attributedString = measure.attributedStringValue
+            caretLayout = (text, width, storage, layout)
+        }
+        guard let (_, _, storage, layout) = caretLayout,
+              let location = storage.location(storage.documentRange.location, offsetBy: min(max(offset, 0), (text as NSString).length))
+        else { return nil }
+        var caret: CGRect?
+        layout.enumerateTextSegments(in: NSTextRange(location: location), type: .standard, options: [.rangeNotRequired, .upstreamAffinity]) {
+            _, frame, _, _ in
+            caret = frame
+            return false
+        }
+        return caret
+    }
+
+    /// 把现在显示的字画成图（同 snapshot，不画插入点和选区，不留边），给语音整理的扫掠用。
+    func sweepImage() -> CGImage? {
+        guard bounds.width > 0, bounds.height > 0, let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return nil }
+        let editor = currentEditor() as? NSTextView
+        let selection = editor?.selectedRanges
+        if let editor { editor.setSelectedRange(NSRange(location: (editor.string as NSString).length, length: 0)) }
+        let shown = (editor.map { Self.indicators(in: $0) } ?? []).filter { !$0.isHidden }
+        shown.forEach { $0.isHidden = true }
+        // 画出来的图带着遮罩（扫掠挖掉的那一截），先摘下，画完挂回去
+        let mask = layer?.mask
+        layer?.mask = nil
+        cacheDisplay(in: bounds, to: rep)
+        layer?.mask = mask
+        shown.forEach { $0.isHidden = false }
+        if let editor, let selection { editor.selectedRanges = selection }
+        return rep.cgImage
     }
 
     /// 这么宽（控件的宽，含两边的行内边距）时显示 text 要多高：最少一行（空的时候是占位那一行），最多 8 行。

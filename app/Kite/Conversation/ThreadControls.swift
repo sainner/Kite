@@ -16,6 +16,7 @@ struct ThreadControls: View {
     @Environment(\.paneInstance) private var instance
     @Environment(\.dotStage) private var stage
     @Environment(\.dotScope) private var dotScope
+    @Environment(\.isEnabled) private var isEnabled
     @State private var state = ThreadControlsState()
     /// 控制区在窗口坐标中的位置，发送时点阵的波从这里推开。
     @State private var frame: CGRect = .zero
@@ -56,6 +57,7 @@ struct ThreadControls: View {
         .glassEffect(.regular.interactive(), in: shape)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
         .controlsFailureAlert(state)
+        .onChange(of: thread.voiceToggles) { if isEnabled { toggleVoice() } }
     }
 
     private func composer(_ controls: ThreadControlsModel, fading: FadingText?) -> some View {

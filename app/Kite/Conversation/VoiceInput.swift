@@ -5,12 +5,15 @@ import Synchronization
 import CoreAudio
 #endif
 
-/// 识别出来的字：中间结果和定稿都是到目前为止的全文，出错时给原因。定稿之后工作机可能再给一份整理成书面的字，带着它整理的那份定稿。
+/// 识别出来的字：中间结果和定稿都是到目前为止的全文，出错时给原因。定稿之后工作机可能再整理成书面的字：边生成边给到目前为止整理出的字（tidying），
+/// 整理完给全文，带着它整理的那份定稿。整理后的字、出错和 ended 都是这段识别的最后一条；ended 是工作机没给整理后的字就收尾了。
 enum VoiceText: Sendable {
     case partial(String)
     case final(String)
+    case tidying(String)
     case tidied(String, from: String)
     case failed(String)
+    case ended
 }
 
 /// 识别交给哪台工作机；thread 是正在输入的会话，新会话还没有实例时为空，工作机就不带对话。
@@ -38,7 +41,7 @@ final class VoiceInput {
     /// 一段识别的字还要不要交出去：录着的时候发出了消息（restart），旧的那段作废。
     private final class Segment { var live = true }
 
-    /// 正在录的控制区；授权弹窗和连工作机期间还是 nil。
+    /// 正在录的控制区：麦克风一开就是它，连工作机期间也是；授权弹窗期间还是 nil。
     private(set) var owner: String?
     let level = AudioLevel()
     @ObservationIgnored private var engine: AVAudioEngine?
@@ -49,11 +52,13 @@ final class VoiceInput {
     /// 每次开始或停止加一。授权弹窗和连工作机会让出主线程，这期间又停止或换了别处开始时，迟到的那次开始按它作废。
     @ObservationIgnored private var generation = 0
 
-    func start(owner: String, target: VoiceTarget, update: @escaping @MainActor @Sendable (VoiceText) -> Void) async throws {
+    /// 开始录音，连上工作机后推流。返回 false 是连工作机期间停了、又开了一段或发了消息，这一次没推起来。
+    @discardableResult
+    func start(owner: String, target: VoiceTarget, update: @escaping @MainActor @Sendable (VoiceText) -> Void) async throws -> Bool {
         stop()
         let current = generation
         guard await AVAudioApplication.requestRecordPermission() else { throw Failure.denied }
-        guard current == generation else { return }
+        guard current == generation else { return false }
         #if os(macOS)
         // 设备拔掉后输入节点仍报旧格式，接着配置引擎会抛 ObjC 异常、Swift 接不住，所以先问系统有没有默认输入设备
         guard Self.hasInputDevice else { throw Failure.noDevice }
@@ -82,24 +87,31 @@ final class VoiceInput {
             engine.connect(input, to: sink, format: format)
         }
         try engine.start()
-        // 先录起来，连工作机期间的声音攒在环形缓冲里，连上后一起推
-        let (connection, socket) = try await target.client.voiceSocket(thread: target.thread)
-        let segment = Segment()
-        let stream = try VoiceStream(session: connection, socket: socket, samples: samples, sampleRate: format.sampleRate,
-                                     update: Self.guarded(update, by: segment))
-        guard current == generation else {
-            await stream.cancel()
-            return
-        }
+        // 先录起来，点阵当场随声音起伏，连工作机期间的声音攒在环形缓冲里，连上后一起推
         started = true
         self.engine = engine
         sampleRate = format.sampleRate
-        self.stream = stream
-        self.segment = segment
         self.owner = owner
         level.begin()
         observe(engine)
-        await stream.begin()
+        let segment = Segment()
+        self.segment = segment
+        do {
+            let (connection, socket) = try await target.client.voiceSocket(thread: target.thread)
+            let stream = try VoiceStream(session: connection, socket: socket, samples: samples, sampleRate: format.sampleRate,
+                                         update: Self.guarded(update, by: segment))
+            // 连工作机期间停了、又开了一段（都换了 generation），或发了消息另起一段（segment 作废，新的那段自己连）
+            guard current == generation, segment.live else {
+                await stream.cancel()
+                return false
+            }
+            self.stream = stream
+            await stream.begin()
+            return true
+        } catch {
+            if current == generation { stop() }
+            throw error
+        }
     }
 
     /// 录着的时候发出了消息：这一段识别作废，迟到的字不再交出去，工作机那边取消、不定稿；麦克风不停，从这一刻的声音起另开一段，
@@ -215,6 +227,8 @@ private actor VoiceStream {
     private var pump: Task<Void, Never>?
     /// 定稿或出错之后不再报错，连接断开是正常收尾。
     private var settled = false
+    /// 作废了（发了消息另起一段、连上时已经停了），之后什么都不交。
+    private var cancelled = false
     /// 收到的定稿，整理后的字随它交出去。
     private var finalText = ""
 
@@ -253,7 +267,7 @@ private actor VoiceStream {
     }
 
     func cancel() {
-        settled = true
+        cancelled = true
         pump?.cancel()
         socket.cancel(with: .goingAway, reason: nil)
         session.invalidateAndCancel()
@@ -294,6 +308,7 @@ private actor VoiceStream {
                     settled = true
                     finalText = event.text ?? ""
                     await update(.final(finalText))
+                case "tidying": await update(.tidying(event.text ?? ""))
                 case "tidied":
                     await update(.tidied(event.text ?? "", from: finalText))
                     close()
@@ -307,7 +322,7 @@ private actor VoiceStream {
                 }
             }
         } catch {
-            if !settled { await update(.failed("和工作机的语音连接断开：\(error.localizedDescription)")) }
+            if !cancelled { await update(settled ? .ended : .failed("和工作机的语音连接断开：\(error.localizedDescription)")) }
             close()
         }
     }

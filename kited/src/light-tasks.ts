@@ -17,6 +17,8 @@ export interface TextTask {
   input: string;
   signal?: AbortSignal;
   maxOutputChars?: number;
+  /** 边生成边给到目前为止的正文（只用于展示，结果仍以返回的为准）。 */
+  onText?(text: string): void;
 }
 
 export class LightTasks {
@@ -48,6 +50,8 @@ export class LightTasks {
       const id = randomUUID();
       let completed = false;
       let text = '';
+      // 流式的正文按分段累积，同 transcript/projection.ts 的显示增量；最终结果仍按完整的 message 拼
+      const parts: string[] = [];
       const model = this.options.model({ id, purpose: task.purpose, model: task.model });
       for await (const event of model.stream({
         id, turnId: id, cwd: '', instructions: task.instructions, tools: [], allowedTools: [],
@@ -55,7 +59,14 @@ export class LightTasks {
       }, signal)) {
         signal.throwIfAborted();
         if (completed) throw new Error('轻任务完成后仍收到模型事件');
-        if (event.type === 'completed') {
+        if (event.type === 'delta') {
+          if (!task.onText || (event.field !== undefined && event.field !== 'text')) continue;
+          const part = event.part ?? 0;
+          if (part < 0 || part > 1024 || !Number.isSafeInteger(part)) continue;
+          while (parts.length <= part) parts.push('');
+          parts[part] = event.replace ? event.text : parts[part]! + event.text;
+          task.onText(parts.join(''));
+        } else if (event.type === 'completed') {
           if (event.needsFollowUp) throw new Error('轻任务未在一次请求内完成');
           completed = true;
           usage = event.usage;

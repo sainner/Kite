@@ -107,7 +107,8 @@ struct KiteCommands: Commands {
             Menu("外观") { AppearancePicker() }
         }
         #endif
-        // 作用在台面上聚焦的代理，同会话窗口更多菜单里的「上下文」一节；停止在输入框里按 Esc（见 ThreadControlsModel.keyAction）
+        // 作用在台面上聚焦的代理，同会话窗口更多菜单里的「上下文」一节；停止在输入框里按 Esc（见 ThreadControlsModel.keyAction），
+        // 语音输入单按右 Option（见 VoiceShortcut）
         CommandMenu("会话") {
             Button("压缩全部") {
                 onFocusedPane { area, pane in area.thread(in: pane)?.compactAll() } otherwise: {}

@@ -188,6 +188,7 @@ final class ControlsBarView: UIView {
         let thread = controls.thread
         field.placeholder = controls.placeholder
         field.setText(controls.fieldText)
+        field.setVoiceStyle(controls.voiceStyle)
         field.isEditable = enabled
         field.isUserInteractionEnabled = enabled
         let listening = controls.listening

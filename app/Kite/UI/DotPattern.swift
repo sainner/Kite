@@ -41,6 +41,28 @@ struct PatternSlot {
     /// 涨的图案以底边中点为原点（见 PatternGrid.originRow），其余以中心为原点。
     var rise: CGFloat?
     var carrier: DotCarrier?
+    /// 涨的图案摆上来时从底边升起、收回时沉回底边，不由中心长出、不原地淡掉；其余图案不用它。
+    var lift: PatternLift
+}
+
+/// 涨的图案升到几成：0 是全沉在底边下，1 是升到该在的高度。升起、沉下都从当时的高度接着走，中途反向不跳；
+/// 曲线同窗口动画（WindowMotionKind.curve），不回弹。
+nonisolated struct PatternLift: Sendable {
+    var from = 0.0
+    var to = 1.0
+    var at: Date
+
+    func value(at date: Date, live: Bool) -> Double {
+        guard live else { return to }
+        let duration = to > from ? PatternMotion.riseDuration : PatternMotion.leaveDuration
+        let progress = min(max(date.timeIntervalSince(at) / duration, 0), 1)
+        return from + (to - from) * WindowMotionKind.curve.value(at: progress)
+    }
+
+    /// 从 date 这一刻的高度起，改往 target 走。
+    func turned(to target: Double, at date: Date) -> PatternLift {
+        PatternLift(from: value(at: date, live: true), to: target, at: date)
+    }
 }
 
 /// 图案的交互输入：指针所在（窗口坐标）、打字的活跃度与声音的来源。逐帧读取，不引起视图更新。
@@ -62,7 +84,10 @@ nonisolated enum PatternMotion {
     static let growSpread: TimeInterval = 0.7
     /// 换图案时沿对角线错开的时长。
     static let morphSpread: TimeInterval = 0.6
+    /// 收回的时长：淡掉，涨的图案是沉回底边。
     static let leaveDuration: TimeInterval = 0.45
+    /// 涨的图案从底边升起的时长。
+    static let riseDuration: TimeInterval = 0.45
     /// 长出来或形变完所需的最长时间，过后不再算旧图案。
     static let settled: TimeInterval = 1.3
     static let activityStep = 0.22
@@ -172,6 +197,8 @@ nonisolated struct ResolvedPattern: Sendable {
     let sound: Double
     /// 静音时从底边往上铺几格，见 PatternSlot.rise。
     let rise: Double?
+    /// 涨的图案这一帧升到几成，见 PatternSlot.lift。
+    let lift: Double
     let grid: PatternGrid
 
     /// 交给着色器（DotField.metal）的一块图案：可见范围里每格的取值（带正负，已乘上长出、形变、声音、收回和收弱）整批算好，
@@ -309,8 +336,8 @@ nonisolated struct ResolvedPattern: Sendable {
             let progress = eased(span > 0 ? vDSP.multiply(PatternMotion.morphSpread / span, vDSP.add(grid.column[range], grid.row[range])) : zeros())
             let old = previous.expression.evaluate(batch: variables, count: count)
             value = vDSP.add(vDSP.multiply(old, vDSP.add(1, vDSP.negative(progress))), vDSP.multiply(value, progress))
-        } else if elapsed < PatternMotion.growSpread + DotMetrics.morphDuration {
-            // 由原点向外长出来；全部长完后系数都是 1，不用再乘
+        } else if rise == nil, elapsed < PatternMotion.growSpread + DotMetrics.morphDuration {
+            // 由原点向外长出来；全部长完后系数都是 1，不用再乘。涨的图案从底边升起，见下
             let reach = PatternGrid.reach(width: w, height: h, bottom: grid.bottom)
             value = vDSP.multiply(value, eased(reach > 0 ? vDSP.multiply(PatternMotion.growSpread / reach, grid.r[range]) : zeros()))
         }
@@ -319,8 +346,8 @@ nonisolated struct ResolvedPattern: Sendable {
         }
         if let rise {
             // 中间从底边往上铺到 reach 格，两侧按离中间的远近平方低下去；底下几格一直是满的，往上到上沿一路淡出。
-            // 第 row 行的格心离底边 h − 0.5 − row 格
-            let reach = rise + sound * (h - rise)
+            // 第 row 行的格心离底边 h − 0.5 − row 格。升起、沉下时整道按 lift 压低
+            let reach = lift * (rise + sound * (h - rise))
             let half = max((w - 1) / 2, 1)
             let offset = vDSP.add(-half, grid.column[range])
             let edge = vDSP.add(reach, vDSP.multiply(-reach * PatternMotion.riseArch / (half * half), vDSP.multiply(offset, offset)))
@@ -328,7 +355,7 @@ nonisolated struct ResolvedPattern: Sendable {
             let t = vDSP.clip(vDSP.divide(vDSP.add(edge, vDSP.add(0.5 - h, grid.row[range])), span), to: 0...1)
             value = vDSP.multiply(value, vDSP.multiply(vDSP.multiply(t, t), vDSP.add(3, vDSP.multiply(-2, t))))
         }
-        if let leaving, live {
+        if let leaving, live, rise == nil {
             value = vDSP.multiply(1 - easeOutCubic(date.timeIntervalSince(leaving) / PatternMotion.leaveDuration), value)
         }
         if !grid.quietFactors.isEmpty {
@@ -397,8 +424,8 @@ nonisolated struct ResolvedPattern: Sendable {
             // 沿对角线从左上到右下逐格换过去
             let eased = morphed(Double(column + row), at: date, live: live)
             value = previous.expression.evaluate(scope) * (1 - eased) + value * eased
-        } else {
-            // 由原点向外长出来
+        } else if rise == nil {
+            // 由原点向外长出来；涨的图案从底边升起，见下
             let reach = PatternGrid.reach(width: w, height: h, bottom: grid.bottom)
             let delay = reach > 0 ? scope[.r] / reach * PatternMotion.growSpread : 0
             let elapsed = live ? date.timeIntervalSince(changed) : .infinity
@@ -406,12 +433,12 @@ nonisolated struct ResolvedPattern: Sendable {
         }
         value *= 1 + PatternMotion.soundSwell * sound
         if let rise {
-            let reach = rise + sound * (h - rise)
+            let reach = lift * (rise + sound * (h - rise))
             let half = max((w - 1) / 2, 1), offset = Double(column) - half
             let edge = reach * (1 - PatternMotion.riseArch * offset * offset / (half * half))
             value *= smoothstep((edge - h + 0.5 + Double(row)) / max(edge - h * PatternMotion.riseFloor, 1))
         }
-        if let leaving, live {
+        if let leaving, live, rise == nil {
             value *= 1 - easeOutCubic(date.timeIntervalSince(leaving) / PatternMotion.leaveDuration)
         }
         if !quiet.isEmpty {
