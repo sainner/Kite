@@ -1,9 +1,10 @@
 #if os(macOS)
 import AppKit
 
-/// 语音整理时输入框里的像素扫掠，同工具行（算法见 PixelSweep）：扫掠的头停在整理出的字到哪了（VoiceTextStyle.head），
-/// 跟着流式整理出的字往后走，头的前面是整理后的字，后面是还没整理到的灰字，扫过去的地方就换成了整理后的字。
-/// 整理完（或没成、被人改了字）头接着走过字尾离开。换行时跳到新的一行，同一行里逐帧追上头（时间常数 0.08 秒）。
+/// 语音整理时输入框里的像素扫掠，同工具行（算法见 PixelSweep）：扫掠的头在 VoiceTextStyle.head，
+/// 头的前面是整理后的字，后面是还没扫到的灰字，扫过去的地方就换成了整理后的字。
+/// 头由 ThreadControlsModel 按固定速度一个字一个字往前推，这里逐帧追上（时间常数 0.05 秒），进场时从这一行左边滑进来；
+/// 整理完（或没成、被人改了字）头接着走过字尾离开。换行时跳到新的一行。
 /// 盖在输入框上面、和它一样大，不接点击；输入框用遮罩挖掉扫到的那一截，这一截画成算好的图。开了「减弱动态效果」不画，只有灰字。
 final class VoiceSweepView: NSView {
     private weak var field: ComposerField?
@@ -80,9 +81,9 @@ final class VoiceSweepView: NSView {
         let dt = last.map { min(max(time - $0, 0), 0.05) } ?? 0
         last = time
         if let front, abs(front.line.minY - caret.minY) < 1 {
-            self.front = (caret, front.x + (target - front.x) * (1 - exp(-dt / 0.08)))
+            self.front = (caret, front.x + (target - front.x) * (1 - exp(-dt / 0.05)))
         } else {
-            front = (caret, head == nil ? target : caret.minX)
+            front = (caret, self.front == nil ? caret.minX - Self.halfWidth : head == nil ? target : caret.minX)
         }
         if let finishing, let front, front.x >= target - 1 || time - finishing > Self.finishLimit {
             stop()

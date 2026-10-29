@@ -34,9 +34,11 @@ final class ComposerField: NSTextField {
     private var full: CGFloat?
     /// 语音输入的那段字另换的样式，见 VoiceTextStyle。
     private var voiceStyle: VoiceTextStyle?
-    /// 上一次给灰字上的颜色：画在字段编辑器里（编辑中）还是单元格里，当时的字，灰的那段。都一样就不重设：
+    /// 上一次给灰字上的颜色：画在字段编辑器里（编辑中）还是单元格里，当时的字，灰的那段，多灰。都一样就不重设：
     /// 换了字（哪怕范围一样）单元格的颜色已经随 stringValue 回到原样，要重上。
-    private var voiceShown: (editor: Bool, text: String, gray: NSRange)?
+    private var voiceShown: (editor: Bool, text: String, gray: NSRange, alpha: Double)?
+    /// 等整理时灰字逐帧呼吸。
+    private let breathTicker = FrameTicker()
     /// 按同样的配置另排的一份，量字的位置用，见 caret。
     private var caretLayout: (text: String, width: CGFloat, storage: NSTextContentStorage, layout: NSTextLayoutManager)?
 
@@ -126,6 +128,16 @@ final class ComposerField: NSTextField {
     /// 语音输入的那段字另换样式（见 VoiceTextStyle），nil 回到正文的样子。外面每次改了字也再给一遍，按新字重画。
     func setVoiceStyle(_ style: VoiceTextStyle?) {
         voiceStyle = style
+        let breathing = style?.waiting == true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if breathing, !breathTicker.running {
+            breathTicker.start(in: self) { [weak self] _ in
+                guard let self, voiceStyle?.waiting == true else { return false }
+                renderVoice()
+                return true
+            }
+        } else if !breathing {
+            breathTicker.stop()
+        }
         renderVoice()
     }
 
@@ -134,9 +146,12 @@ final class ComposerField: NSTextField {
         let editor = currentEditor() as? NSTextView
         let text = (editor?.string ?? stringValue) as NSString
         let gray = voiceStyle?.gray.flatMap { NSMaxRange($0) <= text.length ? $0 : nil }
-        if let shown = voiceShown, let gray, shown.editor == (editor != nil), shown.text == text as String, shown.gray == gray { return }
+        // 等整理时按等待呼吸的节奏起伏，同工具行的等待（WaitingBreath）
+        let alpha = VoiceTextStyle.dim * (breathTicker.running ? WaitingBreath.opacity(at: .now) : 1)
+        if let shown = voiceShown, let gray, shown.editor == (editor != nil), shown.text == text as String, shown.gray == gray,
+           abs(shown.alpha - alpha) < 0.01 { return }
         if voiceShown == nil, gray == nil { return }
-        let color = (textColor ?? .controlTextColor).withAlphaComponent(VoiceTextStyle.dim)
+        let color = (textColor ?? .controlTextColor).withAlphaComponent(alpha)
         if let editor, let layout = editor.textLayoutManager, let content = layout.textContentManager {
             layout.removeRenderingAttribute(.foregroundColor, for: layout.documentRange)
             if let gray, let start = content.location(content.documentRange.location, offsetBy: gray.location),
@@ -159,7 +174,7 @@ final class ComposerField: NSTextField {
         } else {
             stringValue = text as String
         }
-        voiceShown = gray.map { (editor != nil, text as String, $0) }
+        voiceShown = gray.map { (editor != nil, text as String, $0, alpha) }
     }
 
     /// 单元格里上过色的字交给字段编辑器之前换回原样：编辑器照单元格的字起头，颜色会进编辑中的字、带到接着打的字上。编辑中改显示属性。

@@ -23,14 +23,20 @@ import SwiftUI
 }
 
 /// 一次语音输入写进输入框的字：text 是输入框此刻该有的全文，识别的字从第 start 个 UTF-16 单元起（之前是开录时已有的字）。
-/// 整理途中 head 是整理出的字到哪了（同样按输入框里的 UTF-16 位置），前面是整理后的字，后面是定稿里还没对应上的那段。
+/// 整理时扫掠按固定速度从这段开头走到结尾，head 是走到哪了（同样按输入框里的 UTF-16 位置），前面换成整理后的字，后面还是定稿里没对应上的那段。
 struct VoiceSegment {
     let id = UUID()
     let start: Int
     var text: String
     /// 定稿，整理没成时退回它。
     var final: String?
+    /// 扫掠走到哪了；还没开始扫（还在录、等整理）时为 nil。
     var head: Int?
+    /// 到目前为止收到的整理后的字；整理完了 complete 是全文。扫掠不超过收到的字。
+    var tidied: String?
+    var complete: String?
+    /// 扫掠在走。
+    var pacing = false
 
     /// 整理到一半时的字：整理出的部分接上定稿里还没对应上的那段。整理只做减法，整理出的字（标点、空白除外）按顺序都能在定稿里找到，
     /// 顺着定稿往后找，最远看 24 个字，找不到的（模型改了的）跳过；整理出的部分以标点、空白结尾时，接上的那段去掉开头的标点、空白。
@@ -146,14 +152,14 @@ struct ThreadControlsModel {
     var delegate: (() async throws -> Void)? { model.lineDelegate(thread) }
     var listening: Bool { model.voice.owner == voiceOwner }
 
-    /// 输入框里语音输入的那段字另换样式（见 VoiceTextStyle）：还在录时灰，说完了扫掠头从这段开头起跟着整理出的字走，
-    /// 整理完（或不整理、出错）回到正文的样子。输入框里的字被人改过就不再另显示。
+    /// 输入框里语音输入的那段字另换样式（见 VoiceTextStyle）：还在录时灰，说完了等整理时灰字呼吸，整理后的字到了扫掠按固定速度扫过去，
+    /// 扫完（或不整理、出错）回到正文的样子。输入框里的字被人改过就不再另显示。
     var voiceStyle: VoiceTextStyle? {
         guard let segment = state.voice, segment.text == fieldText else { return nil }
         let length = (segment.text as NSString).length
         guard segment.start < length else { return nil }
         return VoiceTextStyle(range: NSRange(location: segment.start, length: length - segment.start),
-                              head: listening ? nil : min(segment.head ?? segment.start, length))
+                              head: listening ? nil : segment.head.map { min($0, length) }, waiting: !listening && segment.head == nil)
     }
     /// 没写字，也没放附件。
     var blank: Bool { thread.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && thread.draftAttachments.isEmpty }
@@ -372,12 +378,50 @@ struct ThreadControlsModel {
         // 输入框还是这一段（没又开录、没发消息另起一段）时的记录；end 时这段结束
         let current: @MainActor () -> VoiceSegment? = { state.voice?.id == segment.id ? state.voice : nil }
         let end: @MainActor () -> Void = { if current() != nil { state.voice = nil } }
-        // 整理时写进输入框的字；人改过（读到的不是上次写的）就不再写
-        let replace: @MainActor (String, _ head: Int?) -> Void = { text, head in
-            guard let shown = current(), read() == shown.text else { return }
+        // 整理时写进输入框的字；人改过（读到的不是上次写的）就不再写，这一段到此为止
+        let replace: @MainActor (String, _ head: Int?) -> Bool = { text, head in
+            guard let shown = current(), read() == shown.text else {
+                end()
+                return false
+            }
             write(text)
             state.voice?.text = text
             state.voice?.head = head
+            return true
+        }
+        // 扫掠按固定速度走（流式整理实际是等几秒后一下子全到，跟着到达的节奏走会一下跨几十个字）：每次多换一个字，不超过收到的；
+        // 整理完、扫到头了换上全文，⌘Z 回到定稿。速度按定稿长短取，一段扫完约 1.5 秒，短的不少于 0.8 秒
+        let pace: @MainActor () -> Void = {
+            guard let segment = current(), !segment.pacing, let final = segment.final else { return }
+            state.voice?.pacing = true
+            let rate = min(max(Double(final.count) / 1.5, 25), 80)
+            // 按经过的时间算该换到第几个字，不受界面忙闲拖慢；收到的字不够时停在那里等，等的时间不攒进度
+            Task { @MainActor in
+                var shown = 0, progress = 0.0, last = ContinuousClock.now
+                while let segment = current() {
+                    let target = Array(segment.complete ?? segment.tidied ?? "")
+                    let now = ContinuousClock.now, elapsed = (now - last).components
+                    last = now
+                    if shown < target.count {
+                        progress = min(progress + (Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18) * rate, Double(target.count))
+                        let next = max(Int(progress), shown == 0 ? 1 : shown)
+                        if next > shown {
+                            shown = next
+                            let prefix = String(target[..<shown])
+                            guard replace(base + VoiceSegment.merging(prefix, into: final), (base + prefix as NSString).length) else { return }
+                        }
+                    } else if let complete = segment.complete {
+                        if read() == segment.text {
+                            state.undoableText = (base + complete, base + final)
+                            write(base + complete)
+                        }
+                        return end()
+                    } else {
+                        progress = Double(shown)
+                    }
+                    try? await Task.sleep(for: .milliseconds(16))
+                }
+            }
         }
         let update: @MainActor @Sendable (VoiceText) -> Void = { text in
             switch text {
@@ -387,22 +431,28 @@ struct ThreadControlsModel {
                 state.voice?.text = base + value
                 if case .final = text { state.voice?.final = value }
             case .tidying(let value):
-                guard let final = current()?.final else { return }
-                replace(base + VoiceSegment.merging(value, into: final), (base + value as NSString).length)
-            case .tidied(let value, let raw):
-                if let shown = current(), read() == shown.text {
-                    state.undoableText = (base + value, base + raw)
-                    write(base + value)
-                }
-                end()
+                guard current()?.final != nil else { return }
+                state.voice?.tidied = value
+                pace()
+            case .tidied(let value, _):
+                guard current()?.final != nil else { return end() }
+                state.voice?.tidied = value
+                state.voice?.complete = value
+                pace()
             case .failed(let message):
                 end()
                 voice.stop(owner: owner)
                 state.failure = ("无法开始语音输入", message)
             case .ended:
-                // 整理过一半又没成：退回定稿
-                if let shown = current(), let final = shown.final, shown.head != nil { replace(base + final, nil) }
-                end()
+                // 整理出的和定稿一样（工作机就不给全文）：照样扫过去；整理过一半又没成：退回定稿
+                guard let shown = current(), let final = shown.final else { return end() }
+                if shown.tidied?.trimmingCharacters(in: .whitespacesAndNewlines) == final {
+                    state.voice?.complete = final
+                    pace()
+                } else {
+                    if shown.head != nil { _ = replace(base + final, nil) }
+                    end()
+                }
             }
         }
         let target = VoiceTarget(client: client, thread: thread.isDraft ? nil : thread.id)
