@@ -181,8 +181,13 @@ final class StageView: RepresentedRoot, StageDotsReporting {
 
     // MARK: - 环境
 
+    /// 颜色模式以台面自己的外观为准，外观变了再交一遍，同 PhoneStageView.update：外观切换时 updateNSView 交进来的环境里颜色模式
+    /// 还是切换前的（2026-10-29 Mac 应用内切换实测，每次都是），各托管视图整份转交会把它钉住。
     func update(group: PaneGroup, environment: EnvironmentValues, appearance: StageAppearance, openSidebar: (@MainActor () -> Void)?,
                 leadingInset: CGFloat) {
+        var environment = environment, appearance = appearance
+        environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
+        appearance.colorScheme = environment.colorScheme
         self.environment = environment
         if self.leadingInset != leadingInset {
             self.leadingInset = leadingInset
@@ -201,6 +206,12 @@ final class StageView: RepresentedRoot, StageDotsReporting {
             for card in cards.values { card.environmentChanged() }
         }
         needsLayout = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        guard let look else { return }
+        update(group: group, environment: environment, appearance: look, openSidebar: openSidebar, leadingInset: leadingInset)
     }
 
     /// 窗口组是哪一个：工作区、设备账号，或资源库里选中的哪一项（同一类共用一套排布）。

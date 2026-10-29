@@ -67,7 +67,7 @@ private struct HeaderAnchorRoot: View {
     var body: some View { content.view }
 }
 
-/// 标题一侧托管在自己的视图里。环境整份转交。
+/// 标题一侧托管在自己的视图里。环境整份转交，颜色模式除外，见 HeaderAnchorContainer.install。
 private struct HeaderAnchorHost<Content: View> {
     let edge: HorizontalEdge
     let link: HostedContentLink
@@ -77,12 +77,13 @@ private struct HeaderAnchorHost<Content: View> {
     private func make(environment: EnvironmentValues) -> HeaderAnchorContainer {
         let container = HeaderAnchorContainer(edge: edge, link: link)
         relay.container = container
-        container.content.view = rooted(environment, title: container.title)
+        update(container, environment: environment)
         return container
     }
 
     private func update(_ container: HeaderAnchorContainer, environment: EnvironmentValues) {
-        container.content.view = rooted(environment, title: container.title)
+        let title = container.title
+        container.install(environment) { rooted($0, title: title) }
     }
 
     /// 偏好值和尺寸隔一拍交出去：里面的托管视图可能在外面这次更新当中排版，不能当场改外面的状态。
@@ -168,6 +169,29 @@ private final class HeaderAnchorContainer: NSView, WindowHeaderFollower {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var isFlipped: Bool { true }
+
+    private var environment = EnvironmentValues()
+    private var root: ((EnvironmentValues) -> AnyView)?
+
+    /// 交进来的环境整份转交，颜色模式按这一侧自己的外观，外观变了按它再交一遍：外观切换时 SwiftUI 交进来的那份里颜色模式可能还是切换前的，
+    /// 整份转交会把它钉在里面，之后不一定再交（2026-10-29 Mac 跟随系统自动转深色，网页窗口的标题停在浅色的黑字，右边按外观取色的原生按钮是对的）。
+    func install(_ environment: EnvironmentValues, root: @escaping (EnvironmentValues) -> AnyView) {
+        self.environment = environment
+        self.root = root
+        render()
+    }
+
+    private func render() {
+        guard let root else { return }
+        var environment = environment
+        environment.colorScheme = effectiveAppearance.isDark ? .dark : .light
+        content.view = root(environment)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        render()
+    }
 
     override func layout() {
         super.layout()
@@ -300,9 +324,27 @@ private final class HeaderAnchorContainer: UIView, WindowHeaderFollower {
         mover.addSubview(controller.view)
         addSubview(mover)
         title.changed = { [weak self] in self?.place() }
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in self.render() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private var environment = EnvironmentValues()
+    private var root: ((EnvironmentValues) -> AnyView)?
+
+    /// 颜色模式按这一侧自己的外观，外观变了按它再交一遍，同 Mac 版。
+    func install(_ environment: EnvironmentValues, root: @escaping (EnvironmentValues) -> AnyView) {
+        self.environment = environment
+        self.root = root
+        render()
+    }
+
+    private func render() {
+        guard let root else { return }
+        var environment = environment
+        environment.colorScheme = traitCollection.userInterfaceStyle == .dark ? .dark : .light
+        content.view = root(environment)
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
