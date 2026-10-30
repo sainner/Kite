@@ -122,7 +122,7 @@ final class ComposerField: NSTextField {
 
     // MARK: - 语音输入的字
 
-    /// 现在灰着的那段字，扫掠按它判断要不要重画输入框的图（VoiceSweepView）。
+    /// 现在灰着的那段字，扫掠按它判断要不要重画输入框的图（VoiceSweepView）。见 VoiceSweepField。
     var voiceGray: NSRange? { voiceShown?.gray }
 
     /// 语音输入的那段字另换样式（见 VoiceTextStyle），nil 回到正文的样子。外面每次改了字也再给一遍，按新字重画。
@@ -196,7 +196,7 @@ final class ComposerField: NSTextField {
         renderVoice()
     }
 
-    /// 第 offset 个 UTF-16 单元前面那个位置（控件坐标）：x 是这个位置，y、高是它所在的那一行；在行尾时算上一行的末尾。
+    /// 第 offset 个 UTF-16 单元前面那个位置（控件坐标）：x 是这个位置，y、高是它所在的那一行；在行尾时算上一行的末尾。见 VoiceSweepField。
     /// 按同样的配置另排一份（同字段编辑器：容器和控件一样宽，左右各留 fieldInset；2026-10-29 和字段编辑器逐点比过一致），
     /// 编辑中、没在编辑时都对得上；超过 8 行在里面滚的不算滚动。
     func caret(at offset: Int) -> CGRect? {
@@ -351,6 +351,15 @@ final class ComposerField: NSTextField {
             guard let field, let editor = notification.userInfo?["NSFieldEditor"] as? NSTextView else { return }
             field.textChanged?(editor.string)
         }
+    }
+}
+
+extension ComposerField: VoiceSweepField {
+    var voiceString: String { text }
+
+    var sweepMaskLayer: CALayer? {
+        if layer == nil { wantsLayer = true }
+        return layer
     }
 }
 

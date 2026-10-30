@@ -32,7 +32,8 @@ static half4 kiteCellColor(float2 grid, half4 average) {
 
 // 工具在跑时的像素扫掠（iOS 对话的工具行，见 PhoneActivityView）：扫掠经过时笔画短暂变成彩色方块，离开后恢复；
 // 网格和配色固定，边缘平滑混合。字先画进贴图，CAMetalLayer 按屏幕刷新率逐帧画；贴图比字的范围四边各多 inset 点，按点取样。
-// Mac 的工具行在 CPU 上画同样的效果，见 MacToolActivity。
+// 换字的那一遍（wiping）扫掠头后面取旧内容的贴图（outgoing），扫过去才是新的；平时只扫到 bounds 的宽为止，后面照原样画。
+// Mac 的工具行在 CPU 上画同样的效果，见 PixelSweep。
 
 struct KiteSweepVertex {
     float4 position [[position]];
@@ -49,20 +50,19 @@ struct KiteSweepUniforms {
     float travel;
     float scale;
     float inset;
-    float padding;
+    float wiping;
     float2 textureSize;
+    float2 outgoingSize;
 };
 
-static half4 kiteTextureSample(texture2d<half> source, float2 position, constant KiteSweepUniforms &u) {
+static half4 kiteTextureSample(texture2d<half> source, float2 size, float2 position, constant KiteSweepUniforms &u) {
     constexpr sampler linearSampler(filter::linear, address::clamp_to_zero);
-    return source.sample(linearSampler, (position + u.inset) * u.scale / u.textureSize);
+    return source.sample(linearSampler, (position + u.inset) * u.scale / size);
 }
 
-fragment half4 kiteSweepFragment(KiteSweepVertex in [[stage_in]], constant KiteSweepUniforms &u [[buffer(0)]],
-                                 texture2d<half> source [[texture(0)]]) {
-    float2 position = in.position.xy / u.scale;
-    half4 base = kiteTextureSample(source, position, u);
-    float intensity = kiteSweep(position, u.bounds, u.travel);
+// 一点在扫掠里的样子：原图按强度混成方块，方块取这一格里 3×3 个点的平均。
+static half4 kiteSweepPixel(texture2d<half> source, float2 size, float2 position, float intensity, constant KiteSweepUniforms &u) {
+    half4 base = kiteTextureSample(source, size, position, u);
     if (intensity < 0.001) return base;
     float cell = clamp(u.bounds.w * 0.2, 2.5, 4.0);
     float2 grid = floor((position - u.bounds.xy) / cell);
@@ -70,8 +70,23 @@ fragment half4 kiteSweepFragment(KiteSweepVertex in [[stage_in]], constant KiteS
     half4 pixel = half4(0.0h);
     for (int row = -1; row <= 1; ++row) {
         for (int column = -1; column <= 1; ++column) {
-            pixel += kiteTextureSample(source, center + float2(column, row) * cell / 3.0, u) / 9.0h;
+            pixel += kiteTextureSample(source, size, center + float2(column, row) * cell / 3.0, u) / 9.0h;
         }
     }
     return mix(base, kiteCellColor(grid, pixel), half(intensity));
+}
+
+fragment half4 kiteSweepFragment(KiteSweepVertex in [[stage_in]], constant KiteSweepUniforms &u [[buffer(0)]],
+                                 texture2d<half> source [[texture(0)]], texture2d<half> outgoing [[texture(1)]]) {
+    float2 position = in.position.xy / u.scale;
+    float x = position.x - u.bounds.x;
+    float intensity = kiteSweep(position, u.bounds, u.travel);
+    if (u.wiping < 0.5) {
+        return kiteSweepPixel(source, u.textureSize, position, x > u.bounds.z ? 0.0 : intensity, u);
+    }
+    // 头（同 kiteSweep 的 front）后面还是旧的
+    float baseHalfWidth = clamp(u.bounds.z * 0.2, 24.0, 64.0);
+    float front = mix(-baseHalfWidth, u.bounds.z + baseHalfWidth * 1.35, u.travel);
+    return x < front ? kiteSweepPixel(source, u.textureSize, position, intensity, u)
+                     : kiteSweepPixel(outgoing, u.outgoingSize, position, intensity, u);
 }

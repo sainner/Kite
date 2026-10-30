@@ -11,6 +11,8 @@ import UniformTypeIdentifiers
 final class ControlsBarView: UIView {
     private let glass: UIVisualEffectView
     private let field = ComposerField.make()
+    /// 语音整理时盖在输入框上的扫掠。
+    private lazy var voiceSweep = VoiceSweepView(field: field)
     private let fadingView = FadingSnapshotView()
     private let effort = EffortHost(rootView: AnyView(EmptyView()))
     private let attach = PaneButtonView()
@@ -80,6 +82,7 @@ final class ControlsBarView: UIView {
         addSubview(glass)
         let content = glass.contentView
         content.addSubview(field)
+        content.addSubview(voiceSweep)
         content.addSubview(fadingView)
         content.addSubview(effort.view)
         effort.view.backgroundColor = .clear
@@ -188,7 +191,9 @@ final class ControlsBarView: UIView {
         let thread = controls.thread
         field.placeholder = controls.placeholder
         field.setText(controls.fieldText)
-        field.setVoiceStyle(controls.voiceStyle)
+        let voiceStyle = controls.voiceStyle
+        field.setVoiceStyle(voiceStyle)
+        voiceSweep.update(voiceStyle)
         field.isEditable = enabled
         field.isUserInteractionEnabled = enabled
         let listening = controls.listening
@@ -439,6 +444,7 @@ final class ControlsBarView: UIView {
         let fieldWidth = max(width - 2 * ComposerLayout.fieldInset, 0)
         let top = plan.fieldTop + dy
         place(field, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: field.height(width: fieldWidth, text: field.text)))
+        place(voiceSweep, field.frame)
         place(fadingView, CGRect(x: ComposerLayout.fieldInset, y: top, width: fieldWidth, height: plan.field))
 
         let row = ComposerLayout.row(width: width, plan: plan)

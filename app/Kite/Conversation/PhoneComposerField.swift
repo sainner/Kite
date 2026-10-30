@@ -36,8 +36,10 @@ final class ComposerField: UITextView, UITextViewDelegate {
     private var measured: (width: CGFloat, text: String, font: UIFont, height: CGFloat)?
     /// 语音输入的那段字另换的样式，见 VoiceTextStyle。
     private var voiceStyle: VoiceTextStyle?
-    /// 上一次给灰字上的颜色：当时的字，灰的那段。都一样就不重设。
-    private var voiceShown: (text: String, gray: NSRange)?
+    /// 上一次给灰字上的颜色：当时的字，灰的那段，多灰。都一样就不重设。
+    private var voiceShown: (text: String, gray: NSRange, alpha: Double)?
+    /// 等整理时灰字逐帧呼吸。
+    private let breathTicker = FrameTicker()
 
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         if action == #selector(paste(_:)), acceptsImages, UIPasteboard.general.hasImages { return true }
@@ -179,23 +181,34 @@ final class ComposerField: UITextView, UITextViewDelegate {
     /// 语音输入的那段字另换样式（见 VoiceTextStyle），nil 回到正文的样子。外面每次改了字也再给一遍，按新字重画。
     func setVoiceStyle(_ style: VoiceTextStyle?) {
         voiceStyle = style
+        let breathing = style?.waiting == true && !UIAccessibility.isReduceMotionEnabled
+        if breathing, !breathTicker.running {
+            breathTicker.start(in: self) { [weak self] _ in
+                guard let self, voiceStyle?.waiting == true else { return false }
+                renderVoice()
+                return true
+            }
+        } else if !breathing {
+            breathTicker.stop()
+        }
         renderVoice()
     }
 
     /// 改字的颜色属性：外面给的字都不进撤销（见 setText），改属性也不经输入系统、不进撤销；改完把 typingAttributes 换回正文的，
-    /// 接着打的字不带灰。组字中不动，免得打断输入法。
+    /// 接着打的字不带灰。组字中不动，免得打断输入法。等整理时按等待呼吸的节奏起伏（同 WaitingBreath），按 1/48 取整，相邻几帧一样就不重设。
     private func renderVoice() {
         let text = self.text ?? ""
         let gray = voiceStyle?.gray.flatMap { NSMaxRange($0) <= (text as NSString).length ? $0 : nil }
-        if let shown = voiceShown, let gray, shown.text == text, shown.gray == gray { return }
+        let alpha = (VoiceTextStyle.dim * (breathTicker.running ? WaitingBreath.opacity(at: .now) : 1) * 48).rounded() / 48
+        if let shown = voiceShown, let gray, shown.text == text, shown.gray == gray, shown.alpha == alpha { return }
         guard voiceShown != nil || gray != nil, markedTextRange == nil else { return }
         let storage = textStorage
         storage.beginEditing()
         storage.addAttribute(.foregroundColor, value: UIColor.label, range: NSRange(location: 0, length: storage.length))
-        if let gray { storage.addAttribute(.foregroundColor, value: UIColor.label.withAlphaComponent(VoiceTextStyle.dim), range: gray) }
+        if let gray { storage.addAttribute(.foregroundColor, value: UIColor.label.withAlphaComponent(alpha), range: gray) }
         storage.endEditing()
         typingAttributes = attributes
-        voiceShown = gray.map { (text, $0) }
+        voiceShown = gray.map { (text, $0, alpha) }
     }
 
     // MARK: - 量高
@@ -287,6 +300,39 @@ final class ComposerField: UITextView, UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         placeholderLabel.isHidden = !text.isEmpty
         textChanged?(text)
+    }
+}
+extension ComposerField: VoiceSweepField {
+    var voiceString: String { text ?? "" }
+    var voiceGray: NSRange? { voiceShown?.gray }
+    var sweepMaskLayer: CALayer? { layer }
+
+    /// 按自己的 TextKit 2 排版取，换成看得见的那一块的坐标（扣掉滚动偏移）；容器在原点、无内边距，见 make。
+    func caret(at offset: Int) -> CGRect? {
+        guard let layout = textLayoutManager, let content = layout.textContentManager,
+              let location = content.location(content.documentRange.location, offsetBy: min(max(offset, 0), (voiceString as NSString).length))
+        else { return nil }
+        var caret: CGRect?
+        layout.enumerateTextSegments(in: NSTextRange(location: location), type: .standard, options: [.rangeNotRequired, .upstreamAffinity]) {
+            _, frame, _, _ in
+            caret = frame
+            return false
+        }
+        return caret?.offsetBy(dx: textContainerInset.left - bounds.minX, dy: textContainerInset.top - bounds.minY)
+    }
+
+    /// 看得见的那一块画成图：摘下扫掠挖洞的遮罩（带遮罩的图层 render(in:) 不画），按滚动偏移挪回原点。收起键盘录语音，没有插入点。
+    func sweepImage() -> CGImage? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = window?.screen.scale ?? traitCollection.displayScale
+        let mask = layer.mask
+        layer.mask = nil
+        defer { layer.mask = mask }
+        return UIGraphicsImageRenderer(bounds: CGRect(origin: .zero, size: bounds.size), format: format).image { context in
+            context.cgContext.translateBy(x: -bounds.minX, y: -bounds.minY)
+            layer.render(in: context.cgContext)
+        }.cgImage
     }
 }
 #endif

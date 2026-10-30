@@ -130,6 +130,7 @@ final class PhoneWorkRowView: UIView {
 
 /// 工具组的汇总行：一行次要色小字，间距 8、竖着居中：汇总（见 Work.headline）、
 /// 没跑完步数、小号箭头；汇总放不下截掉。这组还在做事（Work.active）时一直带像素扫掠（PhoneActivityView），展开着也扫。整行可点。
+/// 几样都在扫掠的内容里：平时只扫汇总，换了说的事或步数那一遍扫过整行，随扫掠换过去（见 PhoneActivityView.change）。
 final class PhoneWorkHeader: PhonePlainControl {
     /// 箭头转了多少：0 朝右，1 朝下。
     var turn: CGFloat = 0 {
@@ -140,13 +141,15 @@ final class PhoneWorkHeader: PhonePlainControl {
     private let unfinished = PhoneTextLine()
     private let chevron = UIImageView()
     private var font = UIFont.preferredFont(forTextStyle: .subheadline)
+    /// 显示着（或扫掠中等着换上）的汇总、没跑完的步数，和字体。
+    private var shown: (headline: String, unfinished: String, font: UIFont)?
 
     override init() {
         super.init()
         content.addSubview(activity)
         activity.content.addSubview(summary)
-        content.addSubview(unfinished)
-        content.addSubview(chevron)
+        activity.content.addSubview(unfinished)
+        activity.content.addSubview(chevron)
         chevron.contentMode = .center
     }
 
@@ -155,12 +158,25 @@ final class PhoneWorkHeader: PhonePlainControl {
     func show(_ work: Work, expanded: Bool, environment: EnvironmentValues) {
         font = Theme.secondary.resolve(in: environment.fontResolutionContext).ctFont as UIFont
         let unfinishedCount = work.count(.unfinished)
-        set(summary, work.headline, color: .secondaryLabel)
-        set(unfinished, unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", color: .secondaryLabel)
+        let headline = work.headline, steps = unfinishedCount > 0 ? "\(unfinishedCount) 步没跑完" : "", font = font
         chevron.image = UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small))
         chevron.tintColor = .secondaryLabel
         activity.contentChanged()
         activity.show(work.active ? .sweeping : .none, presence: environment.panePresence)
+        let apply = { [weak self] in
+            guard let self else { return }
+            set(summary, headline, color: .secondaryLabel)
+            set(unfinished, steps, color: .secondaryLabel)
+            setNeedsLayout()
+            layoutIfNeeded()
+        }
+        if let shown, shown.font == font, shown.headline != headline || shown.unfinished != steps {
+            activity.change(apply)
+        } else if shown?.headline != headline || shown?.unfinished != steps || shown?.font != font {
+            apply()
+            activity.contentChanged()
+        }
+        shown = (headline, steps, font)
         accessibilityLabel = TranscriptSpeech.work(work)
         accessibilityValue = TranscriptSpeech.expanded(expanded)
         setNeedsLayout()
@@ -180,9 +196,9 @@ final class PhoneWorkHeader: PhonePlainControl {
         let imageSize = chevron.image?.size ?? .zero
         let unfinishedWidth = unfinished.isHidden ? 0 : unfinished.naturalWidth + spacing
         let summaryWidth = min(summary.naturalWidth, max(bounds.width - unfinishedWidth - imageSize.width - spacing, 0))
+        // 几样都摆在扫掠的内容里，坐标同这一行
         var x: CGFloat = 0
-        activity.frame = CGRect(x: x, y: 0, width: summaryWidth, height: bounds.height)
-        summary.frame = activity.bounds
+        summary.frame = CGRect(x: 0, y: 0, width: summaryWidth, height: bounds.height)
         x += summaryWidth + spacing
         if !unfinished.isHidden {
             unfinished.frame = CGRect(x: x, y: 0, width: unfinished.naturalWidth, height: bounds.height)
@@ -193,6 +209,8 @@ final class PhoneWorkHeader: PhonePlainControl {
         // 位置对到像素，同 SwiftUI 画的时候
         chevron.frame = PhonePixel.align(CGRect(x: x, y: (bounds.height - imageSize.height) / 2, width: imageSize.width, height: imageSize.height))
         chevron.transform = transform
+        activity.frame = CGRect(x: 0, y: 0, width: min(x + imageSize.width, bounds.width), height: bounds.height)
+        activity.sweepWidth = summaryWidth
     }
 }
 
@@ -257,15 +275,22 @@ final class PhoneThinkingRowView: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show(_ text: String, font: UIFont, presence: PanePresence?) {
-        // 思考流式刷新时说的字多半没变（有小标题时说小标题），没变就不重画扫掠的贴图
-        if shown?.text != text || shown?.font != font {
-            shown = (text, font)
-            label.set(text, font: font, color: .secondaryLabel)
-            accessibilityLabel = text
-            activity.contentChanged()
-            setNeedsLayout()
-        }
         activity.show(.sweeping, presence: presence)
+        // 思考流式刷新时说的字多半没变（有小标题时说小标题），没变就不重画扫掠的贴图；换了小标题随扫掠换过去（见 PhoneActivityView.change）
+        guard shown?.text != text || shown?.font != font else { return }
+        let changing = shown != nil && shown?.font == font
+        shown = (text, font)
+        accessibilityLabel = text
+        let apply = { [weak self] in
+            guard let self else { return }
+            label.set(text, font: font, color: .secondaryLabel)
+            setNeedsLayout()
+            layoutIfNeeded()
+        }
+        if changing { activity.change(apply) } else {
+            apply()
+            activity.contentChanged()
+        }
     }
 
     override func layoutSubviews() {
