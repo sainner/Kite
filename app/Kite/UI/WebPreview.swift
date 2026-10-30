@@ -512,8 +512,9 @@ struct PortPreview: View {
             // 视图在就一直转发，离开或换了目标时（任务取消）放开
             do {
                 try await PortRelays.shared.hold(host: host, port: target) { relay in
-                    // 首页开在 IPv4 回环上：写 localhost 时 WebKit 先连 ::1，同号端口在 ::1 上被本机别的服务占着时会打开错的页面。
-                    show(URL(string: "http://127.0.0.1:\(relay.port)"))
+                    // 和工作机上一样开 localhost：网页的来源、Cookie、安全策略按主机名算，换成 127.0.0.1 看到的会不一样。
+                    // 转发在两种回环上同号都开着（见 PortRelay），WebKit 先连哪边都到同一个目标。
+                    show(URL(string: "http://localhost:\(relay.port)"))
                 }
             } catch {
                 report("本机转发没有打开：\(error.localizedDescription)")

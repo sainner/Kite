@@ -377,7 +377,11 @@ export class Terminals {
       done: child.exited.then(async () => {
         await Promise.race([eof.promise, delay(DRAIN_MS)]);
         // shell 退出后同组和记下的作业进程组里还活着的（后台任务）一并停掉，免得没有归属的进程留在工作机上。
-        for (const group of [pid, ...session.groups]) if (processGroupAlive(group)) { try { process.kill(-group, 'SIGKILL'); } catch {} }
+        // 等它们真的退出再算结束：占内存大的进程被杀后要几十毫秒才放开端口，预览重起时紧接着分端口，没放开就分到了下一段。
+        const alive = () => [pid, ...session.groups].filter(processGroupAlive);
+        for (const group of alive()) { try { process.kill(-group, 'SIGKILL'); } catch {} }
+        const deadline = Date.now() + STOP_GRACE_MS;
+        while (alive().length && Date.now() < deadline) await delay(20);
         terminal?.close();
         return { exitCode: child.exitCode, ...(child.signalCode ? { signal: child.signalCode } : {}) };
       }),

@@ -69,7 +69,7 @@ final class PortRelays {
 nonisolated final class PortRelay: @unchecked Sendable {
     /// 实际监听的端口：尽量和工作机上的相同，页面看到的地址就和在工作机上一样；被占用时由系统另分一个。
     let port: UInt16
-    /// IPv4 回环上一个；IPv6 回环上的同号端口没被占时再一个，页面里写 [::1] 或 localhost 的地址也到同一个目标。
+    /// IPv4 与 IPv6 回环上同号各一个，页面里写 localhost、127.0.0.1 或 [::1] 的地址都到同一个目标。
     private let listeners: [NWListener]
     private let target: (host: String, port: UInt16)
     private let proxy: @Sendable () async throws -> SocksProxy
@@ -89,12 +89,11 @@ nonisolated final class PortRelay: @unchecked Sendable {
 
     static func start(host: String, port: UInt16, proxy: @escaping @Sendable () async throws -> SocksProxy) async throws -> PortRelay {
         let queue = DispatchQueue(label: "PortRelay")
-        let primary: NWListener
-        do { primary = try await listen(.ipv4(.loopback), on: port, queue: queue) }
-        catch { primary = try await listen(.ipv4(.loopback), on: 0, queue: queue) }
-        guard let bound = primary.port?.rawValue else { primary.cancel(); throw KitedError(message: "本机转发端口没有打开") }
-        let secondary = try? await listen(.ipv6(.loopback), on: bound, queue: queue)
-        let relay = PortRelay(listeners: [primary] + (secondary.map { [$0] } ?? []), port: bound, target: (host, port), proxy: proxy, queue: queue)
+        // 同号被本机别的程序占着（哪怕只占了一边）就换系统另分的号：只开一边时 localhost 会连到那个程序上
+        var listeners = try? await pair(on: port, queue: queue)
+        for _ in 0..<5 where listeners == nil { listeners = try? await pair(on: 0, queue: queue) }
+        guard let listeners, let bound = listeners.first?.port?.rawValue else { throw KitedError(message: "本机转发端口没有打开") }
+        let relay = PortRelay(listeners: listeners, port: bound, target: (host, port), proxy: proxy, queue: queue)
         for listener in relay.listeners {
             listener.newConnectionHandler = { [weak relay] connection in
                 guard let relay else { connection.cancel(); return }
@@ -107,9 +106,19 @@ nonisolated final class PortRelay: @unchecked Sendable {
         return relay
     }
 
+    /// IPv4 与 IPv6 回环上同一个端口各开一个监听；local 为 0 时由系统分，IPv6 跟着 IPv4 分到的号。有一边开不了就都关掉。
+    private static func pair(on local: UInt16, queue: DispatchQueue) async throws -> [NWListener] {
+        let v4 = try await listen(.ipv4(.loopback), on: local, queue: queue)
+        guard let bound = v4.port?.rawValue else { v4.cancel(); throw KitedError(message: "本机转发端口没有打开") }
+        do { return [v4, try await listen(.ipv6(.loopback), on: bound, queue: queue)] }
+        catch { v4.cancel(); throw error }
+    }
+
     /// 在回环地址上开一个监听，等它就绪；local 为 0 时由系统分端口。接上转发之前到的连接直接断开。
     private static func listen(_ address: NWEndpoint.Host, on local: UInt16, queue: DispatchQueue) async throws -> NWListener {
         let parameters = NWParameters.tcp
+        // 两边都要开地址复用：不开时 IPv4 回环上开了这个号，IPv6 回环上同号报地址已占用（macOS 27 实测）；开了也抢不进别的程序占着的端口。
+        parameters.allowLocalEndpointReuse = true
         parameters.requiredLocalEndpoint = .hostPort(host: address, port: local == 0 ? .any : NWEndpoint.Port(rawValue: local)!)
         let listener = try NWListener(using: parameters)
         let ready = Once()
