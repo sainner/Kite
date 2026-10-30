@@ -15,7 +15,7 @@
 - [界面改原生](decision-native-ui.md) — Mac 对话与外壳改 AppKit、iOS 改 UIKit，为拖缝 60 帧，外观逐项复刻；骨架、点阵是退路
 - [NAS 的现状](nas-setup.md) — 常开 Mac mini 上的 ORICO 外置盘，10-22 已接上；按工作机上的普通目录处理
 - [子 agent 的 worktree 起点](agent-worktree-base.md) — 默认从 origin/main 建、不含本地提交，可设 worktree.baseRef=head；合回时别碰别的会话的改动
-- [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用 ORICO；数据目录搬家后旧工作区 Git 指针要改真实路径
+- [磁盘空间](disk-space.md) — 内置盘紧，大件下载与编译前先看余量，不够用 ORICO；搬家后 Git 指针改真实路径；kited 读 ORICO 要系统授权
 - [语音输入方向](voice-input-direction.md) — 与 Keyo 的分工、右 Option、DeepSeek 流式整理与扫掠逐字替换（iOS 真机没看）、术语词典、点阵表现
 - [Claude Code 的空闲压缩](claude-code-idle-compaction.md) — 它多在空闲约 55 分钟时压缩；两边积攒速度实测；Kite 已加空闲压缩，待真实会话验收
 
