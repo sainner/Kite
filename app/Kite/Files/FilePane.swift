@@ -270,11 +270,11 @@ struct FilePane: View {
         return browser.selection.url.flatMap(URL.init(string:)).map(Self.address) ?? ""
     }
 
-    /// 本机的写 localhost:端口 加路径，https 省掉前缀。
+    /// 本机的写 localhost:端口（子域名照写）加路径，https 省掉前缀。
     private static func address(_ url: URL) -> String {
         if let local = LocalPort(url) {
             let path = LocalPort.displayPath(of: url)
-            return "localhost:\(local.port)" + (path == "/" ? "" : path)
+            return "\(local.host):\(local.port)" + (path == "/" ? "" : path)
         }
         let text = url.absoluteString
         return text.hasPrefix("https://") ? String(text.dropFirst("https://".count)) : text
@@ -302,10 +302,12 @@ struct FilePane: View {
         if browser.selection.page == .url(url) { web.open(url) } else { open(.url(url)) }
     }
 
-    /// 首页：本工作区的网页回到根路径，互联网的回到打开时的网址。
+    /// 首页：本工作区的网页回到当前站点（主机名）的根路径，互联网的回到打开时的网址。
     private func goHome() {
         switch browser.selection.page {
-        case .port(let port): if let target = LocalPort(path: "/", port: port) { area.webLinks[browser.instanceID] = WebLink(target: target) }
+        case .port(let port):
+            let host = web.url.flatMap(LocalPort.init)?.host ?? "localhost"
+            if let target = LocalPort(path: "/", port: port, host: host) { area.webLinks[browser.instanceID] = WebLink(target: target) }
         case .url(let url): web.open(url)
         case nil: break
         }

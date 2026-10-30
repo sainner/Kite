@@ -107,27 +107,40 @@ struct FileReference: Equatable, Hashable, Sendable {
 
 /// 本机地址上某个端口的网页：工作机上运行中的终端监听的端口，在所属工作区内打开看这个端口的网页预览，到链接的路径（AppModel.openLocalPort）。
 struct LocalPort: Equatable {
-    /// 本机地址的写法：这些主机名上带端口的网页按本工作区的端口打开。
+    /// 本机地址的写法：这些主机名和 localhost 的子域名（见 isLocal）上带端口的网页按本工作区的端口打开。
     static let hosts: Set<String> = ["localhost", "127.0.0.1", "::1", "0.0.0.0"]
     let port: Int
+    /// 打开时用的主机名：localhost 的子域名照写的保留，站点可能按子域名区分租户，来源与 Cookie 也跟着主机名；其余本机地址都开 localhost。
+    let host: String
     /// 端口后面的路径、查询和锚点，网页视图直接打开到这里；只到首页时为空。
     let path: String
 
+    /// 小写的主机名是不是本机地址。localhost 的子域名系统和浏览器都解析到回环。
+    static func isLocal(_ host: String) -> Bool { hosts.contains(host) || host.hasSuffix(".localhost") }
+
     init?(_ url: URL) {
         guard ["http", "https"].contains(url.scheme?.lowercased()), let host = url.host(percentEncoded: false)?.lowercased(),
-              Self.hosts.contains(host), let port = url.port, (1...65535).contains(port),
+              Self.isLocal(host), let port = url.port, (1...65535).contains(port),
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
         self.port = port
+        self.host = host.hasSuffix(".localhost") ? host : "localhost"
         path = (components.percentEncodedPath == "/" ? "" : components.percentEncodedPath)
             + (components.percentEncodedQuery.map { "?\($0)" } ?? "") + (components.percentEncodedFragment.map { "#\($0)" } ?? "")
     }
 
-    /// 地址栏里输入的路径：不以 /、?、# 开头的补上 /。
-    init?(path: String, port: Int) {
+    /// 地址栏里输入的路径：不以 /、?、# 开头的补上 /。host 是当前页面的主机名，留在同一个站点上。
+    init?(path: String, port: Int, host: String = "localhost") {
         let path = path.trimmingCharacters(in: .whitespaces)
         let rooted = ["/", "?", "#"].contains(where: path.hasPrefix) ? path : "/" + path
-        guard let url = URL(string: "http://localhost:\(port)" + rooted) else { return nil }
+        guard let url = URL(string: "http://\(host):\(port)" + rooted) else { return nil }
         self.init(url)
+    }
+
+    /// 在网站根地址（本机的 localhost:端口，或本机转发的地址）上打开到它：换成它的主机名，接上路径。
+    func url(on root: URL) -> URL? {
+        guard var components = URLComponents(url: root, resolvingAgainstBaseURL: false) else { return nil }
+        components.host = host
+        return components.url.flatMap { URL(string: $0.absoluteString + path) }
     }
 
     /// 地址栏里显示的路径：页面当前的路径、查询和锚点，首页是 /。
@@ -136,9 +149,9 @@ struct LocalPort: Equatable {
         return path.removingPercentEncoding ?? path
     }
 
-    /// 正文里裸写的 localhost:端口，可以带路径，当作 http 链接。
+    /// 正文里裸写的 localhost:端口（或它的子域名），可以带路径，当作 http 链接。
     static func bare(_ text: String) -> URL? {
-        guard let colon = text.firstIndex(of: ":"), hosts.contains(text[..<colon].lowercased()),
+        guard let colon = text.firstIndex(of: ":"), isLocal(text[..<colon].lowercased()),
               let url = URL(string: "http://\(text)"), Self(url) != nil else { return nil }
         return url
     }
@@ -152,7 +165,7 @@ struct WebLink: Equatable {
 
 /// 识别只看文字和工作区顶层的名字，不查文件是否存在；正文保留在原始记录中，缩短的文件名只用于显示。规则见 docs/资源引用.md。
 enum ReferenceText {
-    private static let webTokens = try! NSRegularExpression(pattern: #"https?://[^\s<>`\"'，。；！？（）]+|(?:localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{1,5}(?:[/?#][^\s<>`\"'，。；！？（）]*)?"#)
+    private static let webTokens = try! NSRegularExpression(pattern: #"https?://[^\s<>`\"'，。；！？（）]+|(?:(?:[A-Za-z0-9-]+\.)*localhost|127\.0\.0\.1|0\.0\.0\.0):[0-9]{1,5}(?:[/?#][^\s<>`\"'，。；！？（）]*)?"#)
     /// 路径后面紧跟的定位：#L 行号，或 diff 与行号。
     private static let locator: NSRegularExpression = {
         let (diff, line) = (FileReference.diffPattern, FileReference.linePattern)

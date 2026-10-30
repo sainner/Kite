@@ -1,11 +1,11 @@
 ---
 name: todo-terminal-plugin
-description: 终端插件已实现后仍未决的事：真机验收、跨端口网页待验、旁观设备的尺寸、终端能否跨 kited 重启存活、后台命令的输入；预置脚本已移到预览的目标
+description: 终端插件已实现后仍未决的事：真机验收、跨端口网页与 localhost 子域名待验、旁观设备的尺寸、终端能否跨 kited 重启存活、后台命令的输入；预置脚本已移到预览的目标
 metadata:
   node_type: memory
   type: todo
   originSessionId: 01c5998f-1ec7-4d15-a68b-285b002cc5c1
-  modified: 2026-10-30T06:48:40.280Z
+  modified: 2026-10-30T08:58:25.594Z
 ---
 
 **状态：** 2026-10-16 已实现（契约见 [实例操作 · 终端](../../docs/实例操作.md#终端)），待用户在 Mac、iPhone、iPad 上手测。
@@ -18,6 +18,7 @@ metadata:
 - agent 转到后台的命令只有输出没有输入，Codex 那种往后台进程写 stdin 的能力没做。
 - 网页（2026-10-16 接上，2026-10-22 移到预览）：沙箱里不许监听也不许连本机端口（上游 `allowLocalBinding` 会连带放开连本机全部端口，包括 kited 的接口，没用）；agent 的开发服务器走沙箱外命令（事先允许或申请后批准）运行才有网页可看。消息链接里的路径还没带进网页视图。
 - 跨端口网页（2026-10-21 改，待验）：其他设备上为本工作区全部运行中终端与预览的端口开同号转发（127.0.0.1 与 ::1），2026-10-22 起设备打开着工作区期间就开、不再要求开着网页视图；工作机 kite-net 转交时保留页面所用的本机主机名，原来一律改成 localhost。起因：在 WorkStation 上看 Mac mini 上的 crevo 灵感库详情页（4011 页面嵌 `http://[::1]:4012` 的回放 iframe，票据接口按 Host 核对来源）时报 400、退回截图，agent 在 Mac mini 本机 Chrome 里复现不出来。验收：Mac mini 换上新版 kite-net、这台 Mac 换上新 App 后，在 Kite 里打开详情页，iframe 应显示真网页。2026-10-30 查出 ::1 那一路此前从没开起来（IPv4 回环先占了同号，IPv6 同号报地址已占用，被 `try?` 吞掉），这条验收原来过不了；已改为两边开地址复用、同号开不齐就一起换号，网页视图首页也改开 localhost（原来是 127.0.0.1，crevo 的安全策略只认 localhost，样式被拦），装上新 App 后重验。
+- localhost 子域名（2026-10-30 改，待验）：起因是会话里 `http://sainner.localhost:41010/` 点了报「本机的网页按端口打开」（App 只认 localhost 等几个主机名，当外网网址交给浏览，kited 拒收）。现在链接、地址栏和工作机浏览器的 navigate 都保留子域名，同一端口上的本机主机名算同一个网页；只编译过，没在 App 里点过。iPhone、iPad 上 WebKit 会不会把 `*.localhost` 解析到回环没验。用户在自己的 Chrome 里打开会跳回 localhost:41010，但全新配置的 Chrome 停在子域名的登录页，转发原样转交 Host；跳转出在 crevo 自己（它的本机登录只认 localhost、127.0.0.1）或那个 Chrome 的状态，没查到底。
 
 - 预置脚本 2026-10-22 已移到预览插件的「目标」（`.kite/preview/`、preview_open，终端去掉了 terminal_run），验收点见 [[todo-preview-plugin]]；终端回到用户 shell 与 agent 的后台命令，进程托管照旧由终端插件做（预览实例的进程也在这里，状态同在 state.terminal）。
 

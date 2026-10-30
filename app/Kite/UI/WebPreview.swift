@@ -29,9 +29,10 @@ enum WebSource: Equatable {
         return nil
     }
 
-    /// 主框架只能停在同一个来源上。
+    /// 主框架只能停在同一个来源上。本机地址同一端口上的各个主机名（localhost、它的子域名）算一个：站点按子域名区分租户时，登录后会跳过去。
     fileprivate func contains(_ url: URL) -> Bool {
-        url.scheme == self.url.scheme && url.host == self.url.host && url.port == self.url.port
+        guard url.scheme == self.url.scheme, url.port == self.url.port else { return false }
+        return url.host == self.url.host || [url, self.url].allSatisfy { $0.host(percentEncoded: false).map { LocalPort.isLocal($0.lowercased()) } ?? false }
     }
 }
 
@@ -322,9 +323,12 @@ struct WebRoaming: Equatable {
     let service: Set<String>
 
     func allows(_ url: URL) -> Bool {
-        guard let host = url.host(percentEncoded: false)?.lowercased() else { return true }
+        guard var host = url.host(percentEncoded: false)?.lowercased() else { return true }
+        host = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        // localhost 的子域名也解析到回环，按 localhost 算
+        if host.hasSuffix(".localhost") { host = "localhost" }
         let port = url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80)
-        return !service.contains("\(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))):\(port)")
+        return !service.contains("\(host):\(port)")
     }
 }
 
@@ -494,7 +498,7 @@ struct PortPreview: View {
             } else { Color.clear }
         }
         .onChange(of: link) { _, link in
-            guard let url, let link, let target = URL(string: url.absoluteString + link.target.path) else { return }
+            guard let url, let link, let target = link.target.url(on: url) else { return }
             browser.open(target)
         }
         .task(id: "\(client.identity) \(port)") {
@@ -525,7 +529,7 @@ struct PortPreview: View {
     private func show(_ root: URL?) {
         guard let root else { return }
         url = root
-        start = URL(string: root.absoluteString + (link?.target.path ?? "")) ?? root
+        start = link?.target.url(on: root) ?? root
     }
 }
 

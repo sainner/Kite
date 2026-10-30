@@ -22,11 +22,14 @@ const INSTALL_TIMEOUT_MS = 15 * 60_000;
 /** 页面的设备像素比：给设备看的帧按它截，在 Retina 屏上清楚；给模型的按 CSS 像素截。 */
 const DEVICE_SCALE = 2;
 
-/** 本端口上的路径换成完整地址；写成别处的地址不行。 */
+/** 本端口上的路径换成完整地址；也可以写同一端口上 localhost 子域名的完整地址（站点按子域名区分租户），写成别处的地址不行。 */
 export function pathOn(root: string, path: string): string {
   let url: URL;
   try { url = new URL(path, root); } catch { throw new KiteError(`地址无效：${path}`, 400); }
-  if (url.origin !== new URL(root).origin) throw new KiteError(`只能打开本端口上的路径，不能打开 ${path}`, 400);
+  const base = new URL(root);
+  if (url.protocol !== base.protocol || url.port !== base.port || (url.hostname !== base.hostname && !url.hostname.endsWith('.localhost'))) {
+    throw new KiteError(`只能打开本端口上的路径，不能打开 ${path}`, 400);
+  }
   return url.href;
 }
 

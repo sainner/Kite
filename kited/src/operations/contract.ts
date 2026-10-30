@@ -197,7 +197,7 @@ export const operationContracts = {
       '操作预览的画面，做完等画面稳定（约 0.3 秒不变，画面一直没变的等 1 秒，最多 3 秒）再返回新的一帧截图；App 冷启动这类更慢的，用 wait 再看。coordinate 是截图里的位置 [x, y]，单位同返回的 width、height，以最近一次截图为准。',
       'action：screenshot 只截图；left_click、double_click、right_click（模拟器没有）、long_press（duration 秒）点 coordinate；left_click_drag 从 start_coordinate 拖到 coordinate，模拟器上就是滑动；',
       'scroll 在 coordinate 处按 scroll_direction（up、down、left、right）滚 scroll_amount 格（默认 3）；type 输入 text（模拟器上先点要输入的框，中文也能输入）；key 按一个键或组合键，text 写键名，如 Enter、Escape、Backspace、Tab、ArrowDown、Control+A；',
-      'wait 等 duration 秒（默认 1）再截图；网页另有 navigate（text 写本端口上的路径）、back、forward、reload，模拟器另有 home（回主屏幕）。',
+      'wait 等 duration 秒（默认 1）再截图；网页另有 navigate（text 写本端口上的路径，或同一端口上 localhost 子域名的完整地址）、back、forward、reload，模拟器另有 home（回主屏幕）。',
       '网页画面可带 browser（webkit、chromium、firefox、safari）与 width、height（视口尺寸），操作的是并排视图里同样参数的那一格页面，不带时操作画面视图。',
       '用户起的预览也能操作，用 preview_list 找；在用户设备上看的网页（browser 为 device），你操作的是宿主在工作机 WebKit 里另开的同一个地址，用户看不到。',
     ].join(''),

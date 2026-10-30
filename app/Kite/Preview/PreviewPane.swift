@@ -161,14 +161,14 @@ private struct DeviceWebPreview: View {
         }
     }
 
-    /// 地址栏：站点图标、localhost:、菜单、路径，端口和路径之间不留空，最右边是网页操作的菜单（WebPageMenu）。还没打开端口时只有端口菜单。
-    /// 窄排时宽度不够，省掉 localhost:。
+    /// 地址栏：站点图标、localhost:（页面在它的子域名上时写子域名）、菜单、路径，端口和路径之间不留空，最右边是网页操作的菜单（WebPageMenu）。
+    /// 还没打开端口时只有端口菜单。窄排时宽度不够，省掉 localhost:。
     private func address(port: Int?, typing: FocusState<Bool>.Binding) -> some View {
         PaneHeaderButtonGroup(expands: port != nil) {
             HStack(spacing: Metrics.paneHeaderLogoGap) {
                 WebSiteIcon(icon: port == nil ? nil : browser.icon)
                 if !narrow {
-                    Text("localhost:")
+                    Text("\(pageHost):")
                         .font(Theme.body)
                         .foregroundStyle(.secondary)
                 }
@@ -191,9 +191,12 @@ private struct DeviceWebPreview: View {
         if !browser.reload() { reload = UUID() }
     }
 
-    /// 地址栏里输入的路径、首页，和消息里点的链接一样在页面里打开到它（见 WorkArea.webLinks）。
+    /// 页面当前所在的本机主机名：localhost，或链接里写的它的子域名。
+    private var pageHost: String { browser.url.flatMap(LocalPort.init)?.host ?? "localhost" }
+
+    /// 地址栏里输入的路径、首页，和消息里点的链接一样在页面里打开到它（见 WorkArea.webLinks），留在当前的主机名上。
     private func open(_ path: String, on port: Int) {
-        guard let target = LocalPort(path: path, port: port) else { return }
+        guard let target = LocalPort(path: path, port: port, host: pageHost) else { return }
         webFailure = nil
         area.webLinks[instance.id] = WebLink(target: target)
     }
@@ -294,8 +297,19 @@ private struct ScreenPreview: View {
         .onChange(of: linkToOpen, initial: true) {
             guard linkToOpen != nil, let link = area.webLinks[instance.id], link.target.port == status.port else { return }
             area.webLinks[instance.id] = nil
-            act(["type": "navigate", "path": link.target.path.isEmpty ? "/" : link.target.path])
+            navigate(link.target.path.isEmpty ? "/" : link.target.path, on: link.target)
         }
+    }
+
+    /// 工作机上的浏览器打开本端口上的一个路径。页面在 localhost 的子域名上时写成那个子域名上的完整地址，不回到 localhost
+    /// （kited 的 pathOn 认同一端口上的子域名）；消息里的链接按链接写的主机名。
+    private func navigate(_ path: String, on target: LocalPort? = nil) {
+        guard let target = target ?? session.url.flatMap(LocalPort.init).flatMap({ LocalPort(path: path, port: $0.port, host: $0.host) }),
+              target.host != "localhost" else {
+            act(["type": "navigate", "path": path])
+            return
+        }
+        act(["type": "navigate", "path": "http://\(target.host):\(target.port)" + (target.path.isEmpty ? "/" : target.path)])
     }
 
     private func webControls(typing: FocusState<Bool>.Binding) -> some View {
@@ -304,9 +318,9 @@ private struct ScreenPreview: View {
                 WebSiteIcon(icon: nil)
                     .padding(.leading, Metrics.paneHeaderButtonGap / 2)
                 PreviewBrowserMenu(instance: instance, status: status) { actionError = $0 }
-                WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing, reset: pathReset) { act(["type": "navigate", "path": $0]) }
+                WebPathField(path: LocalPort.displayPath(of: session.url), typing: typing, reset: pathReset) { navigate($0) }
                     .padding(.leading, -Metrics.paneHeaderButtonGap / 2)
-                WebPageMenu(browser: nil, typing: typing.wrappedValue, home: { act(["type": "navigate", "path": "/"]) },
+                WebPageMenu(browser: nil, typing: typing.wrappedValue, home: { navigate("/") },
                             reload: { act(["type": "reload"]) }, clear: { pathReset += 1 })
             }
         } trailing: {
