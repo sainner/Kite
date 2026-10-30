@@ -3,7 +3,7 @@ import SwiftUI
 import AppKit
 #endif
 
-/// 按住修饰键时标出的编号：⌘ 标停靠栏各格（⌘数字打开，见 DockModel.topToBottom），⌃⌘ 标侧栏各工作区（⌃⌘数字切换），见 KiteCommands。
+/// 按住修饰键时标出的编号：⌘ 标停靠栏的布局文件夹和实例各格（⌘数字打开，见 DockModel.numbered），⌃⌘ 标侧栏各工作区（⌃⌘数字切换），见 KiteCommands。
 enum ShortcutHint {
     case dock, workspaces
 }

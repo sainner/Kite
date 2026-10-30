@@ -77,8 +77,8 @@ struct DockModel {
     var agents: [DockEntry] = []
     var tools: [DockEntry] = []
     var all: [DockEntry] { agents + tools }
-    /// ⌘数字按它数：实例组从上到下的各格（代理、工具），布局文件夹和两个添加入口不占编号。
-    var topToBottom: [DockEntry] { agents + tools }
+    /// ⌘数字按它数：停靠栏从前到后的布局文件夹和实例各格，两个添加入口不占编号。
+    var numbered: [DockBandItem] { layouts.map(DockBandItem.layout) + all.map(DockBandItem.entry) }
 }
 
 /// 需要处理的状态，换掉头像本色；同时只显示一个，按这个顺序取。
@@ -240,16 +240,21 @@ extension WorkArea {
         }
     }
 
-    /// 停靠栏浮出的标签：悬停的那一格；numbered（按住 ⌘，见 ShortcutHint）时各格一起浮出、尾部带编号，悬停时照常浮出标签。
+    /// 停靠栏浮出的标签：悬停的那一格；numbered（按住 ⌘，见 ShortcutHint）时布局文件夹和实例各格一起浮出、尾部带编号，悬停时照常浮出标签。
     /// 展开着家族格时不标。
     func dockHoverTips(in geometry: DockGeometry, numbered: Bool) -> [DockHoverTip] {
         let hover = dockHoverTip(in: geometry)
         guard numbered, dockExpansion.isEmpty else { return hover.map { [$0] } ?? [] }
         let numbers = Dictionary(uniqueKeysWithValues: geometry.numbered.enumerated().map { ($1, $0 + 1) })
         var tips: [DockHoverTip] = []
-        for (entry, _) in geometry.entries {
-            guard let number = numbers[entry.id], let frame = geometry.hoverFrame(of: entry.id) else { continue }
-            tips.append(DockHoverTip(id: entry.id, text: dockLabel(entry), frame: frame, number: number))
+        for (item, _) in geometry.items {
+            guard let number = numbers[item.id], let frame = geometry.hoverFrame(of: item.id) else { continue }
+            let text = switch item {
+            case .layout(let layout): layout.name
+            case .entry(let entry): dockLabel(entry)
+            case .addLayout, .divider, .addInstance: ""
+            }
+            tips.append(DockHoverTip(id: item.id, text: text, frame: frame, number: number))
         }
         return tips
     }
@@ -289,19 +294,24 @@ extension AppModel {
         showInstance(instance.id, in: area)
     }
 
-    /// ⌘数字：点宽屏停靠栏从上到下第 index 格（从 0 数），同用指针点：放上台面或聚焦，家族格打开父代理。拖动、拖缝当中不做。
+    /// ⌘数字：点宽屏停靠栏从上到下第 index 格（从 0 数，见 DockModel.numbered），同用指针点：布局文件夹换成这组布局；
+    /// 实例放上台面或聚焦，家族格打开父代理。拖动、拖缝当中不做。
     func openDockEntry(at index: Int, in area: WorkArea) {
         let layout = area.layout
         guard area.pluginClient != nil, layout.presentation == .tiled, layout.drag == nil, layout.resizing == nil else { return }
-        let entries = area.dockModel().topToBottom
-        guard entries.indices.contains(index) else { return }
-        switch entries[index] {
-        case .pane(let pane):
+        let items = area.dockModel().numbered
+        guard items.indices.contains(index) else { return }
+        switch items[index] {
+        case .layout(let recipe):
+            area.openLayout(recipe, model: self)
+        case .entry(.pane(let pane)):
             layout.activate(pane)
-        case .family(let family):
+        case .entry(.family(let family)):
             layout.activate(family.pane)
-        case .instance(let instance):
+        case .entry(.instance(let instance)):
             openDockInstance(instance, in: area)
+        case .addLayout, .divider, .addInstance:
+            break
         }
         area.collapseDock()
     }
@@ -331,13 +341,13 @@ struct DockGeometry {
     private(set) var faces: [String: Slot] = [:]
     /// 收在家族胶囊里、只露一截的子代理（各层都算）：卡片落进来时外框缩到它的头像上淡没，不压在父代理的头像上面停一下。
     private(set) var tucked: Set<String> = []
-    /// ⌘1～9 打开的各格，按编号排，见 DockModel.topToBottom。
+    /// ⌘1～9 打开的各项，按编号排，见 DockModel.numbered。
     let numbered: [String]
 
     /// region 是停靠栏那一列（WindowRegions.dock），distance 是离前端滚了多远，familyOffset 是展开的家族格里面滚了多远。
     /// familyLimit 是展开的家族格最长多长（见 WorkArea.dockFamilyLimit），没给时按停靠栏的长。
     init(model: DockModel, region: CGRect, expansion: [String] = [], distance: CGFloat = 0, familyOffset: CGFloat = 0, familyLimit: CGFloat? = nil) {
-        numbered = model.topToBottom.prefix(9).map(\.id)
+        numbered = model.numbered.prefix(9).map(\.id)
         let bandItems = model.bandItems(.vertical), visible = region.height
         let limit = familyLimit ?? DockBandMetrics.familyLimit(visible: visible)
         let extents = bandItems.map { DockBandMetrics.extent($0, expansion: expansion, limit: limit) }

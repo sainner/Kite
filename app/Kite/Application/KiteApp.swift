@@ -147,7 +147,7 @@ struct KiteCommands: Commands {
             .disabled(area == nil)
             Divider()
             // 第几格、第几个工作区按下时才数，菜单不随停靠栏、工作区列表重建
-            Menu("打开停靠栏里的实例") {
+            Menu("打开停靠栏里的布局或实例") {
                 ForEach(1...9, id: \.self) { number in
                     Button("第 \(number) 格") {
                         guard let area else { return }
